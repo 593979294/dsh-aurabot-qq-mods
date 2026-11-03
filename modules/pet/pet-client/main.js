@@ -12,7 +12,7 @@
 //   · 端口漂移：baseUrl 失败或轮询出错都会重读 host.json 再试。
 //   · 窗口：置顶、透明无边框、JS 拖拽 + 甩抛（physics.js，P3）、托盘退出、单实例锁。
 
-const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen, globalShortcut } = require('electron')
+const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen, globalShortcut, shell } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
 const { execFile, spawn } = require('node:child_process')
@@ -55,11 +55,24 @@ let apiBase = null     // { baseUrl, api, token }
 function readHost() {
   try {
     const h = JSON.parse(fs.readFileSync(HOST_FILE, 'utf8'))
-    if (!/^https?:\/\/127\.0\.0\.1(:\d+)?$/i.test(String(h.baseUrl || ''))) return null // 端口未知：等插件第一次被请求
+    // baseUrl 接受任意合法 http(s) URL（2026-11-02 远端直连）：同机是 http://127.0.0.1:<port>，
+    // 服务器部署是 https://bot.example.com 这类；解析失败（含 baseUrl=null 的自举等待期）返回 null 继续等。
+    const u = new URL(String(h.baseUrl || ''))
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null
     if (!/^[a-f0-9]{32,80}$/.test(String(h.token || ''))) return null
     if (!/^\/.+/.test(String(h.api || ''))) h.api = '/aurabot/api/ext/pet'
+    // 明文风险提示：http 且非回环（跨机明文）只在控制台警告一次，不阻断——用户可能在内网里就是这么用
+    if (u.protocol === 'http:' && !isLoopbackHostname(u.hostname) && !readHost.plainWarned) {
+      readHost.plainWarned = true
+      console.warn(`[pet] 警告：桌宠正通过明文 http 连接 ${u.hostname}（非本机回环）。令牌与气泡内容都是明文传输，跨公网请改用 https。`)
+    }
     return { baseUrl: String(h.baseUrl).replace(/\/+$/, ''), token: h.token, api: h.api }
   } catch { return null }
+}
+/** 回环主机名判定（客户端侧）：127.x / localhost / ::1。 */
+function isLoopbackHostname(hostname) {
+  const h = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '')
+  return h === 'localhost' || h === '::1' || /^127(\.\d+){3}$/.test(h)
 }
 
 // ---------- 桌宠服务端访问 ----------
@@ -1699,6 +1712,16 @@ function whisper() {
  *  所以按「含本插件端口」的窗口标题把那个窗口切到前台；找不到再退 DSH 主窗口。 */
 function openPanel() {
   const h = readHost()
+  // 远端直连（2026-11-02）：baseUrl 是非回环地址（面板就在服务器域名的浏览器标签里），
+  // 直接用系统默认浏览器打开它，不再按端口拼 127.0.0.1 去找本机 DSH 窗口。
+  let remoteBase = null
+  try { const u = new URL(h ? h.baseUrl : ''); if (h && !isLoopbackHostname(u.hostname)) remoteBase = h.baseUrl } catch {}
+  if (remoteBase) {
+    shell.openExternal(remoteBase).catch(() => {
+      win?.webContents.executeJavaScript(`window.__whisper && window.__whisper(${JSON.stringify('面板在浏览器标签 ' + remoteBase + ' 里～')})`).catch(() => {})
+    })
+    return
+  }
   const port = h ? ((h.baseUrl.match(/:(\d+)/) || [])[1] || '') : ''
   const ps = [
     `$pat = ${JSON.stringify(port ? `*127.0.0.1:${port}*` : '*127.0.0.1*')}`,
