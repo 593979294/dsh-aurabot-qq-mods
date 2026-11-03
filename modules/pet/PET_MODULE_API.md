@@ -86,13 +86,17 @@
 const pet = api.use('pet')          // 没装/没开时是 null，用 ?. 调
 pet.online()      // → {online, lastSeenAt, clients}：60 秒内有客户端轮询过 /events 即在线
 pet.focus()       // → true 表示专注模式开着（fail-open 语义，读不到=关）
-pet.dispatch({ text, modality?, purpose?, force?, anim? })
+pet.dispatch({ text, modality?, purpose?, force?, anim?, emotion?, emotionProfile? })
 // → { ok:true, via:'pet', message }                      桌宠在线：推气泡（voice 失败自动降级文字）
 // → { ok:true, via:'qq', fallback:true }                 桌宠离线且 petFallbackToQQ：回落 QQ 私聊
 // → { ok:false, reason:'carrier-qq' }                    载体是 QQ：purpose 自己走 QQ，桌宠不碰
 // → { ok:false, reason:'focus' }                         专注模式：不发也不回落（force=true 可绕）
 // → { ok:false, reason:'pet-offline' }                   离线且关闭回落
 ```
+
+`emotion`（情绪标签，≤20 字）与 `emotionProfile`（`{valence:-1~1, arousal:0~1}`，越界值钳制，
+坏对象按 null 处理不炸投递）会随 proactive 消息/事件透传给客户端——气泡按画像上辉光
+（冷暖色随 valence、强弱随 arousal；没带画像保持默认描边）。目的引擎 1.2 起 dispatch 时会带上。
 
 **互斥约定（永不双发）**：purpose 读自己的设置 `ext.purpose.carrier`（与 `ext.pet.carrier` 镜像保持一致，投递前对齐）；
 `carrier='pet'` 时**只调** `pet.dispatch()`，不要自己再发 QQ；`carrier='qq'` 时正常走 QQ 投递、不碰 pet。

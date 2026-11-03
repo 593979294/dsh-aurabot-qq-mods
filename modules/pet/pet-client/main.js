@@ -207,12 +207,13 @@ async function refreshConfig() {
 
 // ---------- 气泡 / 动画点播（P2） ----------
 const BUBBLE_TAG = { test: '碎碎念', whisper: '碎碎念' }
-async function showBubble(text, mood, modality, anim, playbackId, purpose, tagOverride) {
+async function showBubble(text, mood, modality, anim, playbackId, purpose, tagOverride, emotionProfile) {
   if (!win) return
   const secs = Math.min(30, Math.max(6.5, 4.5 + String(text).length * 0.11))
   // 标签：菜单「碎碎念」/ 定时碎碎念 / 干活结束各有各的标签，别都标成「主动来找你」
   const tag = tagOverride || BUBBLE_TAG[purpose] || ''
-  const js = `window.__bubble && window.__bubble(${JSON.stringify(String(text || ''))}, ${JSON.stringify(String(mood || 'neutral'))}, ${secs}, ${JSON.stringify(String(anim || ''))}, ${JSON.stringify(String(playbackId || ''))}, ${JSON.stringify(tag)})`
+  const emo = emotionProfile && typeof emotionProfile === 'object' ? { valence: emotionProfile.valence ?? 0, arousal: emotionProfile.arousal ?? 0.4 } : null
+  const js = `window.__bubble && window.__bubble(${JSON.stringify(String(text || ''))}, ${JSON.stringify(String(mood || 'neutral'))}, ${secs}, ${JSON.stringify(String(anim || ''))}, ${JSON.stringify(String(playbackId || ''))}, ${JSON.stringify(tag)}, ${JSON.stringify(emo)})`
   try {
     const played = await win.webContents.executeJavaScript(js)
     // __bubble 返回实际起播的动画与回执号（没有可用素材时 anim 为空 → 不上报）
@@ -283,7 +284,7 @@ async function pollLoop() {
         if (e.type === 'work') { applyWork(e); continue }
         if (e.type === 'behavior' && !firstBoot) { handleBehavior(e); continue } // 下发层：行为动作单
         if (e.type === 'proactive' && String(e.text || '').trim() && !firstBoot) {
-          await showBubble(e.text, e.mood, e.modality, e.anim, e.playbackId, e.purpose)
+          await showBubble(e.text, e.mood, e.modality, e.anim, e.playbackId, e.purpose, '', e.emotionProfile)
         } else if (e.type === 'chat' && !firstBoot) {
           // 对话框回复（对话框开着时服务端走这条；messageId 与 POST 响应同源，chat.html 自己去重）
           if (chatWin && !chatWin.isDestroyed()) {
