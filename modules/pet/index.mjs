@@ -802,6 +802,10 @@ export default {
       }
       if (!noFallback && s.petFallbackToQQ !== false) {
         try {
+          // 注意：这条是「桌宠离线时回落 QQ」的主动私聊主人，已经被宿主出站门闸覆盖
+          // （api.sendText 会带 sourceModule 进门闸，被策略拦下时返回 null）。
+          // 不要改成 api.proactive.submit：桌宠回落是即时兜底，被拦时代码会静默丢掉这条，
+          // 主人会以为她没说话。保持直发的旧写法，由宿主门闸决定放不放。
           await api.sendText(ownerChatId(), t)
           api.log.info(`桌宠离线，主动发言回落 QQ：${t.slice(0, 40)}`)
           return { ok: true, via: 'qq', fallback: true }
