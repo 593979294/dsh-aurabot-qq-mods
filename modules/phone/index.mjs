@@ -23,7 +23,7 @@ const execFileP = promisify(execFile)
 export default {
   id: 'phone',
   name: '手机逛逛',
-  version: '0.2.1',
+  version: '0.3.0',
   api: 1,
   description: '通过 ADB 逛 Android 手机：按主人教好的流程自动签到/浏览/点赞，或自由推理完成一句话任务。',
   panel: 'panel.js',
@@ -33,6 +33,35 @@ export default {
 
   setup(api) {
     const dataDir = () => api.dataDir()
+    /**
+     * 向主人私聊汇报一条任务结果。这是「主动私聊主人」，要经宿主的出站治理面
+     * （api.proactive）记账，免得绕过主动发言决策。旧主仓没有该面时退回 hub.sendText，
+     * 并按返回值真值判断（被策略拦下会拿到 null = 没发出去）。
+     */
+    async function reportToOwner(qq, text, itemId) {
+      const proactive = api.proactive
+      // 全局试运行（config.dryRun）下不提交治理面：账本可能会真投递，就不算「只试不发」了。
+      // 注意模块自己的 dryRun 只是「不真点手机」，这台机器上的汇报照样真发，所以那种情况仍走治理面。
+      const globalDryRun = Boolean(api.config?.()?.dryRun)
+      if (!globalDryRun && proactive?.submit) {
+        try {
+          const r = await proactive.submit({ itemId, to: `private:${qq}`, channel: 'qq', text })
+          if (r && r.deliveryId != null && r.state !== 'unsupported') {
+            return ['sent', 'sending', 'pending'].includes(String(r.state || ''))
+          }
+        } catch (e) {
+          api.log.warn(`[phone] 经 api.proactive 汇报失败，回退直发：${e.message}`)
+        }
+      }
+      try {
+        // 走 api.sendText（模块调用面）而不是 api.core.hub.sendText：前者会带 sourceModule 进
+        // 宿主的出站门闸，被主动发言策略拦下时返回 null，正好和下面的真值判断对上。
+        return Boolean(await api.sendText(`private:${qq}`, text))
+      } catch (e) {
+        api.log.warn(`[phone] 向主人汇报失败：${e.message}`)
+        return false
+      }
+    }
     const getSettings = () => {
       const s = api.settings()
       return {
@@ -206,7 +235,7 @@ export default {
       const to = flow.reportTo || 'origin'
       if (to === 'owner') {
         const qq = String(api.config().ownerQQ || '').trim()
-        if (qq) { try { await api.core.hub.sendText(`private:${qq}`, `📱${text}`) } catch (e) { api.log.warn(`[phone] 向主人汇报失败：${e.message}`) } }
+        if (qq) { await reportToOwner(qq, `📱${text}`, `phone:flow:${flow.id}:${dayKey()}`) }
         else api.log.warn('[phone] reportTo=owner 但配置里没有 ownerQQ，改回本次来源汇报')
       } else if (to === 'origin' && originChatId && originChatId !== 'cron') {
         try { await api.sendText(originChatId, text) } catch (e) { api.log.warn(`[phone] 向来源汇报失败：${e.message}`) }
@@ -261,7 +290,7 @@ export default {
       const s = getSettings()
       const text = `📱主动逛完一轮（今天第 ${st.runs} 轮${s.maxRunsPerDay ? '，上限 ' + s.maxRunsPerDay : ''}）：${r.message}`
       const qq = String(api.config().ownerQQ || '').trim()
-      if (qq) { try { await api.core.hub.sendText(`private:${qq}`, text) } catch (e) { api.log.warn(`[phone] 主动逛汇报失败：${e.message}`) } }
+      if (qq) { await reportToOwner(qq, text, `phone:auto:${dayKey()}:${st.runs}`) }
       else api.log.warn('[phone] 主动逛完成但配置里没有 ownerQQ，没处汇报')
       if (s.writeEventMemory !== false) {
         api.use('memory')?.addEvent?.({ text: `主动逛了一轮手机（${r.steps} 步）：${String(r.summary).slice(0, 80)}`, tags: ['手机逛逛'], importance: 0.35 })
@@ -480,7 +509,7 @@ export default {
               const to = flow.reportTo || 'origin'
               const qq = String(api.config().ownerQQ || '').trim()
               if (qq && (to === 'owner' || to === 'origin')) {
-                api.core.hub.sendText(`private:${qq}`, `📱${flow.name} ${r.ok ? '完成' : '未完成'}（${r.steps} 步）：${r.summary}`).catch(() => {})
+                reportToOwner(qq, `📱${flow.name} ${r.ok ? '完成' : '未完成'}（${r.steps} 步）：${r.summary}`, `phone:cron:${flow.id}:${dayKey()}`).catch(() => {})
               }
               if (getSettings().writeEventMemory !== false) {
                 api.use('memory')?.addEvent?.({ text: `手机任务「${String(flow.prompt).slice(0, 40)}」${r.ok ? '完成' : '未完成'}：${r.summary.slice(0, 80)}`, tags: ['手机逛逛'], importance: 0.35 })

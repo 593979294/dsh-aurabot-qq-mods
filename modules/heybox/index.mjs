@@ -11,7 +11,7 @@ const { profileToolVisible, profilePermits } = __lib('chat/access.js')
 export default {
   id: 'heybox',
   name: '刷小黑盒',
-  version: '1.3.1',
+  version: '1.4.0',
   api: 1,
   description: '用主人的账号逛小黑盒：看帖子和热评，点赞、评论、发帖。支持谷时逛、扫码登录和浏览器验证。',
   tab: 'heybox',
@@ -19,6 +19,8 @@ export default {
     const { hub, http } = api.core
     const hb = createHeybox({
       getConfig: api.config, hub, memory: api.lazy('memory'), log: api.log,
+      // 出站治理面（主动发言策略）：旧主仓没有这个面时为 undefined，模块内部自动退回直发
+      proactive: api.proactive,
       setCookie: (cookie) => api.setConfig((cur) => ({ ...cur, heybox: { ...cur.heybox, cookie } })),
       // 生图能力（内置 imagegen 模块）：发帖时按字数自动画图，调不动就用表情包库兜底
       imagegen: api.lazy('imagegen'),

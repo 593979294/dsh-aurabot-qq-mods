@@ -98,7 +98,7 @@ export function linkIdOf(input) {
   return digits.length >= 6 ? digits : ''
 }
 
-export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile = path.join(HOME, '.dsh', 'heybox-state.json'), credFile = CRED_FILE, now = () => Date.now(), clientFactory = (options) => new HeyboxClient(options), verifier: injectedVerifier, imagegen = null, memeRoot = null } = {}) {
+export function createHeybox({ getConfig, setCookie, hub, memory, log, proactive, stateFile = path.join(HOME, '.dsh', 'heybox-state.json'), credFile = CRED_FILE, now = () => Date.now(), clientFactory = (options) => new HeyboxClient(options), verifier: injectedVerifier, imagegen = null, memeRoot = null } = {}) {
   let client = null
   let verifier = injectedVerifier || null
   let verifySession = null
@@ -1513,8 +1513,27 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
     let status = 'failed'
     try {
       // 走正常发送链路让扩展钩子生效。宿主可能把网关超时转成 null，无法确认时保留占额。
-      const sent = await hub.sendText(`private:${qq}`, `${text}\n${url}`)
-      status = sent?.message_id != null ? 'sent' : sent === false || (sent?.ok === false && !sent.uncertain) ? 'failed' : 'uncertain'
+      // 有出站治理面（proactive，宿主注入）时优先经它提交：这样「被策略拦下」能拿到明确的
+      // dropped/failed，而不是和「网关超时」一起被当成 uncertain 白占一份额度。旧宿主没有该面则照旧直发。
+      let sent = null
+      let viaPolicy = false
+      if (proactive?.submit) {
+        try {
+          const r = await proactive.submit({ itemId: `heybox:share:${id}`, to: `private:${qq}`, channel: 'qq', text: `${text}\n${url}` })
+          if (r && r.deliveryId != null && r.state !== 'unsupported') {
+            viaPolicy = true
+            // 只有真的进了账本或已发出才算 sent；被丢弃/失败的明确记 failed
+            status = ['sent', 'sending', 'pending'].includes(String(r.state || '')) ? 'sent'
+              : ['dropped', 'failed', 'expired'].includes(String(r.state || '')) ? 'failed' : 'uncertain'
+          }
+        } catch (e) {
+          log?.warn?.('小黑盒分享经 api.proactive 提交失败，回退直发：' + String(e?.message || e))
+        }
+      }
+      if (!viaPolicy) {
+        sent = await hub.sendText(`private:${qq}`, `${text}\n${url}`)
+        status = sent?.message_id != null ? 'sent' : sent === false || (sent?.ok === false && !sent.uncertain) ? 'failed' : 'uncertain'
+      }
     } catch (e) {
       status = /超时|timeout|timed out|abort/i.test(String(e?.message || e)) ? 'uncertain' : 'failed'
       log?.warn?.('小黑盒分享失败：' + String(e?.message || e))

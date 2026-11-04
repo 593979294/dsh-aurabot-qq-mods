@@ -125,6 +125,9 @@ export default {
         if (state.shares >= bounded(api.settings().maxSharesPerDay, 3, 0, 10)) return blocked('分享额度已变化，本次未发送');
         const message = `刚逛${sourceLabel}看到这个：${post.title}\n${text}\n${post.url}`;
         stage = '发送 QQ 分享';
+        // 这条是「主动私聊主人」，已受宿主出站门闸约束：被主动发言策略拦下时
+        // api.sendText 返回 null，下面的真值判断会如实走「未发送成功」分支，
+        // 不记 shares、不写 history（设计稿 §1.4 的记账铁律）。
         const sent = await api.sendText(target, message);
         if (disposed) return stopped();
         if (!sent) { state.lastResult = '分享未发送成功'; return blocked(state.lastResult); }
