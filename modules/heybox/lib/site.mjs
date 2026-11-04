@@ -98,7 +98,7 @@ export function linkIdOf(input) {
   return digits.length >= 6 ? digits : ''
 }
 
-export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile = path.join(HOME, '.dsh', 'heybox-state.json'), credFile = CRED_FILE, now = () => Date.now(), clientFactory = (options) => new HeyboxClient(options), verifier: injectedVerifier, imagegen = null, memeRoot = null } = {}) {
+export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile = path.join(HOME, '.dsh', 'heybox-state.json'), credFile = CRED_FILE, now = () => Date.now(), clientFactory = (options) => new HeyboxClient(options), verifier: injectedVerifier, imagegen = null, memeRoot = null, imageDir = null } = {}) {
   let client = null
   let verifier = injectedVerifier || null
   let verifySession = null
@@ -1369,7 +1369,8 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
               '生图超过 ' + Math.round(GENERATE_TIMEOUT_MS / 1000) + ' 秒没返回',
             )
             if (buf && buf.length) {
-              const f = path.join(HOME, '.dsh', 'heybox-imgs')
+              // 生图落盘目录可注入（测试指到临时目录，免得写真实家目录被沙箱拦成 EPERM 后回退成空表情包）
+              const f = imageDir ? String(imageDir) : path.join(HOME, '.dsh', 'heybox-imgs')
               fs.mkdirSync(f, { recursive: true })
               // 扩展名跟着真实格式走：生图服务常返回 PNG，硬写 .jpg 会让后面按后缀判断格式的地方出错
               const ext = buf.slice(1, 4).toString('latin1') === 'PNG' ? '.png'
@@ -1404,10 +1405,23 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
   // 面板可以配置「今天发 N 篇，每篇用什么风格/分区/话题/字数」。
   // 发帖时按今天已经发了几篇来取对应那一项的配置；排期用完或没配就用全局设置。
 
-  /** 今天已经发了几篇（用于排期取第几项） */
+  /**
+   * 今天已经发了几篇（用于排期取第几项）。
+   *
+   * ⚠ 以前读的是 quota().post，但那是「额度计数」，跟「今天真发出去几篇」不是一回事：
+   *   · 额度失败会退回、跨零点会整个重置，索引跟着跳；
+   *   · 手动发帖一旦没走同一条占额路径，计数也对不上。
+   * 现在改成数 history 里今天的 post 记录 —— 那个是发成功才写的，是真的。
+   * quota 只留给「还够不够发」用。
+   */
   function postsToday() {
-    const q = quota()
-    return Number(q.post) || 0
+    const t = localToday()
+    const hist = readState().history || []
+    let n = 0
+    for (const h of hist) {
+      if (h && h.kind === 'post' && Number(h.at) && today(new Date(Number(h.at))) === t) n++
+    }
+    return n
   }
 
   /**
@@ -1572,7 +1586,7 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
     return `${hh(c.peakStartAM ?? 9)}-${hh(c.peakEndAM ?? 12)}、${hh(c.peakStartPM ?? 14)}-${hh(c.peakEndPM ?? 18)}（${c.peakWeekend ? '含周末' : '仅工作日'}）`
   }
 
-  async function runDuty({ memory, owner = '' } = {}) {
+  async function runDuty({ memory, owner = '', token = 0 } = {}) {
     if (!autoEnabled()) return { ok: false, message: '没开、试运行或没登录' }
     const c = getConfig().heybox || {}
     if (risk().leftMs > 0) return { ok: false, cooling: true, message: '小黑盒在冷却中' }
@@ -1608,7 +1622,102 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
       const t = String(verdict?.remember || note).trim()
       if (t.length > 10) memory?.addEvent?.({ text: `我在小黑盒逛了一圈：${t.slice(0, 120)}`, tags: ['小黑盒'], importance: 0.45 })
     } catch { /* 记忆模块没在跑就算了 */ }
-    return { ok: true, message: note.slice(0, 300) || '逛完了', shared: shared?.ok ? shared : null, shareError: shared?.ok === false ? shared.message : '', session: 'system:ext-heybox' }
+    // 逛完接着看今天排期还欠不欠帖子（以前这里没有这一步，排期配了也永远不会自动发）
+    const post = await maybeAutoPost({ memory, owner, list, note, token }).catch((e) => {
+      log?.warn?.('小黑盒自动发帖失败：' + e.message)
+      return { ok: false, message: e.message }
+    })
+    return {
+      ok: true,
+      message: note.slice(0, 300) || '逛完了',
+      shared: shared?.ok ? shared : null,
+      shareError: shared?.ok === false ? shared.message : '',
+      post,
+      session: 'system:ext-heybox',
+    }
+  }
+
+  /**
+   * 今天排期还欠几篇？返回 { owe, done, configured, cap, leftQuota }。
+   * 排期里一项都没配时 owe=0（不自动发）；额度封顶按 maxPostsPerDay 算。
+   */
+  function pendingPosts() {
+    const c = getConfig().heybox || {}
+    const plan = Array.isArray(c.dailyPosts) ? c.dailyPosts : []
+    const done = postsToday()
+    const cap = Math.max(0, Number(c.maxPostsPerDay) || 0)
+    const configured = Math.max(0, plan.length)
+    const want = Math.min(configured, cap)
+    return { configured, done, cap, owe: Math.max(0, want - done), leftQuota: left('post') }
+  }
+
+  /**
+   * 在跑的那个 tick / runDuty 自己，不能再拿这把锁去检查自己。
+   * 用一个递增编号区分：tick 拿锁时记下编号，maybeAutoPost 发现当前编号就是调用方的就不重复上锁。
+   */
+  let runToken = 0
+
+  /**
+   * 自动补发排期里还没发的那一篇。
+   *
+   * ⚠ 以前 runDuty 只负责「逛」，从来不调 post()：排期表配得再细，第 2、3 篇也永远等不到触发器，
+   *   只有主人在对话里开口才会发。这里补上「逛完顺手把今天欠的那篇发掉」。
+   *
+   * 安全阀：
+   *   · 排期没配 / 额度没了 / 冷却中 / 试运行 —— 都不发，只回调一句原因；
+   *   · 写出来的稿子先过 post() 自带的校验（字数、配图），不过就拒发，不会硬发；
+   *   · 同一轮只发一篇，不会一次刷满。
+   */
+  async function maybeAutoPost({ memory, owner = '', list = [], note = '', token = 0 } = {}) {
+    if (!autoEnabled()) return { ok: false, skipped: true, message: '没开、试运行或没登录' }
+    const c = getConfig().heybox || {}
+    if (c.autoPost === false) return { ok: false, skipped: true, message: '自动发帖已关（面板里关的）' }
+    if (risk().leftMs > 0) return { ok: false, skipped: true, message: '小黑盒在冷却中' }
+    const pend = pendingPosts()
+    if (!pend.configured) return { ok: false, skipped: true, message: '没配排期，不自动发' }
+    if (pend.owe <= 0) return { ok: false, skipped: true, message: `今天的排期已经发完了（${pend.done}/${Math.min(pend.configured, pend.cap)}）` }
+    if (pend.leftQuota <= 0) return { ok: false, skipped: true, message: '今天的发帖额度用完了' }
+    // 调用方就是当前正在跑的那一轮（token 对得上），不算抢锁；否则才要抢
+    const ownsLock = token && token === runToken
+    if (!ownsLock && running) return { ok: false, skipped: true, message: '模块正忙' }
+    // 已有锁的话就别再动 running，否则退出时会把外层的锁一起放掉
+    const tookLock = !ownsLock
+    if (tookLock) running = true
+    try {
+      const plan = currentPostPlan()
+      const about = (() => { try { return memory?.recall?.('小黑盒 游戏 帖子 兴趣', { limit: 5 }) || [] } catch { return [] } })()
+      const brief = postBrief(plan.style || c.postStyle, {
+        owner: owner || getConfig().ownerName || '主人',
+        about: (Array.isArray(about) ? about : []).map((m) => m.text || m).join('；'),
+        materials: [
+          `本篇是今天排期里的第 ${pend.done + 1} 篇（共 ${Math.min(pend.configured, pend.cap)} 篇）。`,
+          note ? `我刚刷到的：${note.slice(0, 200)}` : '',
+          Array.isArray(list) && list.length ? `信息流里这些可以当素材：${list.slice(0, 3).map((x) => x.title).join(' / ')}` : '',
+        ].filter(Boolean),
+        angles: Array.isArray(list) ? list.slice(0, 4).map((x) => x.title) : [],
+      })
+      const prompt = [
+        '【写一篇小黑盒帖子，不是聊天】也不要调用工具，直接输出 JSON。',
+        brief,
+        '只输出 JSON：{"title":"标题，30 字以内","text":"正文，段落用 \\n\\n 分隔"}',
+        '不要输出任何 JSON 以外的字符，不要加代码块围栏。',
+      ].join('\n\n')
+      const out = await hub.runSystemTurn('heybox', 'QQ · 小黑盒发帖', prompt, { timeoutMs: 240000, noTools: true })
+      if (disposed) return { ok: false, skipped: true, message: '模块已关闭' }
+      const draft = pickJson(out)
+      const title = String(draft?.title || '').trim()
+      const text = String(draft?.text || '').trim()
+      if (!title || !text) {
+        log?.warn?.('小黑盒自动发帖：模型没给成型的标题/正文，本轮跳过')
+        return { ok: false, skipped: true, message: '模型输出的不是合法 JSON，本轮跳过' }
+      }
+      const r = await post({ title, text, style: plan.style || '', hashtags: plan.hashtags || [], topic: plan.topic || '' })
+      if (r?.ok) log?.info?.(`小黑盒自动发帖成功：${title}`)
+      else log?.warn?.('小黑盒自动发帖被拒：' + String(r?.message || '').slice(0, 80))
+      return r
+    } finally {
+      if (tookLock) running = false
+    }
   }
 
   async function tick({ memory, owner } = {}) {
@@ -1630,8 +1739,9 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
       return
     }
     running = true
+    const myToken = ++runToken
     try {
-      const r = await runDuty({ memory, owner })
+      const r = await runDuty({ memory, owner, token: myToken })
       const fresh = readState()
       fresh.failures = 0
       fresh.retryAt = 0
