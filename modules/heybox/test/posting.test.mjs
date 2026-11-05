@@ -6,11 +6,21 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fixture, ok, json } from './helpers.mjs'
-import { createHeybox } from '../lib/site.mjs'
 
 const NL = '\n'
 
 // ── 分区 ──────────────────────────────────────────────────────
+
+/**
+ * 造 n 条「今天已发」的 history 记录。
+ *
+ * ⚠ 排期索引现在数是 history 里今天的 post 条数（不是 quota.post 计数），
+ *   所以夹具必须真往 history 里塞记录，否则 postsToday() 永远是 0。
+ */
+function postsOn(day, n) {
+  const at = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 9, 0).getTime()
+  return Array.from({ length: n }, (_, i) => ({ at: at + i * 60_000, kind: 'post', linkId: 'L' + i, title: 't' + i }))
+}
 
 test('分区：从 /topic/categories 抽三组，去重并保留热度/游戏标记', async () => {
   const categories = {
@@ -209,7 +219,7 @@ test('排期：按今天第几篇取配置，用完回落全局', async () => {
   const base = { heybox: { enabled: true, postStyle: 'mix', defaultTopic: '7214', dailyPosts: plan } }
 
   for (const [done, wantStyle, wantTopic] of [[0, 'deal', ''], [1, 'news', '18745']]) {
-    const f = fixture({ config: base, initialState: { quota: { date: '2026-06-08', post: done, like: 0, comment: 0, browse: 0, share: 0 } } })
+    const f = fixture({ config: base, initialState: { quota: { date: '2026-06-08', post: done, like: 0, comment: 0, browse: 0, share: 0 }, history: postsOn(new Date(2026, 5, 8), done) } })
     const p = f.hb.currentPostPlan()
     assert.equal(p.style, wantStyle)
     assert.equal(p.topic, wantTopic)
@@ -218,7 +228,7 @@ test('排期：按今天第几篇取配置，用完回落全局', async () => {
   }
 
   // 第 3 篇：排期用完 → 回落全局
-  const f3 = fixture({ config: base, initialState: { quota: { date: '2026-06-08', post: 2, like: 0, comment: 0, browse: 0, share: 0 } } })
+  const f3 = fixture({ config: base, initialState: { quota: { date: '2026-06-08', post: 2, like: 0, comment: 0, browse: 0, share: 0 }, history: postsOn(new Date(2026, 5, 8), 2) } })
   const p3 = f3.hb.currentPostPlan()
   assert.equal(p3.fromPlan, false)
   assert.equal(p3.style, 'mix')
@@ -229,7 +239,7 @@ test('排期：postPlanState 反映配了几篇、已发几篇、当前第几篇
   const plan = [{ style: 'deal' }, { style: 'news' }, { style: 'mix' }]
   const f = fixture({
     config: { heybox: { dailyPosts: plan } },
-    initialState: { quota: { date: '2026-06-08', post: 1, like: 0, comment: 0, browse: 0, share: 0 } },
+    initialState: { quota: { date: '2026-06-08', post: 1, like: 0, comment: 0, browse: 0, share: 0 }, history: postsOn(new Date(2026, 5, 8), 1) },
   })
   const st = f.hb.postPlanState()
   assert.equal(st.configured, 3)
@@ -265,7 +275,7 @@ test('风格：有「每日羊毛」，且要求直达链接、不许编造', as
 test('风格：deal 没链接直接拒发（no_link），有链接才放行', async () => {
   // 提示词里写「没链接别发」不够，这里要有代码级硬校验
   const noLinkText = '今天有个限时免费的羊毛，赶紧去领。' + '这段凑字数。'.repeat(12)
-  const f1 = postFx({ heybox: { postStyle: 'deal', postWordsMin: 20, postWordsMax: 400 } })
+  const f1 = await postFx({ heybox: { postStyle: 'deal', postWordsMin: 20, postWordsMax: 400 } })
   const r1 = await f1.hb.post({ title: '羊毛无链接', text: noLinkText, style: 'deal' })
   assert.equal(r1.ok, false)
   assert.equal(r1.code, 'no_link')
@@ -275,7 +285,7 @@ test('风格：deal 没链接直接拒发（no_link），有链接才放行', as
 
   // 正文里带链接就放行
   const withLinkText = noLinkText + NL + NL + '入口：https://www.xiaoheihe.cn/app/bbs/activity/1'
-  const f2 = postFx({ heybox: { postStyle: 'deal', postWordsMin: 20, postWordsMax: 400 } })
+  const f2 = await postFx({ heybox: { postStyle: 'deal', postWordsMin: 20, postWordsMax: 400 } })
   const r2 = await f2.hb.post({ title: '羊毛有链接', text: withLinkText, style: 'deal', imagesByPos: { tail: [join(f2.dir, 't.png')] } })
   // 没有图片会先被 no_image 拦，这里只验证链接这一关不再拦它
   assert.notEqual(r2.code, 'no_link', '有链接就不该报 no_link')
@@ -301,8 +311,9 @@ test('风格：字数范围可被面板覆盖', async () => {
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
 
 /** 造一个能发帖的 fixture：上传走 mock，图片从临时文件读 */
-function postFx({ heybox = {}, text, imagesByPos, imagegen = null }) {
+async function postFx({ heybox = {}, text, imagesByPos, imagegen = null, memeRoot = null }) {
   const dir = mkdtempSync(join(tmpdir(), 'heybox-post-'))
+  const imageDir = join(dir, 'imgs')
   const stateFile = join(dir, 'state.json')
   writeFileSync(stateFile, JSON.stringify({
     quota: { date: new Date().toISOString().slice(0, 10), post: 0 },
@@ -331,11 +342,11 @@ function postFx({ heybox = {}, text, imagesByPos, imagegen = null }) {
     },
     putCOS: async () => true,
   }
-  const hb = createHeybox({
+  const hb = (await import('../lib/site.mjs')).createHeybox({
     getConfig: () => cfg, setCookie: () => {}, hub: {}, memory: {},
     log: { info: () => {}, warn: () => {} },
-    stateFile, credFile: join(dir, 'x.json'), clientFactory: () => client, imagegen,
-    memeRoot: join(dir, 'packs'),
+    stateFile, credFile: join(dir, 'x.json'), clientFactory: () => client, imagegen, imageDir,
+    memeRoot: memeRoot ?? join(dir, 'packs'),
   })
   return { hb, dir, uploads, get posted() { return posted }, close() { rmSync(dir, { recursive: true, force: true }) } }
 }
@@ -348,7 +359,7 @@ test('配图：手动传 imagesByPos 时按位置放（兼容老调用）', asyn
   for (const p of [intro, inline, tail]) writeFileSync(p, PNG)
   // 1000 字以上才有首图（不足 500 字会跳首图），所以正文要够长
   const longText = '我是主人养的大肥鱼。' + NL + NL + '第二段。' + NL + NL + '第三段。' + NL + NL + '填充内容。'.repeat(200)
-  const f = postFx({ text: longText, imagesByPos: { intro: [intro], inline: [inline], tail: [tail] } })
+  const f = await postFx({ text: longText, imagesByPos: { intro: [intro], inline: [inline], tail: [tail] } })
   const r = await f.hb.post({ title: '长文', text: longText, imagesByPos: { intro: [intro], inline: [inline], tail: [tail] } })
   assert.equal(r.ok, true, '长文应能发')
   assert.equal(r.images.intro, 1)
@@ -365,7 +376,7 @@ test('配图：短文（<500 字）不放首图，光传首图会被跳掉', asy
   writeFileSync(intro, PNG); writeFileSync(tail, PNG)
   // 短文要比字数下限长一点才发得出去（这里把下限设成 10）
   const shortText = '我是主人养的大肥鱼。' + NL + NL + '这段很短。' + '一二三。'.repeat(10)
-  const f = postFx({ text: shortText, heybox: { postWordsMin: 10, postWordsMax: 400 } })
+  const f = await postFx({ text: shortText, heybox: { postWordsMin: 10, postWordsMax: 400 } })
   const r = await f.hb.post({ title: '短文', text: shortText, imagesByPos: { intro: [intro], tail: [tail] } })
   assert.equal(r.ok, true)
   assert.equal(r.images.intro, 0, '短文不放首图')
@@ -377,7 +388,7 @@ test('配图：短文（<500 字）不放首图，光传首图会被跳掉', asy
 test('配图：不传图时按字数自动规划（生图优先）', async () => {
   let calls = 0
   const gen = { enabled: async () => true, generate: async () => { calls++; return PNG } }
-  const f = postFx({ text: '', imagegen: gen })
+  const f = await postFx({ text: '', imagegen: gen })
   const text = '我是大肥鱼。'.repeat(30)       // 200 字 → 1 张（文末）
   const r = await f.hb.post({ title: '自动', text })
   assert.equal(r.ok, true)

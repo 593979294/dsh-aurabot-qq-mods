@@ -25,6 +25,7 @@ const DEFAULT_STATE = {
   quota: { date: '', like: 0, comment: 0, post: 0, browse: 0, share: 0 },
   history: [],
   lastRun: 0,
+  browseAt: 0,
   lastSkipReason: '',
   risk: { level: 0, until: 0, reason: '', at: 0 },
   failures: 0,
@@ -41,6 +42,46 @@ export const today = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth
 function inHours(hour, start, end) {
   if (start === end) return false
   return start < end ? hour >= start && hour < end : hour >= start || hour < end
+}
+
+/** 唤醒时段（聊天活跃时间）：跑后台会话 + 到点自动发帖都只看这个窗口。 */
+function speakUpWindow(cfg = {}) {
+  const awake = cfg.speakUp || {}
+  const from = Number(awake.awakeFrom ?? 8)
+  const to = Number(awake.awakeTo ?? 23)
+  return {
+    from: Number.isFinite(from) ? from : 8,
+    to: Number.isFinite(to) ? to : 23,
+  }
+}
+
+function awakeNow(cfg = {}, at = new Date()) {
+  const w = speakUpWindow(cfg)
+  return inHours(at.getHours() + at.getMinutes() / 60, w.from, w.to)
+}
+
+/**
+ * 「今天排期里该发的那几篇」各自该在几点发。
+ *
+ * 把唤醒窗口均分成 N 份，第 i 篇落在第 i 份的起点：
+ * 不再「隔 intervalHours 逛一圈才顺带发一篇」——中午前逛满冷却也照样在
+ * 自己的时刻点上把当天排期补发掉；到点那一刻如果忙/冷冻/额度没了，
+ * 下一分钟 tick 还会看到「该发」，不会漏掉。
+ * N 与 pendingPosts 的 owe 口径一致：min(dailyPosts.length, maxPostsPerDay)。
+ * @returns {number[]} 升序的「相对唤醒起点的偏移」小时数
+ */
+function postSlots(cfg = {}) {
+  const c = cfg.heybox || {}
+  const plan = Array.isArray(c.dailyPosts) ? c.dailyPosts : []
+  const cap = Math.max(0, Math.floor(Number(c.maxPostsPerDay) || 0))
+  const n = Math.min(plan.length, cap)
+  if (n <= 0) return []
+  const { from, to } = speakUpWindow(cfg)
+  const span = (to - from + 24) % 24 || 24
+  const out = []
+  // 返回的是**相对唤醒起点**的偏移小时（不是钟点）：第 0 篇 = 一醒来就该发
+  for (let i = 0; i < n; i++) out.push(Number(((i * span) / n).toFixed(2)))
+  return out
 }
 
 // 跨午夜时，凌晨归属于前一天开始的峰时段。
@@ -98,7 +139,7 @@ export function linkIdOf(input) {
   return digits.length >= 6 ? digits : ''
 }
 
-export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile = path.join(HOME, '.dsh', 'heybox-state.json'), credFile = CRED_FILE, now = () => Date.now(), clientFactory = (options) => new HeyboxClient(options), verifier: injectedVerifier, imagegen = null, memeRoot = null } = {}) {
+export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile = path.join(HOME, '.dsh', 'heybox-state.json'), credFile = CRED_FILE, now = () => Date.now(), clientFactory = (options) => new HeyboxClient(options), verifier: injectedVerifier, imagegen = null, memeRoot = null, imageDir = null } = {}) {
   let client = null
   let verifier = injectedVerifier || null
   let verifySession = null
@@ -907,7 +948,7 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
     } catch { return '' }
   }
 
-  async function post({ title, text = '', images = [], imagesByPos = null, topic = '', style = '', hashtags = [], mood = '', look = '' } = {}) {
+  async function post({ title, text = '', images = [], imagesByPos = null, topic = '', style = '', hashtags = [], mood = '', look = '', wordsMin = 0, wordsMax = 0 } = {}) {
     const cfg = getConfig().heybox || {}
     // 没显式给风格/分区/话题时，按「今天第几篇」的排期取
     const plan = currentPostPlan()
@@ -924,10 +965,13 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
     const giveBack = () => { if (reserved) { reserved = false; releaseQuota('post') } }
 
     try {
-    // 字数范围：排期 > 面板手改 > 风格自带值
-    const wordCfg = (plan.wordsMin || plan.wordsMax)
-      ? { postWordsMin: plan.wordsMin, postWordsMax: plan.wordsMax }
-      : cfg
+    // 字数范围：显式传入的（自动发帖给模型写的要求）> 排期 > 面板手改 > 风格自带值
+    // ⚠ 排期项里缺一个值时必须回落，不能把 undefined 当成覆盖，否则 words 会变成 NaN 校验直接失效
+    const wordCfg = (wordsMin || wordsMax)
+      ? { postWordsMin: wordsMin || plan.wordsMin || cfg.postWordsMin, postWordsMax: wordsMax || plan.wordsMax || cfg.postWordsMax }
+      : (plan.wordsMin || plan.wordsMax)
+        ? { postWordsMin: plan.wordsMin, postWordsMax: plan.wordsMax }
+        : cfg
     const st = styleOf(style || plan.style || cfg.postStyle, wordCfg)
     const words = countWords(text)
     // 字数**硬校验**：以前只在明显偏短时记一条 warn，照样发出去，结果就是「永远达不到设置的字数」。
@@ -1369,7 +1413,8 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
               '生图超过 ' + Math.round(GENERATE_TIMEOUT_MS / 1000) + ' 秒没返回',
             )
             if (buf && buf.length) {
-              const f = path.join(HOME, '.dsh', 'heybox-imgs')
+              // 生图落盘目录可注入（测试指到临时目录，免得写真实家目录被沙箱拦成 EPERM 后回退成空表情包）
+              const f = imageDir ? String(imageDir) : path.join(HOME, '.dsh', 'heybox-imgs')
               fs.mkdirSync(f, { recursive: true })
               // 扩展名跟着真实格式走：生图服务常返回 PNG，硬写 .jpg 会让后面按后缀判断格式的地方出错
               const ext = buf.slice(1, 4).toString('latin1') === 'PNG' ? '.png'
@@ -1404,10 +1449,23 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
   // 面板可以配置「今天发 N 篇，每篇用什么风格/分区/话题/字数」。
   // 发帖时按今天已经发了几篇来取对应那一项的配置；排期用完或没配就用全局设置。
 
-  /** 今天已经发了几篇（用于排期取第几项） */
+  /**
+   * 今天已经发了几篇（用于排期取第几项）。
+   *
+   * ⚠ 以前读的是 quota().post，但那是「额度计数」，跟「今天真发出去几篇」不是一回事：
+   *   · 额度失败会退回、跨零点会整个重置，索引跟着跳；
+   *   · 手动发帖一旦没走同一条占额路径，计数也对不上。
+   * 现在改成数 history 里今天的 post 记录 —— 那个是发成功才写的，是真的。
+   * quota 只留给「还够不够发」用。
+   */
   function postsToday() {
-    const q = quota()
-    return Number(q.post) || 0
+    const t = localToday()
+    const hist = readState().history || []
+    let n = 0
+    for (const h of hist) {
+      if (h && h.kind === 'post' && Number(h.at) && today(new Date(Number(h.at))) === t) n++
+    }
+    return n
   }
 
   /**
@@ -1544,6 +1602,7 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
       bump('browse')
       const st = readState()
       st.lastRun = nowMs()
+      st.browseAt = nowMs()
       st.lastSkipReason = ''
       writeState(st)
       pushHistory({ kind: 'browse', count: picked.length })
@@ -1572,7 +1631,7 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
     return `${hh(c.peakStartAM ?? 9)}-${hh(c.peakEndAM ?? 12)}、${hh(c.peakStartPM ?? 14)}-${hh(c.peakEndPM ?? 18)}（${c.peakWeekend ? '含周末' : '仅工作日'}）`
   }
 
-  async function runDuty({ memory, owner = '' } = {}) {
+  async function runDuty({ memory, owner = '', token = 0 } = {}) {
     if (!autoEnabled()) return { ok: false, message: '没开、试运行或没登录' }
     const c = getConfig().heybox || {}
     if (risk().leftMs > 0) return { ok: false, cooling: true, message: '小黑盒在冷却中' }
@@ -1599,6 +1658,7 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
     bump('browse')
     const st = readState()
     st.lastRun = nowMs()
+    st.browseAt = nowMs()
     st.lastSkipReason = ''
     writeState(st)
     pushHistory({ kind: 'browse', note: note.slice(0, 80) })
@@ -1608,36 +1668,192 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
       const t = String(verdict?.remember || note).trim()
       if (t.length > 10) memory?.addEvent?.({ text: `我在小黑盒逛了一圈：${t.slice(0, 120)}`, tags: ['小黑盒'], importance: 0.45 })
     } catch { /* 记忆模块没在跑就算了 */ }
-    return { ok: true, message: note.slice(0, 300) || '逛完了', shared: shared?.ok ? shared : null, shareError: shared?.ok === false ? shared.message : '', session: 'system:ext-heybox' }
+    // 逛完接着看今天排期还欠不欠帖子（以前这里没有这一步，排期配了也永远不会自动发）
+    const post = await maybeAutoPost({ memory, owner, list, note, token }).catch((e) => {
+      log?.warn?.('小黑盒自动发帖失败：' + e.message)
+      return { ok: false, message: e.message }
+    })
+    return {
+      ok: true,
+      message: note.slice(0, 300) || '逛完了',
+      shared: shared?.ok ? shared : null,
+      shareError: shared?.ok === false ? shared.message : '',
+      post,
+      session: 'system:ext-heybox',
+    }
   }
 
+  /**
+   * 今天排期还欠几篇？返回 { owe, done, configured, cap, leftQuota }。
+   * 排期里一项都没配时 owe=0（不自动发）；额度封顶按 maxPostsPerDay 算。
+   */
+  function pendingPosts() {
+    const c = getConfig().heybox || {}
+    const plan = Array.isArray(c.dailyPosts) ? c.dailyPosts : []
+    const done = postsToday()
+    const cap = Math.max(0, Number(c.maxPostsPerDay) || 0)
+    const configured = Math.max(0, plan.length)
+    const want = Math.min(configured, cap)
+    return { configured, done, cap, owe: Math.max(0, want - done), leftQuota: left('post') }
+  }
+
+  /**
+   * 在跑的那个 tick / runDuty 自己，不能再拿这把锁去检查自己。
+   * 用一个递增编号区分：tick 拿锁时记下编号，maybeAutoPost 发现当前编号就是调用方的就不重复上锁。
+   */
+  let runToken = 0
+
+  /**
+   * 自动补发排期里还没发的那一篇（到点就发，见 postWindowOpen 的判据）。
+   *
+   * ⚠ 旧版只有 runDuty「逛完顺手」时才会调到这里：逛有 intervalHours 冷却和
+   *   maxRunsPerDay 上限，额度烧完 / 还没到冷却点时，排期的第 2、3 篇就永远
+   *   等不到触发器 —— 这就是「配了每日 N 篇却只发出 1 篇」的真因。
+   *   现在 tick 的第二条触发线 postDue 会直接调它，不再依赖逛。
+   *
+   * 安全阀：
+   *   · 排期没配 / 额度没了 / 冷却中 / 试运行 —— 都不发，只回调一句原因；
+   *   · 写出来的稿子先过 post() 自带的校验（字数、配图），不过就拒发，不会硬发；
+   *   · 同一轮只发一篇，不会一次刷满。
+   */
+  async function maybeAutoPost({ memory, owner = '', list = [], note = '', token = 0 } = {}) {
+    if (!autoEnabled()) return { ok: false, skipped: true, message: '没开、试运行或没登录' }
+    const c = getConfig().heybox || {}
+    if (c.autoPost === false) return { ok: false, skipped: true, message: '自动发帖已关（面板里关的）' }
+    if (risk().leftMs > 0) return { ok: false, skipped: true, message: '小黑盒在冷却中' }
+    const pend = pendingPosts()
+    if (!pend.configured) return { ok: false, skipped: true, message: '没配排期，不自动发' }
+    if (pend.owe <= 0) return { ok: false, skipped: true, message: `今天的排期已经发完了（${pend.done}/${Math.min(pend.configured, pend.cap)}）` }
+    if (pend.leftQuota <= 0) return { ok: false, skipped: true, message: '今天的发帖额度用完了' }
+    // 到点才发：owe>0 但还没越过下一篇的计划点，先不发，下一分钟再来（这样每天每篇
+    // 都落在自己的时刻上，而不是「逛一圈就顺带发一篇」把上午的额度一口气烧完）
+    if (!postWindowOpen(getConfig(), new Date(nowMs()))) return { ok: false, skipped: true, message: '还没到下一篇的排期时刻' }
+    // 调用方就是当前正在跑的那一轮（token 对得上），不算抢锁；否则才要抢
+    const ownsLock = token && token === runToken
+    if (!ownsLock && running) return { ok: false, skipped: true, message: '模块正忙' }
+    // 已有锁的话就别再动 running，否则退出时会把外层的锁一起放掉
+    const tookLock = !ownsLock
+    if (tookLock) running = true
+    try {
+      const plan = currentPostPlan()
+      const about = (() => { try { return memory?.recall?.('小黑盒 游戏 帖子 兴趣', { limit: 5 }) || [] } catch { return [] } })()
+      const brief = postBrief(plan.style || c.postStyle, {
+        owner: owner || getConfig().ownerName || '主人',
+        about: (Array.isArray(about) ? about : []).map((m) => m.text || m).join('；'),
+        materials: [
+          `本篇是今天排期里的第 ${pend.done + 1} 篇（共 ${Math.min(pend.configured, pend.cap)} 篇）。`,
+          note ? `我刚刷到的：${note.slice(0, 200)}` : '',
+          Array.isArray(list) && list.length ? `信息流里这些可以当素材：${list.slice(0, 3).map((x) => x.title).join(' / ')}` : '',
+        ].filter(Boolean),
+        angles: Array.isArray(list) ? list.slice(0, 4).map((x) => x.title) : [],
+      })
+      const prompt = [
+        '【写一篇小黑盒帖子，不是聊天】也不要调用工具，直接输出 JSON。',
+        brief,
+        '只输出 JSON：{"title":"标题，30 字以内","text":"正文，段落用 \\n\\n 分隔"}',
+        '不要输出任何 JSON 以外的字符，不要加代码块围栏。',
+      ].join('\n\n')
+      let out = ''
+      try {
+        out = await hub.runSystemTurn('heybox', 'QQ · 小黑盒发帖', prompt, { timeoutMs: 240000, noTools: true })
+      } catch (e) {
+        log?.warn?.('小黑盒自动发帖：模型没写成（' + e.message + '），本篇先跳过')
+        return { ok: false, skipped: true, message: '模型没写成，本篇先跳过' }
+      }
+      // 等回复的这几分钟里模块可能已经卸载了，别再往下发
+      if (disposed) return { ok: false, skipped: true, message: '模块已关闭' }
+      const draft = pickJson(out)
+      const title = String(draft?.title || '').trim()
+      const text = String(draft?.text || '').trim()
+      if (!title || !text) {
+        log?.warn?.('小黑盒自动发帖：模型没给成型的标题/正文，本轮跳过')
+        return { ok: false, skipped: true, message: '模型输出的不是合法 JSON，本轮跳过' }
+      }
+      // 排期/风格里配了字数下限的，按这个下限写给模型（写不够 post() 会 too_short 拒发，白占一轮）
+      const st = styleOf(plan.style || c.postStyle, { ...c, postWordsMin: plan.wordsMin || c.postWordsMin, postWordsMax: plan.wordsMax || c.postWordsMax })
+      const minW = Number(st.words?.[0]) || 0
+      const maxW = Number(st.words?.[1]) || 0
+      const r = await post({ title, text, style: plan.style || '', hashtags: plan.hashtags || [], topic: plan.topic || '', wordsMin: minW, wordsMax: maxW })
+      if (r?.ok) log?.info?.(`小黑盒自动发帖成功：${title}`)
+      else log?.warn?.('小黑盒自动发帖被拒：' + String(r?.message || '').slice(0, 80))
+      return r
+    } finally {
+      if (tookLock) running = false
+    }
+  }
+
+  /**
+   * 「现在是不是该把今天欠的那一篇发掉」（tick 的第二条触发线）。
+   *
+   * 判据：今天发的篇数还没到排期要的数（owe>0），且当前时刻已越过
+   * 「下一篇」的计划点。越过之后就一直 due（到点补发不设上限，当天把
+   * 欠的发完为止，排期跨零点自然重置）；发够了返回 false。
+   * 没配排期 / 面板关了自动发帖 → false（别去动 post）。
+   */
+  function postWindowOpen(cfg = {}, at = new Date()) {
+    const c = cfg.heybox || {}
+    if (c.autoPost === false) return false
+    const pend = pendingPosts()
+    if (!pend.configured || pend.owe <= 0) return false
+    const slots = postSlots(cfg)
+    const idx = pend.done
+    if (idx >= slots.length) return true   // 排期比时段多，全天都算「该发」
+    // slots[i] 是相对唤醒起点的偏移；rel 是「现在离唤醒起点过了几小时」
+    const h = at.getHours() + at.getMinutes() / 60
+    const { from } = speakUpWindow(cfg)
+    const rel = (h - from + 24) % 24
+    return rel >= slots[idx]
+  }
+
+  /**
+   * 每分钟一次的心跳。真的该干活（due=true）才跑 runDuty / maybeAutoPost。
+   *
+   * ⚠ 旧版把「发帖」整个挂在「逛」后面：tick 先看 st.lastRun（逛才写）做冷却，
+   *   再看 left('browse') 上限，过了这两关才 runDuty → 顺手 maybeAutoPost。
+   *   于是发帖时刻 = 逛的时刻，逛额度/冷却一卡，当天排期后面的几篇就发不出去。
+   *   现在两件事分开算：
+   *   · 逛：冷却只看 browseAt（距上次逛够 intervalHours 才再来一圈）；
+   *   · 发帖：看 postWindowOpen —— 今天欠着、且已越过「下一篇」的计划点就 due，
+   *     到点直接补发，不受逛的额度和冷却牵连（额度用完 postWindowOpen 自己返回 false）。
+   *   跳过时返回 { due: false }（不干活的明确回执），真正跑完返回 { due: true }。
+   */
   async function tick({ memory, owner } = {}) {
-    if (running || !autoEnabled() || risk().leftMs > 0) return
+    if (running || !autoEnabled() || risk().leftMs > 0) return { due: false }
     const cfg = getConfig(), c = cfg.heybox || {}, at = new Date(nowMs())
-    const awake = cfg.speakUp || {}
-    if (!inHours(at.getHours() + at.getMinutes() / 60, Number(awake.awakeFrom ?? 8), Number(awake.awakeTo ?? 23))) return
+    if (!awakeNow(cfg, at)) return { due: false }
     const st = readState()
     if (c.offPeakOnly && isPeakTime(c, at)) {
       st.lastSkipReason = `峰时（${peakText()}），等谷时再逛`
       writeState(st)
-      return
+      return { due: false }
     }
-    if (st.retryAt && nowMs() < st.retryAt) return
-    if (st.lastRun && nowMs() - st.lastRun < (Number(c.intervalHours) || 4) * 3600_000) return
-    if (left('browse') <= 0) {
+    if (st.retryAt && nowMs() < st.retryAt) return { due: false }
+    // 两块活分开算：逛（只读，browseAt 冷却 intervalHours）和发帖（每日排期，到点补发）
+    const sinceBrowse = nowMs() - (Number(st.browseAt) || 0)
+    const browseDue = left('browse') > 0 && !(st.browseAt && sinceBrowse < (Number(c.intervalHours) || 4) * 3600_000)
+    const postDue = postWindowOpen(cfg, at)
+    // 逛没额度了，但排期还欠着：别把发帖一起拖下水（旧版在这一关就直接 return）
+    if (left('browse') <= 0 && !postDue) {
       st.lastSkipReason = '今天逛的轮数到上限了'
       writeState(st)
-      return
+      return { due: false }
     }
+    if (!browseDue && !postDue) return { due: false }
+
     running = true
+    const myToken = ++runToken
     try {
-      const r = await runDuty({ memory, owner })
+      // 两件事分开触发：到点该发帖就直接补发（不白烧一次逛的额度）；
+      // 逛冷却到期（或两件事同时到点）走完整 runDuty（逛 + 顺手补发到点的那篇）
+      const r = postDue && !browseDue
+        ? await maybeAutoPost({ memory, owner, token: myToken })
+        : await runDuty({ memory, owner, token: myToken })
       const fresh = readState()
       fresh.failures = 0
       fresh.retryAt = 0
       if (!r.ok) fresh.lastSkipReason = r.message
       writeState(fresh)
-      if (r.ok) log?.info?.('小黑盒后台会话跑完：' + r.message.slice(0, 40))
+      if (r.ok) log?.info?.('小黑盒后台会话跑完：' + String(r.message || '').slice(0, 40))
     } catch (e) {
       const fresh = readState()
       const n = Math.min(RETRY_BACKOFF_MS.length, (Number(fresh.failures) || 0) + 1)
@@ -1647,6 +1863,7 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
       writeState(fresh)
       log?.warn?.('小黑盒后台会话失败：' + e.message)
     } finally { running = false }
+    return { due: true }
   }
 
 
@@ -1868,5 +2085,6 @@ export function createHeybox({ getConfig, setCookie, hub, memory, log, stateFile
     like, comment, remove, post, browse, tick, account, saveCookie, clearQuota, state,
     risk, clearRisk, qrStart, qrPoll, verifyStart, verifyFinish, verifyShow, shareToOwner, hasLogin, dispose,
     linkIdOf, postBrief, POST_STYLES, DEFAULT_POST_STYLE, runDuty, availableImages, planImages,
+    maybeAutoPost, pendingPosts, postWindowOpen,
   }
 }
