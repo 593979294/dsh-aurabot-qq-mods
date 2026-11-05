@@ -144,7 +144,7 @@ function fakeSite({ feed = [], loggedIn = true, verify = '', likeError = null, c
 }
 
 let n = 0
-function setup({ decisions = [], cfgOver = {}, douyinOver = {}, siteOpts = {}, now, onWait = () => {}, owner, turn } = {}) {
+function setup({ decisions = [], cfgOver = {}, douyinOver = {}, siteOpts = {}, now, onWait = () => {}, owner, turn, proactive } = {}) {
   process.env.AURABOT_DATA_DIR = mkdtempSync(join(tmpdir(), 'aurabot-douyin-' + n++ + '-'))
   const sent = []
   const events = []
@@ -160,8 +160,11 @@ function setup({ decisions = [], cfgOver = {}, douyinOver = {}, siteOpts = {}, n
   const fs = fakeSite({ feed: [aweme('7000000000000000001'), aweme('7000000000000000002', { is_ads: true }), aweme('7000000000000000003'), aweme('7000000000000000004')], ...siteOpts })
   const waits = []
   const owners = []
-  const dy = duty.createDouyin({ getConfig: () => cfg, setOwner: (o) => { owners.push(o); cfg.douyin.owner = o }, hub, memory, log: { info() {}, warn() {}, debug() {} }, site: fs, wait: async (ms) => { waits.push(ms); onWait(ms) }, ...(now ? { now } : {}) })
-  return { dy, fs, hub, memory, sent, events, prompts, cfg, waits, owners, pushed }
+  const submitted = []
+  // 传了 proactive 就装一个假治理面（旧主仓没有这一层时不传，走降级路径）
+  const face = proactive ? { submit: async (args) => { submitted.push(args); return proactive(args) } } : undefined
+  const dy = duty.createDouyin({ getConfig: () => cfg, setOwner: (o) => { owners.push(o); cfg.douyin.owner = o }, hub, memory, log: { info() {}, warn() {}, debug() {} }, site: fs, wait: async (ms) => { waits.push(ms); onWait(ms) }, ...(face ? { proactive: face } : {}), ...(now ? { now } : {}) })
+  return { dy, fs, hub, memory, sent, events, prompts, cfg, waits, owners, pushed, submitted }
 }
 
 test('刷一轮：一个个点开看，按视频 id 点赞 / 评论（不会点到别的视频上），在 QQ 上分享给主人，记成她的经历', async () => {
@@ -403,6 +406,66 @@ test('分享给主人：默认在抖音里私信分享（按 sec_uid 认人）�
 })
 
 const until = async (fn, ms = 2000) => { const end = Date.now() + ms; while (!fn() && Date.now() < end) await new Promise((r) => setTimeout(r, 10)); return fn() }
+
+// ---------- 出站治理：私聊主人汇报走 api.proactive.submit，缺这一面时降级 ----------
+
+test('分享给主人（QQ 那条）：有 api.proactive 时提交治理面，itemId 用视频 id', async () => {
+  const got = setup({
+    owner: OWNER,
+    decisions: [{ i: 1, share: '主人看这个' }],
+    douyinOver: { shareTo: 'qq' },
+    proactive: () => ({ deliveryId: 'dlv-9', state: 'sent' }),
+  })
+  const r = await got.dy.run({ force: true })
+  assert.equal(r.ok, true, r.message)
+  assert.equal(got.submitted.length, 1, '走的是治理面')
+  assert.equal(got.submitted[0].channel, 'qq')
+  assert.equal(got.submitted[0].to, 'private:10000001')
+  assert.equal(got.submitted[0].itemId, 'douyin:share:7000000000000000001', 'itemId 用视频稳定键')
+  assert.match(got.submitted[0].text, /主人看这个/)
+  assert.ok(got.submitted[0].text.includes('https://www.douyin.com/video/7000000000000000001'))
+  assert.deepEqual(got.sent, [], '走了 proactive 不再重复直发')
+  assert.deepEqual(got.dy.state().history.find((x) => x.kind === 'share').via, ['qq'])
+})
+
+test('分享给主人（QQ 那条）：proactive 回 unsupported 时退回 hub.sendText', async () => {
+  const fallback = setup({
+    owner: OWNER,
+    decisions: [{ i: 1, share: '主人看这个' }],
+    douyinOver: { shareTo: 'qq' },
+    proactive: () => ({ deliveryId: null, state: 'unsupported' }),
+  })
+  const r = await fallback.dy.run({ force: true })
+  assert.equal(r.ok, true, r.message)
+  assert.equal(fallback.submitted.length, 1, '先问过治理面')
+  assert.equal(fallback.sent.length, 1, '档位不支持就退回旧通道')
+  assert.deepEqual(fallback.dy.state().history.find((x) => x.kind === 'share').via, ['qq'])
+})
+
+test('分享给主人（QQ 那条）：治理面回 dropped 时不算发到 QQ，也不重复直发', async () => {
+  const dropped = setup({
+    owner: OWNER,
+    decisions: [{ i: 1, share: '主人看这个' }],
+    douyinOver: { shareTo: 'qq' },
+    proactive: () => ({ deliveryId: 'dlv-10', state: 'dropped' }),
+  })
+  const r = await dropped.dy.run({ force: true })
+  assert.equal(r.ok, true, r.message)
+  assert.equal(dropped.sent.length, 0, '进过账本就不再直发，避免重复投递')
+  assert.notDeepEqual(dropped.dy.state().history.find((x) => x.kind === 'share')?.via, ['qq'], '被丢弃不算发到 QQ')
+})
+
+test('暂停汇报也走治理面；没有 proactive（旧主仓）时仍能用 hub.sendText 通知主人', async () => {
+  const withFace = setup({ proactive: () => ({ deliveryId: 'dlv-11', state: 'sent' }), siteOpts: { verify: '需要验证码' } })
+  await withFace.dy.run({ force: true })
+  assert.ok(withFace.submitted.some((x) => String(x.itemId).startsWith('douyin:pause:')), '暂停汇报提交到治理面')
+  assert.deepEqual(withFace.sent, [], '有治理面时不再直发')
+
+  const oldHost = setup({ siteOpts: { verify: '需要验证码' } })
+  await oldHost.dy.run({ force: true })
+  assert.equal(oldHost.submitted.length, 0, '旧主仓没有这一层')
+  assert.ok(oldHost.sent.some(([chat, text]) => chat === 'private:10000001' && text.includes('抖音那边要验证')), '降级后照样通知到主人')
+})
 
 test('主人让她找视频：她一个都不分享也会自动挑一个（优先点了赞的）；刷完把结果告诉她，让她照实说', async () => {
   const { dy, fs, pushed } = setup({ owner: OWNER, decisions: [{ i: 1, feeling: '一般' }, { i: 2, feeling: '这个不错', like: true }, { i: 3 }] })
