@@ -35,7 +35,7 @@ const MIN_MS = 60_000            // 一分钟（碎碎念间隔/静默窗口都�
 export default {
   id: 'pet',
   name: '桌宠',
-  version: '1.0.10',
+  version: '1.0.11',
   api: 1,
   description: '把大肥鱼请到桌面上：会冒气泡、做小动作，你在干活时也陪着你。',
 
@@ -751,7 +751,19 @@ export default {
      * @param {boolean} o.noFallback  桌面独占内容（碎碎念）用：桌宠离线时宁可不发，也绝不回落 QQ
      * @returns {Promise<{ok:boolean, via?:'pet'|'qq', reason?:string, fallback?:boolean, message?:object}>}
      */
-    async function dispatch({ text, modality = '', purpose = '', force = false, anim = '', via = '', noFallback = false } = {}) {
+    // emotionProfile（情绪画像 {valence -1~1, arousal 0~1}）：目的引擎/调用方随消息带来，
+    // 只做钳制透传；客户端用它给气泡上「辉光」（冷暖色随 valence、强弱随 arousal）。
+    const sanitizeProfile = (p) => {
+      const v = Number(p?.valence)
+      const a = Number(p?.arousal)
+      if (!Number.isFinite(v) && !Number.isFinite(a)) return null
+      return {
+        valence: Number.isFinite(v) ? Math.min(1, Math.max(-1, v)) : 0,
+        arousal: Number.isFinite(a) ? Math.min(1, Math.max(0, a)) : 0.4,
+      }
+    }
+
+    async function dispatch({ text, modality = '', purpose = '', force = false, anim = '', via = '', noFallback = false, emotion = '', emotionProfile = null } = {}) {
       const t = String(text || '').trim()
       if (!t) return { ok: false, reason: 'empty' }
       const s = api.settings()
@@ -776,6 +788,8 @@ export default {
           audio,
           voiceError: audio ? '' : voiceError,
           mood: moodNow(),
+          emotion: String(emotion || '').slice(0, 20),
+          emotionProfile: sanitizeProfile(emotionProfile),
           purpose: String(purpose || '').slice(0, 40),
           messageId: randomBytes(6).toString('hex'),
         }
@@ -788,6 +802,10 @@ export default {
       }
       if (!noFallback && s.petFallbackToQQ !== false) {
         try {
+          // 注意：这条是「桌宠离线时回落 QQ」的主动私聊主人，已经被宿主出站门闸覆盖
+          // （api.sendText 会带 sourceModule 进门闸，被策略拦下时返回 null）。
+          // 不要改成 api.proactive.submit：桌宠回落是即时兜底，被拦时代码会静默丢掉这条，
+          // 主人会以为她没说话。保持直发的旧写法，由宿主门闸决定放不放。
           await api.sendText(ownerChatId(), t)
           api.log.info(`桌宠离线，主动发言回落 QQ：${t.slice(0, 40)}`)
           return { ok: true, via: 'qq', fallback: true }

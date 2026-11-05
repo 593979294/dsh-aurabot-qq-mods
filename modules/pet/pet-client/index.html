@@ -302,11 +302,23 @@
 
   // ---------- 气泡（主动事件 / 碎碎念）：优先播点播 anim（P2），否则从 speak 池抽一段 ----------
   let bubbleTimer = null
-  window.__bubble = (t, mood, secs, anim, playbackId, tag) => {
+  window.__bubble = (t, mood, secs, anim, playbackId, tag, emo) => {
     bubbleText.textContent = t
     bubbleTag.textContent = String(tag || '主动来找你')
     bubble.classList.add('show')
     pet.className = 'mood-' + (mood || 'neutral')
+    // 情绪画像 → 气泡辉光：冷暖色随 valence（正=暖金 / 负=冷蓝），强弱随 arousal（幅度+亮度）。
+    // 没带画像（老插件/非目的回合）就清掉，回到默认描边。
+    if (emo && typeof emo === 'object' && Number.isFinite(Number(emo.arousal))) {
+      const val = Number.isFinite(Number(emo.valence)) ? Number(emo.valence) : 0
+      const glow = Math.max(0, Math.min(1, Number(emo.arousal)))
+      const hue = val >= 0 ? 45 : 205
+      bubble.style.boxShadow = `0 0 ${Math.round(8 + glow * 18)}px hsla(${hue},80%,60%,${(0.25 + glow * 0.35).toFixed(2)})`
+      bubble.style.borderColor = `hsla(${hue},70%,55%,${(0.35 + glow * 0.4).toFixed(2)})`
+    } else {
+      bubble.style.boxShadow = ''
+      bubble.style.borderColor = ''
+    }
     clearTimeout(bubbleTimer)
     bubbleTimer = setTimeout(hide, Math.max(6500, (secs || 8) * 1000))
     // 气泡弹出：文本写入后布局要等一帧才稳定，rAF 后量实高再让窗口向上长

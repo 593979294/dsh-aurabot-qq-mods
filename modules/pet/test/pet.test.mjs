@@ -205,6 +205,29 @@ test('互斥：carrier=qq 时 dispatch 不推气泡也不代发 QQ；carrier=pet
   assert.equal(r2.message.mood, 'happy', 'mood 由 api.use(\'mood\').current() 映射')
 })
 
+test('情绪画像：dispatch 带 emotion/emotionProfile → 消息透传（坏值钳制，没带为 null）', async () => {
+  const pet = startModule({ settings: { carrier: 'pet' } })
+  await pet.connect()
+  const r = await pet.exports.dispatch({
+    text: '看到新插件好想试！',
+    emotion: 'excited',
+    emotionProfile: { valence: 5, arousal: 2 }, // 越界值应被钳进 [-1,1]/[0,1]
+  })
+  assert.equal(r.ok, true)
+  assert.equal(r.message.emotion, 'excited')
+  assert.deepEqual(r.message.emotionProfile, { valence: 1, arousal: 1 }, '越界画像被钳制')
+  // 没带画像 → null；带了坏对象也 null（不炸投递）
+  const r2 = await pet.exports.dispatch({ text: '普通气泡', emotionProfile: { valence: 'x' } })
+  assert.equal(r2.message.emotion, '')
+  assert.equal(r2.message.emotionProfile, null)
+  // /events 轮询拿到的 proactive 事件同样带画像（客户端辉光靠它）
+  await pet.connect()
+  const ev = await pet.connect({ wantEvents: true, since: 0 })
+  const withEmo = ev.events.filter((e) => e.type === 'proactive' && e.emotion === 'excited')
+  assert.ok(withEmo.length >= 1, '事件流里的 proactive 带情绪画像')
+  assert.deepEqual(withEmo[0].emotionProfile, { valence: 1, arousal: 1 })
+})
+
 test('回落：pet 离线且 petFallbackToQQ → 发一次 QQ 私聊；关回落则不发', async () => {
   const env = startModule({ settings: { carrier: 'pet', petFallbackToQQ: true } })
   const r = await env.exports.dispatch({ text: '主人吃了吗' })
