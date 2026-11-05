@@ -16,6 +16,14 @@ const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen, globalShor
 const fs = require('node:fs')
 const path = require('node:path')
 const { execFile, spawn } = require('node:child_process')
+// 崩溃保险丝（小屋联调期加）：未捕获异常/拒绝写进 app-crash.log 再退出——
+// 以前这些只会进被丢弃的 stderr，客户端悄悄没了连个遗言都没有，没法排查。
+for (const sig of ['uncaughtException', 'unhandledRejection']) {
+  process.on(sig, (err) => {
+    try { fs.appendFileSync(path.join(__dirname, 'app-crash.log'), `${new Date().toISOString()} ${sig}: ${err && err.stack ? err.stack : String(err)}\n`) } catch {}
+    console.error(`[${sig}]`, err)
+  })
+}
 const physics = require('./physics.js')
 // 形象包元数据（池 ∪ 目录全量、菜单树），与 main.js 同目录生成。
 // 容错：手工同步客户端时可能只拷了 main.js —— 缺了就退回「只认三个池」的老行为，绝不因此起不来。
@@ -282,7 +290,7 @@ async function pollLoop() {
       for (const e of data.events || []) {
         if (e.type === 'pack') { pack = null; win.__packPushed = false; refreshConfig(); continue }
         if (e.type === 'work') { applyWork(e); continue }
-        if (e.type === 'behavior' && !firstBoot) { handleBehavior(e); continue } // 下发层：行为动作单
+        if (e.type === 'behavior' && !firstBoot) { handleBehavior(e).catch((err) => console.error('行为动作执行失败：', err && err.stack ? err.stack : err)); continue } // 下发层：行为动作单
         if (e.type === 'proactive' && String(e.text || '').trim() && !firstBoot) {
           await showBubble(e.text, e.mood, e.modality, e.anim, e.playbackId, e.purpose, '', e.emotionProfile)
         } else if (e.type === 'chat' && !firstBoot) {
@@ -1521,11 +1529,29 @@ const behaviorCtx = () => ({
     return p // 自己 + 宿主：这两个进程的窗口永远不碰
   },
 })
+/** 小屋动作执行：开屋（已在屋内就复用）→ 等 ready → 跳状态（key 必须是 house.js STATES 键）。 */
+async function handleHouseBehavior(e) {
+  const key = String(((e && e.params) || {}).key || '').trim()
+  const ALLOWED = new Set(['sofa', 'cube', 'drink', 'dine', 'desk', 'kitchen', 'balcony', 'bedphone', 'sleep', 'wardrobe', 'upstairs', 'play'])
+  if (key && !ALLOWED.has(key)) {
+    apiPost('/playback', { playbackId: (e && e.playbackId) || '', action: 'enter_house', status: 'refused', reason: 'bad-key', detail: key })
+    return { status: 'refused', reason: 'bad-key' }
+  }
+  openHouse()
+  const ok = await houseCommandWhenReady(key ? { cmd: 'state', key } : { cmd: 'state', key: 'play' })
+  const status = ok ? 'ok' : 'refused'
+  apiPost('/playback', { playbackId: (e && e.playbackId) || '', action: 'enter_house', status, reason: ok ? '' : 'house-not-ready', detail: key || 'free' })
+  return { status, reason: ok ? '' : 'house-not-ready' }
+}
 /** 下发通道统一入口（唯一执行路径）：say 先气泡，执行完回执 /playback。 */
 // 这些动作自己会说话（say 用 params.text）：外面别再预弹一次，否则双气泡
 const SELF_SAY_ACTIONS = new Set(['say'])
+// 小屋动作：主进程拦截执行（开场景窗 + 跳状态），不走 behavior.js 纯逻辑层——
+// 窗口调度本来就归主进程管，执行器只碰桌面窗自己的世界。
+const HOUSE_MAIN_ACTIONS = new Set(['enter_house'])
 async function handleBehavior(e) {
   const action = String((e && e.action) || '')
+  if (HOUSE_MAIN_ACTIONS.has(action)) return handleHouseBehavior(e)
   // 台词优先级：AI 给的 > 动作默认台词。**每次动作都要顶气泡**——否则主人只看见她在动，
   // 不知道她要干什么（尤其面板「试一下」和本地反应层：点击/勾引/摸摸根本不经过服务端）。
   const def = behaviorApi.ACTIONS[action] || {}
@@ -1763,6 +1789,7 @@ ipcMain.on('pet:menu', () => {
   const menu = Menu.buildFromTemplate([
     { label: '碎碎念', click: whisper },
     ...(chatCfg.enabled ? [{ label: chatWinAlive() ? '关闭对话框' : '打开对话框', click: toggleChat }] : []), // 与快捷键等效
+    { label: houseAlive() ? '到屋外玩' : '回小屋', click: toggleHouse },
     { label: '回到初始位置', click: goHome },
     ...(actionSub ? [actionSub] : []),
     { label: '收起气泡', click: hideBubble },
@@ -1892,6 +1919,87 @@ ipcMain.on('pet:chat:send', async (_e, text) => {
 })
 
 
+// ---------- 小屋（复式场景窗：移植自 zizic04/dsh-pet-home，MIT；素材 CC BY-NC-SA 禁商用，自用） ----------
+// 与对话框同款的第二窗模式（nodeIntegration 直连 ipc，省一套 preload）：
+//   入屋 = 右键「回小屋」→ 隐藏桌面窗、打开 house.html 场景窗（query 带 base/token，素材走 /asset/house/*）；
+//   出屋 = 场景内拖到窗外松手（pet:house:exit）或右键「到屋外玩」→ 桌面窗挪到光标处再显示、关场景窗。
+// 桌面窗期间只是隐藏：进程、长轮询、聊天窗都照常，身份与菜单完全不变。
+let houseWin = null
+let houseReady = false // 渲染端 boot 完成（成功/失败都会发 pet:house:ready）后才能收 command
+const houseAlive = () => Boolean(houseWin && !houseWin.isDestroyed())
+const ROOM_ASPECT = 1672 / 941 // 场景世界尺寸（与服务端 manifest.json 的 world 一致）
+function houseAnimTable() {
+  const view = pack && pack.name ? pack : null
+  if (!view) return {}
+  const names = metaApi.knownAnims(view.animations, loadPackMeta().files)
+  return metaApi.animUrlMap(names, (n) => assetUrl(view.name, `${n}.webm`))
+}
+function pushHouseAssets() {
+  if (!houseAlive()) return
+  const js = `window.__setAssets && window.__setAssets(${JSON.stringify(houseAnimTable())})`
+  houseWin.webContents.executeJavaScript(js).catch(() => {})
+}
+function houseCommand(cmd) {
+  if (!houseAlive()) return
+  const js = `window.__houseCommand && window.__houseCommand(${JSON.stringify(cmd)})`
+  houseWin.webContents.executeJavaScript(js).catch(() => {})
+}
+function openHouse() {
+  if (houseAlive()) { houseWin.show(); houseWin.focus(); return }
+  houseReady = false
+  const host = readHost()
+  const area = screen.getPrimaryDisplay().workArea
+  const width = Math.min(1180, Math.round(area.width * 0.62))
+  const height = Math.round(width / ROOM_ASPECT)
+  houseWin = new BrowserWindow({
+    width, height, useContentSize: true,
+    minWidth: 560, minHeight: Math.round(560 / ROOM_ASPECT),
+    title: '肥鱼的小屋', backgroundColor: '#1d1a17',
+    show: false, acceptFirstMouse: true, autoHideMenuBar: true,
+    webPreferences: { nodeIntegration: true, contextIsolation: false, spellcheck: false },
+  })
+  houseWin.setAspectRatio(ROOM_ASPECT)
+  houseWin.webContents.setBackgroundThrottling(false)
+  houseWin.webContents.on('context-menu', (event) => event.preventDefault())
+  houseWin.loadFile(path.join(__dirname, 'house.html'), {
+    query: { base: host ? host.baseUrl + host.api : '', token: host ? host.token : '' },
+  }).catch((err) => console.error('小屋页加载失败：', err && err.message ? err.message : err))
+  houseWin.once('ready-to-show', () => { houseWin.show(); pushHouseAssets() })
+  // 关窗 = 出屋：桌面窗回到屏幕里（位置不变），身份菜单原样
+  houseWin.on('closed', () => { houseWin = null; showPetFromHouse(null) })
+  // 入屋：桌面窗藏起来（停在原位，出门时回原处）
+  try { win?.hide() } catch {}
+}
+/** 出屋：把桌面窗显示回屏幕（point = 光标点，null = 原位），再关场景窗。 */
+function showPetFromHouse(point) {
+  try {
+    if (win && !win.isDestroyed()) {
+      if (point) {
+        const [w, h] = win.getSize()
+        const area = screen.getDisplayNearestPoint(point).workArea
+        const x = Math.round(Math.min(Math.max(point.x - w / 2, area.x), area.x + area.width - w))
+        const y = Math.round(Math.min(Math.max(point.y - h / 2, area.y), area.y + area.height - h))
+        win.setPosition(x, y)
+      }
+      clampWindowToArea()
+      win.show()
+    }
+  } catch {}
+  if (houseAlive()) houseWin.close()
+}
+const toggleHouse = () => (houseAlive() ? showPetFromHouse(screen.getCursorScreenPoint()) : openHouse())
+ipcMain.on('pet:house:ready', () => { houseReady = true; pushHouseAssets() })
+ipcMain.on('pet:house:exit', () => { showPetFromHouse(screen.getCursorScreenPoint()) })
+ipcMain.on('pet:house:say', (_e, text) => { apiPost('/house/state', { say: String(text || '').slice(0, 200) }) })
+/** 等小屋渲染端就绪再发命令（开窗到 ready 有 1~2 秒；超时 8 秒放弃，不挂死调用方）。 */
+async function houseCommandWhenReady(cmd, { timeoutMs = 8000 } = {}) {
+  const t0 = Date.now()
+  while (!houseReady && houseAlive() && Date.now() - t0 < timeoutMs) await new Promise((r) => setTimeout(r, 300))
+  if (houseReady && houseAlive()) houseCommand(cmd)
+  return houseReady && houseAlive()
+}
+
+
 // ---------- 窗口 / 托盘 ----------
 function createWindow() {
   win = new BrowserWindow({
@@ -1920,6 +2028,7 @@ function createTray() {
     tray.setToolTip('Aurabot 桌宠')
     tray.setContextMenu(Menu.buildFromTemplate([
       { label: '显示 / 隐藏', click: () => (win ? (win.isVisible() ? win.hide() : win.show()) : createWindow()) },
+      { label: houseAlive() ? '到屋外玩' : '回小屋', click: toggleHouse },
       ...(chatCfg.enabled ? [{ label: chatWinAlive() ? '关闭对话框' : '打开对话框', click: toggleChat }] : []),
       { label: '收起气泡', click: hideBubble },
       { type: 'separator' },

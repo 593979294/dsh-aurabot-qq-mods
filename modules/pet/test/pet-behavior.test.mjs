@@ -1,4 +1,4 @@
-// 桌宠「AI 行为大脑（决策层）」测试（服务端部分）：
+﻿// 桌宠「AI 行为大脑（决策层）」测试（服务端部分）：
 //   · 间隔 clamp 下限 1 分钟 / 每日上限 / force 绕过
 //   · 动作单宽松解析：提取第一个 JSON 对象；非法/暂未开放动作一律拒绝
 //   · 解析失败回退本地池子文案（铁律 1：AI 只能从硬编码枚举里选）
@@ -806,7 +806,7 @@ test('动作表自带默认台词：除 say（自己会说）外，一个都不�
   const env = startModule()
   const acts = env.exports.behaviorStatus().openActions
   const b = env.exports.BEHAVIOR_SAY_FOR_TEST || null
-  assert.equal(env.exports.behaviorActionsForTest().length, 9, '动作表 9 条（2026-10-30 裁撤后）')
+  assert.equal(env.exports.behaviorActionsForTest().length, 10, '动作表 10 条（2026-11-05 增 enter_house 进屋）')
   // 走一遍真实下发：拿不到 say 时事件里必须有默认台词
   for (const a of acts) {
     if (a === 'say') continue

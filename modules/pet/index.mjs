@@ -1,4 +1,4 @@
-// 桌宠模块（内置模块，id='pet'；注册在 src/modules/index.js 的 BUILTINS，全新安装即有）
+﻿// 桌宠模块（内置模块，id='pet'；注册在 src/modules/index.js 的 BUILTINS，全新安装即有）
 //
 // ⚠ 来源与许可（别误当成自研）：桌宠的客户端形态（Electron 透明置顶窗 + 长轮询 + 气泡）、拖拽物理、
 // pet pack 目录约定、以及工作状态六档 / 碎碎念动画的命名约定，都移植自 dsh-pet
@@ -35,7 +35,7 @@ const MIN_MS = 60_000            // 一分钟（碎碎念间隔/静默窗口都�
 export default {
   id: 'pet',
   name: '桌宠',
-  version: '1.0.11',
+  version: '1.0.12',
   api: 1,
   description: '把大肥鱼请到桌面上：会冒气泡、做小动作，你在干活时也陪着你。',
 
@@ -139,6 +139,8 @@ export default {
     { key: 'petChatBlurHide', label: '失焦自动收起', type: 'switch', hint: '点别处（对话框失焦）时自动收起小窗' },
     { key: 'petChatMaxEntries', label: '对话历史最多保留条数', type: 'number', min: 10, max: 2000, hint: '本地小窗历史只存桌宠数据目录（不进 QQ、不进聊天记录），超限从头部截断；界面默认显示最近 50 条。注意：对话内容会作为模型请求发出去，模型自己决定记进长期记忆的条目另存，不受这里的条数/天数限制' },
     { key: 'petChatRetentionDays', label: '对话历史保留天数', type: 'number', min: 0, max: 3650, hint: '0 = 永久保留；否则启动时 + 每日清理本地小窗历史（只管小窗历史，管不到模型记下的长期记忆）' },
+    // 小屋（复式场景窗）：素材/布局在数据目录 house/（目录即数据），开关只管入口显隐
+    { key: 'petHouseEnabled', label: '小屋', type: 'switch', hint: '右键桌宠「回小屋」打开复式小屋场景窗（移植自开源项目 dsh-pet-home，形象 CC BY-NC-SA 禁商用）。小屋素材（manifest.json 与图片）放数据目录 pet/house/ 里才有画面；没放素材时进屋会提示「素材未就绪」' },
     // 天气（一期）：进 prompt 的「现在」段，她聊到出门/穿衣/下雨时接得上
     { key: 'petWeatherCity', label: '天气城市', type: 'text', hint: '填城市名（如 上海）才接入天气；留空 = 不接入，所有天气逻辑静默跳过。填了之后插件会向天气接口（默认 wttr.in，可在下方替换地址）请求这个城市的天气，结果只进 prompt 和本地缓存，不会发给聊天对象；天气接口本身会看到城市名' },
     { key: 'petWeatherUrl', label: '天气接口地址', type: 'text', hint: '高级：接口模板，{city} 会被替换成编码后的城市名，返回纯文本即可（如 https://wttr.in/{city}?format=%C+%t）。留空 = 用内置默认（wttr.in，免 key）；请求失败保留上一次缓存、不打扰' },
@@ -857,7 +859,7 @@ export default {
     // 表现是「行为层整体不生效」而面板一切正常，极难发现。这里拿「模板签名」和「生成时记下的签名」
     // 对账：缺文件 / 内容不符 / 模板比生成物新，一律在 status 里明说，面板据此提示重新生成。
     // 只读对账，绝不自动覆盖用户手改过的 app/（生成走 installClient，由面板按钮触发）。
-    const CLIENT_FILES = ['main.js', 'preload.js', 'index.html', 'physics.js', 'packmeta.js', 'behavior.js', 'chat.html']
+    const CLIENT_FILES = ['main.js', 'preload.js', 'index.html', 'physics.js', 'packmeta.js', 'behavior.js', 'chat.html', 'house.html', 'house.js']
     const CLIENT_OPTIONAL = ['README.md'] // 只复制不校验：文档缺失不影响运行
     const CLIENT_STAMP = 'client-stamp.json' // 生成时写进 app/ 的签名凭据
     const fileHash = (p) => {
@@ -1536,6 +1538,86 @@ export default {
       } catch (error) { api.log.warn('注册素材路由失败：', String(error?.message || error)) }
     }
 
+    // ================= 小屋（复式场景窗） =================
+    // 移植自 zizic04/dsh-pet-home（MIT）；小屋素材 CC BY-NC-SA 4.0 禁止商用，本机自用。
+    // 目录即数据（与 packs 同款思路）：manifest.json + 全部图片平铺在 dataDir('house')，
+    // 一条条注册精确路由（route 不做前缀匹配，原始名与百分号编码名都要注册）。
+    // 没放素材时 /house/manifest 返回 404，客户端显示「素材未就绪」提示，不白屏。
+    const houseDir = () => api.dataDir('house')
+    const houseStateFile = () => api.dataDir('house-state.json')
+    const houseEnabled = () => api.config().petHouseEnabled !== false
+    const MIME_HOUSE = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.json': 'application/json; charset=utf-8' }
+    const registeredHouseAssets = new Set()
+    function serveHouseAsset(res, file) {
+      const dir = houseDir()
+      const full = join(dir, file)
+      let buf = null
+      try { buf = readFileSync(full) } catch {}
+      if (!buf || !full.startsWith(dir)) return api.core.http.send(res, 404, { ok: false, message: '小屋素材不存在' })
+      try {
+        res.statusCode = 200
+        res.setHeader?.('content-type', MIME_HOUSE[file.toLowerCase().slice(file.lastIndexOf('.'))] || 'application/octet-stream')
+        res.setHeader?.('cache-control', 'private, max-age=3600') // 带 token 的 URL 不进共享缓存
+        res.setHeader?.('content-length', String(buf.length))
+        res.end?.(buf)
+      } catch {}
+    }
+    function ensureHouseRoutes() {
+      try {
+        if (!existsSync(houseDir())) return
+        for (const f of readdirSync(houseDir())) {
+          if (!statSync(join(houseDir(), f)).isFile()) continue
+          const keys = new Set([`/asset/house/${f}`, `/asset/house/${encodeURIComponent(f)}`])
+          if ([...keys].every((k) => registeredHouseAssets.has(k))) continue
+          for (const key of keys) {
+            if (registeredHouseAssets.has(key)) continue
+            registeredHouseAssets.add(key)
+            api.route(key, (req, res) => {
+              if (!guard(req, res, { queryTokenOk: true }).ok) return
+              learnHost(req)
+              serveHouseAsset(res, f) // 严格隔离：只服务 house 目录里这个文件
+            })
+          }
+        }
+      } catch (error) { api.log.warn('注册小屋素材路由失败：', String(error?.message || error)) }
+    }
+    function houseStatus() {
+      let files = 0
+      try { files = readdirSync(houseDir()).filter((f) => statSync(join(houseDir(), f)).isFile()).length } catch {}
+      return {
+        enabled: houseEnabled(),
+        files,
+        manifestReady: existsSync(join(houseDir(), 'manifest.json')),
+        state: readJson(houseStateFile(), {}),
+      }
+    }
+    api.route('/house/manifest', (req, res) => {
+      if (!houseEnabled()) return api.core.http.send(res, 404, { ok: false, message: '小屋功能未开启' })
+      if (!guard(req, res, { queryTokenOk: true }).ok) return
+      learnHost(req)
+      serveHouseAsset(res, 'manifest.json')
+    })
+    // 小屋状态：客户端上报（夜里/白天、当前状态、所在楼层、互动台词）；行为大脑三期会读它
+    api.route('/house/state', async (req, res) => {
+      if (!guard(req, res, {}).ok) return
+      learnHost(req)
+      if (req.method === 'POST') {
+        const body = req.__json || {}
+        const cur = readJson(houseStateFile(), {})
+        const next = {
+          ...cur,
+          ...(body.night === undefined ? {} : { night: Boolean(body.night) }),
+          ...(body.state === undefined ? {} : { state: String(body.state || '').slice(0, 32) }),
+          ...(body.floor === undefined ? {} : { floor: Number(body.floor) === 2 ? 2 : 1 }),
+          ...(body.say === undefined ? {} : { lastSay: String(body.say || '').slice(0, 200), lastSayAt: Date.now() }),
+        }
+        writeJsonAtomic(houseStateFile(), next)
+        emit('house', next)
+        return api.core.http.send(res, 200, { ok: true, state: next })
+      }
+      return api.core.http.send(res, 200, { ok: true, state: readJson(houseStateFile(), {}) })
+    })
+
     // ================= 干活状态（DSH 会话事件 → 动画 / 结束提醒） =================
     // 订阅在 host.js（ctx.on('session/event') 已经有一条订阅了），转发到这里：
     //   api.use('pet').onSessionEvent(session, event) → 聚合出「当前她在干什么」→ emit('work')
@@ -1884,6 +1966,8 @@ export default {
       { action: 'nudge_window', desc: '把你正在用的窗口一路推到屏幕边界外（只剩一条边露着），按住 5 秒再同步拉回原位（不改任何内容）', params: '可选 {"title":"窗口标题片段"}，不填就用前台窗口', say: '（把这个窗口推出去）' },
       { action: 'close_window', desc: '🔴 把你正在用的窗口优雅关掉（等价点右上角 X，程序会自己问要不要保存）', params: '可选 {"title":"窗口标题片段"}，不填就用前台窗口', say: '（这个窗口碍事，关掉）' },
       { action: 'say', desc: '只说一句话不做动作', params: '{"text":"要说的话"}', say: '' },
+      // 小屋动作（三期）：开小屋窗 + 在屋里跳到一个状态；客户端主进程拦截执行（house.js 的 STATES 键）
+      { action: 'enter_house', desc: '回小屋：打开小屋场景窗，她进屋里过日子；可指定去哪（沙发玩手机/餐桌吃饭/书桌办公/床上睡觉/衣柜换装/阳台吹风/厨房找吃的/客厅玩耍），不指定就自由活动', params: '可选 {"key":"sofa|dine|desk|bedphone|sleep|wardrobe|balcony|kitchen|play"}，不填自由活动', say: '（回屋里待会儿）' },
     ]
     /** 动作 → 默认台词（`say` 动作用 params.text，不在这里）。 */
     const BEHAVIOR_SAY = Object.fromEntries(BEHAVIOR_ACTIONS.map((a) => [a.action, a.say || '']))
@@ -3001,6 +3085,7 @@ export default {
       if (!guard(req, res).ok) return
       learnHost(req)
       ensureAssetRoutes()
+      ensureHouseRoutes()
       const s = api.settings()
       api.core.http.send(res, 200, {
         ok: true,
@@ -3240,11 +3325,12 @@ export default {
     // ---------- 启动 ----------
     writeHostFile(true)
     ensureAssetRoutes()
+    ensureHouseRoutes()
     // 碎碎念排程先落一次盘：面板一打开就能看到「下次约 N 分钟后」，重启也不丢排程
     try { const st0 = loadWhisper(); if (!st0.nextAt) { planWhisper(st0, whisperSettings()); saveWhisper(st0) } } catch (e) { api.log.warn(`碎碎念排程初始化失败：${e.message}`) }
     // 行为大脑排程同样先落一次盘（独立配额，与碎碎念互不知晓）
     try { const b0 = loadBehavior(); if (!b0.nextAt) { planBehavior(b0, behaviorSettings()); saveBehavior(b0) } } catch (e) { api.log.warn(`行为大脑排程初始化失败：${e.message}`) }
-    const offHostTimer = api.every(120_000, () => { writeHostFile(true); ensureAssetRoutes() }, '刷新 host.json 与素材路由')
+    const offHostTimer = api.every(120_000, () => { writeHostFile(true); ensureAssetRoutes(); ensureHouseRoutes() }, '刷新 host.json 与素材路由')
     // 碎碎念：60s 心跳里只做「读一次状态文件 + 纯逻辑判断」，重活都别放进 tick
     const offWhisper = api.every(60_000, () => whisperTick(), '碎碎念')
     const offBehavior = api.every(60_000, () => behaviorTick(), '行为大脑')
@@ -3285,6 +3371,8 @@ export default {
       activePack,
       packView,
       ensureAssetRoutes,
+      ensureHouseRoutes,                     // 小屋素材路由（测试/面板手动刷新用）
+      houseStatus,                           // 测试/面板：小屋素材与状态（/status 未挂，避免刷屏）
       ensureDefaultPack,                     // 素材包下载落位（force=false 只在缺包时下；测试/面板手动用）
       // 碎碎念（桌宠自己的气泡流）与干活状态
       whisper: whisperOnce,                  // 手动/测试：立即碎碎念一句（force）
