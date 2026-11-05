@@ -37,7 +37,7 @@ const emptyState = () => ({
   dmSeen: [], dmInit: false, lastDmCheck: 0, // 主人抖音私信：看过的消息 id；第一次看时旧消息只记下不回
 })
 
-export function createDouyin({ getConfig, setOwner, hub, memory, log, site: injected, browser: injectedBrowser, now = Date.now, wait } = {}) {
+export function createDouyin({ getConfig, setOwner, hub, memory, log, site: injected, browser: injectedBrowser, proactive, now = Date.now, wait } = {}) {
   const cfg = () => getConfig().douyin
   const sleep = wait || ((ms) => new Promise((r) => setTimeout(r, ms)))
   const source = new AsyncLocalStorage()
@@ -63,6 +63,34 @@ export function createDouyin({ getConfig, setOwner, hub, memory, log, site: inje
     return o.secUid && o.input && o.confirmedInput === o.input ? o : null
   }
   const paused = (s) => s.pauseDay === dayKey(new Date(now()))
+
+  /**
+   * 往主人 QQ 私聊发一条（本模块主动发起的，属于出站治理范围的「后台任务」）。
+   * 宿主给了 api.proactive（治理面）且档位支持时提交到统一账本；旧主仓没有这个面、
+   * 档位回 unsupported 或没给投递单号时，退回旧的 hub.sendText 直发。
+   * 返回「确认发出」的真假，语义与旧 sendText 真值判断一致（被拦/失败是 null → 假）。
+   */
+  async function sendOwnerQQ(to, text, itemId, logTag) {
+    // 试运行只记日志：别把「本来要发」的东西真的提交进宿主账本（账本可能会真投递）
+    if (!getConfig().dryRun && proactive?.submit) {
+      try {
+        const r = await proactive.submit({ itemId, to, channel: 'qq', text })
+        if (r && r.deliveryId !== null && r.deliveryId !== undefined && r.state !== 'unsupported') {
+          // 进了账本就说明已受理（sent/sending/pending）；dropped/failed/expired/uncertain 都不算发出
+          return ['sent', 'sending', 'pending'].includes(String(r.state || ''))
+        }
+      } catch (error) {
+        log.warn(`${logTag}经 api.proactive 提交失败，回退直发：`, error.message)
+      }
+    }
+    try {
+      return Boolean(await hub.sendText?.(to, text))
+    } catch (error) {
+      log.warn(`${logTag}直发失败：`, error.message)
+      return false
+    }
+  }
+
   let busy = false
   let loginBusy = 0
   let loginActionAt = null
@@ -91,7 +119,8 @@ export function createDouyin({ getConfig, setOwner, hub, memory, log, site: inje
     if (qq && s.notifiedDay !== s.pauseDay) {
       s.notifiedDay = s.pauseDay
       const note = `抖音那边要验证 / 被限制了，今天我先不点赞评论了：${s.pauseReason}。请在手机抖音检查账号安全或实名状态；也可以在面板「抖音」页点「显示浏览器窗口」查看。`
-      Promise.resolve(hub.sendText?.(`private:${qq}`, note)).catch(() => {})
+      // 汇报也是主动私聊主人：统一走治理通道（itemId 用当天日期，同一天只提一次）
+      Promise.resolve(sendOwnerQQ(`private:${qq}`, note, `douyin:pause:${s.pauseDay}`, '抖音暂停汇报')).catch(() => {})
       // 顺手把当前页面截图发给主人：有些验证网页上不显示，截图能看清到底弹了什么（每天只发一次）
       Promise.resolve().then(() => site.screenshot?.()).then((shot) => {
         const b64 = String(shot || '').replace(/^data:image\/png;base64,/, '')
@@ -195,6 +224,7 @@ export function createDouyin({ getConfig, setOwner, hub, memory, log, site: inje
         if (gap > 0) await sleep(gap + between(500, 3000))
         try {
           const who = await ownerMention()
+          // 抖音站内私信是浏览器页面里的站内动作（不是 QQ 出站消息），不在出站治理范围，行为保持原样。
           await site.share(v.awemeId, { secUid: who.secUid, nickname: who.nickname })
           s.lastWriteAt = now()
           s.sharedDy = [...s.sharedDy, v.awemeId].slice(-300)
@@ -207,13 +237,12 @@ export function createDouyin({ getConfig, setOwner, hub, memory, log, site: inje
       }
     }
     if (g.ownerQQ && (mode === 'qq' || mode === 'both' || !via.length)) {
-      try {
-        const sent = await hub.sendText(`private:${g.ownerQQ}`, `${text}\n${videoLink(v.awemeId)}`)
-        if (sent || g.dryRun) via.push('qq')
-        else log.warn('QQ 上分享抖音视频失败：网关没有确认发送')
-      } catch (error) {
-        log.warn('QQ 上分享抖音视频失败：', error.message)
-      }
+      // 私聊主人汇报这一条走统一出站治理（itemId 用视频 id，同一条视频天然幂等）；
+      // 抖音站内的私信分享（上面 site.share）是浏览器里的站内动作，不在治理范围，行为保持原样。
+      const text2 = `${text}\n${videoLink(v.awemeId)}`
+      const sent = await sendOwnerQQ(`private:${g.ownerQQ}`, text2, `douyin:share:${v.awemeId}`, 'QQ 上分享抖音视频')
+      if (sent || g.dryRun) via.push('qq')
+      else log.warn('QQ 上分享抖音视频失败：网关没有确认发送')
     }
     if (via.length) memory?.addEvent?.({ text: `把抖音上《${v.title}》分享给了${owner()}${via.includes('douyin') ? '（抖音私信）' : ''}：${text.slice(0, 40)}`, tags: ['抖音'], importance: 0.45 })
     return { ok: via.length > 0, via }
@@ -624,6 +653,7 @@ export function createDouyin({ getConfig, setOwner, hub, memory, log, site: inje
       for (const msg of lines) {
         if (getConfig().dryRun) log.info('试运行：本来要在抖音私信里回主人：', msg)
         else {
+          // 抖音站内私信（浏览器站内动作）不在出站治理范围，照旧直接发，不经 QQ 网关。
           await site.sendDm(msg)
           await note('bot', msg, now())
         }
