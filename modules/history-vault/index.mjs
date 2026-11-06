@@ -42,6 +42,19 @@ export function monthKeyOf(ts, offsetMinutes = 480) {
   return dayKeyOf(ts, offsetMinutes).slice(0, 7)
 }
 
+/**
+ * 满 n 天的日子，截止到哪一天（含当天）：返回 YYYY-MM-DD。
+ *
+ * 语义：n=1 表示「昨天及更早」——过完一整个日历日的聊天才允许压成日摘要，今天的不动。
+ * 0.1.x 的毛病不在这个公式，而在 SQL 用了 `day < cutoff`：算出来的是「昨天」，再用小于号比较，
+ * 等于要求「满 n 天」实际等 n+1 天。compressAfterDays=1 时 11-06 的聊天要等到 11-08 才压，
+ * 实测 days 恒为 0 —— 日摘要一次都没落过盘。所以这里统一改成 `day <= cutoff`。
+ */
+export function cutoffDayOf(nowMs, daysBack, offsetMinutes = 480) {
+  const n = Math.max(1, Number(daysBack) || 1)
+  return dayKeyOf(Number(nowMs) - n * 86_400_000, offsetMinutes)
+}
+
 /** 清一行消息文字：去空白、压换行、占位符保留（[图片] 这类本来就有信息量） */
 export function cleanLineText(text) {
   return String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, 600)
@@ -53,14 +66,24 @@ export function cleanLineText(text) {
  */
 export function lineFromActivity(ev) {
   if (!ev || typeof ev !== 'object') return null
-  const text = cleanLineText(ev.text)
+  // 发出去的话和「不想搭理」的静默观察也都在 activity 里，只是字段名不一样：
+  // hub.js 的 deliverTurn 广播 { kind:'out', reply } —— 正文在 reply，没有 text。
+  // 只读 ev.text 会把她说出去的每一句悄悄丢掉（0.1.x 实测：47 条流水只进库 9 条，全是主人单边）。
+  const out = ev.kind === 'out'
+  const text = cleanLineText(out ? (ev.reply ?? ev.text) : (ev.text ?? ev.reply))
   if (!text) return null
+  // 昵称在 QQ 侧常常是 '-'（没设群名片 / 没存备注），照抄进库会变成「-：……」；
+  // 收到的消息带 owner 标记（hub 按 ownerQQ 判好了一起广播），主人直接记成「主人」，比 QQ 号好认。
+  const named = (v) => { const s = String(v ?? '').trim(); return s && s !== '-' ? s : '' }
+  const who = out
+    ? named(ev.who) || '她'
+    : Boolean(ev.owner) ? '主人' : named(ev.who) || named(ev.nickname) || named(ev.userId) || '对方'
   return {
     t: Number(ev.t || Date.now()),
     chatId: String(ev.chatId || ''),
-    who: String(ev.who || ev.nickname || '').slice(0, 40),
+    who: who.slice(0, 40),
     uid: String(ev.userId || '').slice(0, 16),
-    dir: ev.kind === 'out' ? 'out' : 'in',
+    dir: out ? 'out' : 'in',
     text,
   }
 }
@@ -142,7 +165,7 @@ export function shouldRecord(row, { recordGroups = true, groupList = '', private
 export default {
   id: 'history-vault',
   name: '跨会话记忆',
-  version: '0.1.1',
+  version: '0.1.2',
   api: 1,
   description: '三层存储跨会话保留聊天细节，分层读取，会话归档后细节不丢，重复压缩不重复花模型调用',
   panel: 'panel.js',
@@ -289,7 +312,7 @@ export default {
     }
 
     const pendingDays = db.prepare(`SELECT DISTINCT chatId, day FROM vault_lines
-      WHERE day < ? AND NOT EXISTS (SELECT 1 FROM vault_days d WHERE d.chatId = vault_lines.chatId AND d.day = vault_lines.day AND d.digest != '')
+      WHERE day <= ? AND NOT EXISTS (SELECT 1 FROM vault_days d WHERE d.chatId = vault_lines.chatId AND d.day = vault_lines.day AND d.digest != '')
       ORDER BY day ASC LIMIT 4`)
     const linesOfDay = db.prepare('SELECT t, dir, who, uid, text FROM vault_lines WHERE chatId = ? AND day = ? ORDER BY t ASC')
     const upsertDay = db.prepare(`INSERT INTO vault_days (chatId, day, abstract, digest, updatedAt) VALUES (?,?,?,?,?)
@@ -326,7 +349,7 @@ export default {
     }
 
     const pendingMonths = db.prepare(`SELECT DISTINCT chatId, substr(day, 1, 7) AS month FROM vault_days
-      WHERE day < ? AND NOT EXISTS (SELECT 1 FROM vault_months m WHERE m.chatId = vault_days.chatId AND m.month = substr(vault_days.day, 1, 7) AND m.digest != '')
+      WHERE day <= ? AND NOT EXISTS (SELECT 1 FROM vault_months m WHERE m.chatId = vault_days.chatId AND m.month = substr(vault_days.day, 1, 7) AND m.digest != '')
       ORDER BY month ASC LIMIT 2`)
     const daysOfMonth = db.prepare("SELECT day, abstract FROM vault_days WHERE chatId = ? AND day LIKE ? AND abstract != '' ORDER BY day ASC")
     const upsertMonth = db.prepare(`INSERT INTO vault_months (chatId, month, abstract, digest, updatedAt) VALUES (?,?,?,?,?)
@@ -364,8 +387,8 @@ export default {
       compressing = true
       try {
         const c = cfg()
-        const dayCutoff = dayKeyOf(Date.now() - c.compressAfterDays * 86_400_000)
-        const monthCutoff = dayKeyOf(Date.now() - c.monthAfterDays * 86_400_000)
+        const dayCutoff = cutoffDayOf(Date.now(), c.compressAfterDays)
+        const monthCutoff = cutoffDayOf(Date.now(), c.monthAfterDays)
         // 先压月（更急 -- 月到期就该出了），再压日
         for (const row of pendingMonths.all(dayCutoff)) {
           if (row.month >= monthCutoff.slice(0, 7)) continue
@@ -376,7 +399,7 @@ export default {
         }
         // L0 过期清理（keepDays=0 永久保留）
         if (c.keepDays > 0) {
-          const cutoff = dayKeyOf(Date.now() - c.keepDays * 86_400_000)
+          const cutoff = cutoffDayOf(Date.now(), c.keepDays)
           const gone = db.prepare('DELETE FROM vault_lines WHERE day < ?').run(cutoff)
           if (gone.changes) log.info(`原文过期清理：删了 ${gone.changes} 条（保留 ${c.keepDays} 天）`)
         }

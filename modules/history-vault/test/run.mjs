@@ -1,4 +1,4 @@
-﻿// 跨会话历史库的自测：node test/run.mjs
+// 跨会话历史库的自测：node test/run.mjs
 //
 // 不联网：模型调用用假的 api.ask 替身（可编程返回），SQLite 用真实的 node:sqlite。
 // 退出码 0 = 全过；1 = 有失败项。
@@ -56,7 +56,7 @@ function makeApi({ settings = {}, askImpl = null } = {}) {
 }
 
 const mod = await import('./../index.mjs')
-const { dayKeyOf, monthKeyOf, cleanLineText, lineFromActivity, renderDayInput, renderMonthInput, parseAbstractOut, renderMemoHead, parseRecordList, shouldRecord } = mod
+const { dayKeyOf, monthKeyOf, cleanLineText, lineFromActivity, renderDayInput, renderMonthInput, parseAbstractOut, renderMemoHead, parseRecordList, shouldRecord, cutoffDayOf } = mod
 const modDefault = mod.default
 
 // ---------- 纯函数 ----------
@@ -68,6 +68,34 @@ check('cleanLineText 截 600', cleanLineText('x'.repeat(700)).length === 600)
 check('lineFromActivity 正常', (() => { const r = lineFromActivity({ text: '你好', chatId: 'private:1', who: '主人', userId: '1', kind: 'in', t: 1000 }); return r?.text === '你好' && r?.dir === 'in' })())
 check('lineFromActivity 空文字拒收', lineFromActivity({ text: '   ' }) === null)
 check('lineFromActivity 非对象拒收', lineFromActivity(null) === null)
+
+// ---------- 回归：out 事件正文在 reply，不在 text（0.1.0 全丢） ----------
+check('out 事件从 reply 取正文', (() => {
+  const r = lineFromActivity({ kind: 'out', chatId: 'private:749830684', reply: '她发出去的话', userText: '主人说的话' })
+  return r?.text === '她发出去的话' && r?.dir === 'out'
+})(), '她把话说出去后必须能进库')
+check('out 事件不该误取 userText', (() => {
+  const r = lineFromActivity({ kind: 'out', chatId: 'private:749830684', reply: '她的回复', userText: '主人的原话' })
+  return r?.text === '她的回复' // 主人说的话是 in 事件负责，out 只记她说的
+})())
+check('out 事件的 who 记为「她」', lineFromActivity({ kind: 'out', chatId: 'private:1', reply: '在' })?.who === '她')
+check('in 事件仍取 text', lineFromActivity({ kind: 'in', chatId: 'private:1', text: '主人的话', nickname: '主人' })?.text === '主人的话')
+check('既没 text 也没 reply 时拒收', lineFromActivity({ kind: 'out', chatId: 'private:1' }) === null)
+check('昵称是 - 时不写成「-」', lineFromActivity({ kind: 'in', chatId: 'private:749830684', text: '干嘛呢', nickname: '-', userId: '749830684' })?.who === '749830684')
+check('主人消息的 who 用 owner 标记', lineFromActivity({ kind: 'in', chatId: 'private:749830684', text: '干嘛呢', nickname: '-', owner: true })?.who === '主人')
+
+// ---------- 回归：满 n 天的时间窗不能多等一天（0.1.0 用 day<cutoff，导致 days 恒为 0） ----------
+// 2026-11-06 23:50（东八区）= 2026-11-06T15:50Z
+const NOW_1106 = Date.UTC(2026, 10, 6, 15, 50, 0)
+check('满 1 天：截止到昨天（11-05）', cutoffDayOf(NOW_1106, 1) === '2026-11-05', cutoffDayOf(NOW_1106, 1))
+check('满 1 天：11-06 的聊天当晚就能压（day <= 截止日不成立于今天的反例）', '2026-11-06' > cutoffDayOf(NOW_1106, 1))
+// 关键回归：11-07 凌晨时，11-06 这一整天的聊天必须已经开始可压（旧代码要等到 11-08）
+check('隔天凌晨就能压前一天（旧代码多等一天）', '2026-11-06' <= cutoffDayOf(Date.UTC(2026, 10, 6, 16, 30, 0), 1), cutoffDayOf(Date.UTC(2026, 10, 6, 16, 30, 0), 1))
+check('满 2 天：截止到 11-04', cutoffDayOf(NOW_1106, 2) === '2026-11-04', cutoffDayOf(NOW_1106, 2))
+check('满 32 天：截止到 10-05', cutoffDayOf(NOW_1106, 32) === '2026-10-05', cutoffDayOf(NOW_1106, 32))
+check('跨月回退正确（03-01 往回 1 天 = 02-28）', cutoffDayOf(Date.UTC(2027, 2, 1, 4, 0, 0), 1) === '2027-02-28', cutoffDayOf(Date.UTC(2027, 2, 1, 4, 0, 0), 1))
+check('东八区凌晨不串日（11-07 00:10 往回 1 天 = 11-06）', cutoffDayOf(Date.UTC(2026, 10, 6, 16, 10, 0), 1) === '2026-11-06', cutoffDayOf(Date.UTC(2026, 10, 6, 16, 10, 0), 1))
+
 check('renderDayInput 拼行', renderDayInput([{ t: new Date('2026-11-05T10:00:00+08:00').getTime(), who: '主人', text: '早' }]).includes('主人：早'))
 check('renderMonthInput 拼天', renderMonthInput([{ day: '2026-11-01', abstract: '聊了饭' }]).includes('2026-11-01 聊了饭'))
 check('parseAbstractOut 标准', parseAbstractOut('前缀 {"text":"摘要"} 后缀') === '摘要')
@@ -95,16 +123,26 @@ check('未知 chatId 类型不录', shouldRecord({ chatId: 'system:x' }, {}) ===
   const env = makeApi({ settings: { enabled: true, compressAfterDays: 1, monthAfterDays: 32, dailyCalls: 6 } })
   await modDefault.setup(env.api)
 
-  // ① activity 归档 L0
+  // ① activity 归档 L0（全部用 hub.js 真实广播的字段形状：out 只有 reply，没有 text）
   const onActivity = env.events.activity?.[0]
   const day = dayKeyOf(Date.now() - 3 * 86_400_000) // 3 天前，满足 compressAfterDays
   const base = Date.now() - 3 * 86_400_000
-  onActivity({ kind: 'in', chatId: 'private:10001', who: '主人', userId: '10001', text: '明天记得买大米饭', t: base })
-  onActivity({ kind: 'out', chatId: 'private:10001', who: 'bot', text: '好，我记住了', t: base + 60_000 })
-  onActivity({ kind: 'in', chatId: 'private:10001', who: '主人', userId: '10001', text: '   ', t: base + 120_000 }) // 空的该被丢
+  onActivity({ kind: 'in', chatId: 'private:10001', userId: '10001', nickname: '主人', text: '明天记得买大米饭', t: base })
+  onActivity({ kind: 'out', chatId: 'private:10001', reply: '好，我记住了', userText: '明天记得买大米饭', t: base + 60_000 })
+  onActivity({ kind: 'in', chatId: 'private:10001', userId: '10001', nickname: '主人', text: '   ', t: base + 120_000 }) // 空的该被丢
 
   const stats = await env.routes['/stats']()
   check('L0 归档了 2 条（空的被丢）', stats.lines === 2, JSON.stringify(stats))
+  check('out 事件（reply 字段）也进了 L0', stats.lines === 2, `收 1 + 发 1 = 2，实际 ${stats.lines}`)
+
+  // /read 内部走 api.core.http.query(req)：真机是普通对象，测试替身换成能给定查询的。
+  // 注意 read() 不带 day/keyword 时是「备忘视角」，只回日摘要不回原文（模块本来就这样），所以这里按天查。
+  const dayOfBase = dayKeyOf(base)
+  env.api.core.http.query = () => ({ chatId: 'private:10001', day: dayOfBase })
+  const rec = await env.routes['/read']({ headers: {} })
+  const texts = (rec.lines || []).map((l) => l.text)
+  check('读回原文同时含她说的话', texts.includes('好，我记住了') && texts.includes('明天记得买大米饭'), JSON.stringify(texts))
+  check('L0 行带上说话人（她/主人）', (rec.lines || []).some((l) => l.who === '她') && (rec.lines || []).some((l) => l.who === '主人'), JSON.stringify((rec.lines || []).map((l) => l.who)))
 
   // ② 压缩：跑两次，第二次不花模型调用（指纹幂等）
   // every 的替身没跑，直接调内部：通过让 compressTick 暴露 —— 这里用归档后等待不可行，改为直接调用 route 触发不了压缩。
@@ -123,8 +161,8 @@ check('未知 chatId 类型不录', shouldRecord({ chatId: 'system:x' }, {}) ===
 
   const base = Date.now() - 3 * 86_400_000
   const onActivity = env.events.activity?.[0]
-  onActivity({ kind: 'in', chatId: 'group:42', who: '猫米', userId: '2', text: '今晚一起开黑', t: base })
-  onActivity({ kind: 'out', chatId: 'group:42', who: 'bot', text: '带上我', t: base + 30_000 })
+  onActivity({ kind: 'in', chatId: 'group:42', userId: '2', nickname: '猫米', text: '今晚一起开黑', t: base })
+  onActivity({ kind: 'out', chatId: 'group:42', reply: '带上我', userText: '今晚一起开黑', t: base + 30_000 })
 
   await tick?.()
   check('tick 压出了日摘要（花了 1 次模型调用）', env.asks.length === 1, String(env.asks.length))
