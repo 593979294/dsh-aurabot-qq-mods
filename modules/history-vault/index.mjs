@@ -43,6 +43,23 @@ export function monthKeyOf(ts, offsetMinutes = 480) {
 }
 
 /**
+ * 把用户写的聊天 ID 归一成库里真实的 chatId。
+ * 面板上大家会自然写成「私聊:10001」「群:123456」甚至只写号码，
+ * 而库里存的是 `private:` / `group:` 前缀 —— 不做这层归一，填中文前缀就永远查不到
+ * （0.1.2 的面板就是这个毛病：点了「查看」永远提示没有归档）。
+ * 认不出来返回空串，让调用方给出明确提示，而不是拿一个错 id 去查。
+ */
+export function normalizeChatId(raw) {
+  const s = String(raw ?? '').trim().replace(/：/g, ':').replace(/\s+/g, '')
+  if (!s) return ''
+  const m = /^(private|group|私聊|群聊|群)?:?(\d{4,})$/.exec(s)
+  if (!m) return ''
+  const kind = m[1]
+  const id = m[2]
+  return `${kind === 'group' || kind === '群' || kind === '群聊' ? 'group' : 'private'}:${id}`
+}
+
+/**
  * 满 n 天的日子，截止到哪一天（含当天）：返回 YYYY-MM-DD。
  *
  * 语义：n=1 表示「昨天及更早」——过完一整个日历日的聊天才允许压成日摘要，今天的不动。
@@ -165,7 +182,7 @@ export function shouldRecord(row, { recordGroups = true, groupList = '', private
 export default {
   id: 'history-vault',
   name: '跨会话记忆',
-  version: '0.1.2',
+  version: '0.1.3',
   api: 1,
   description: '三层存储跨会话保留聊天细节，分层读取，会话归档后细节不丢，重复压缩不重复花模型调用',
   panel: 'panel.js',
@@ -478,6 +495,15 @@ export default {
         // 既没给月也没给天也没给词：备忘视角，回最近的日摘要（给了 month 就别覆盖上面按月圈定的结果）
         out.days = db.prepare("SELECT day, abstract FROM vault_days WHERE chatId = ? AND abstract != '' ORDER BY day DESC LIMIT 14").all(chatId)
         out.days.reverse()
+        // 没有日摘要时也要能看到东西：面板「按聊天查看」走的就是这条路径，
+        // 只回摘要的话，刚装上还没压过摘要的聊天会一律显示「还没有归档记录」，
+        // 用户会以为记忆根本没存（0.1.2 的实际反馈：一直看不了）。
+        // 补最近原文片段，让「L0 有内容」这件事看得见。
+        if (!out.days.length) {
+          out.lines = db.prepare('SELECT t, who, text FROM vault_lines WHERE chatId = ? ORDER BY t DESC LIMIT ?')
+            .all(chatId, Math.min(200, Math.max(1, lineLimit)))
+            .reverse()
+        }
       }
       return out
     }
@@ -589,13 +615,48 @@ export default {
       dbPath: join(api.dataDir(), 'vault.sqlite'),
     }))
 
+    // 库里到底有哪些聊天：面板用它列出可点的 chatId，
+    // 省得用户去猜 private:/group: 的写法（0.1.3 之前只能自己填，填错格式就永远查不到）。
+    api.route('/chats', () => ({
+      chats: db.prepare(`SELECT chatId, COUNT(*) AS lines, MAX(day) AS lastDay FROM vault_lines
+        GROUP BY chatId ORDER BY lastDay DESC, lines DESC`).all(),
+    }))
+
+    /**
+     * 把整个库的内容摊开给面板看（只读，不做任何删除）。
+     * 面板那个「列出全部内容」按钮就调这里：一次看全三层，不用先知道 chatId。
+     * 原文默认取最近 300 条（再多面板渲染会卡，也看不过来）；要更多用 /read 按聊天 / 按天查。
+     */
+    api.route('/dump', async (req) => {
+      const guard = crossSite(req)
+      if (guard) return guard
+      const q = api.core.http.query(req)
+      const limit = Math.min(2000, Math.max(1, Number(q?.lines) || 300))
+      const lines = db.prepare('SELECT id, t, chatId, day, dir, who, text FROM vault_lines ORDER BY t DESC LIMIT ?').all(limit)
+      lines.reverse() // 面板按时间正序读更顺
+      return {
+        ok: true,
+        stats: {
+          lines: db.prepare('SELECT COUNT(*) AS n FROM vault_lines').get().n,
+          days: db.prepare("SELECT COUNT(*) AS n FROM vault_days WHERE abstract != ''").get().n,
+          months: db.prepare("SELECT COUNT(*) AS n FROM vault_months WHERE abstract != ''").get().n,
+        },
+        shown: lines.length,
+        lines,
+        days: db.prepare("SELECT chatId, day, abstract FROM vault_days WHERE abstract != '' ORDER BY day DESC LIMIT 200").all(),
+        months: db.prepare("SELECT chatId, month, abstract FROM vault_months WHERE abstract != '' ORDER BY month DESC LIMIT 100").all(),
+      }
+    })
+
     api.route('/read', async (req) => {
       const guard = crossSite(req)
       if (guard) return guard
       const q = api.core.http.query(req) // 真机返回普通对象（URLSearchParams 是测试环境的误判）
       const get = (k) => String(q?.[k] ?? '')
-      const chatId = get('chatId')
-      if (!chatId) return { ok: false, message: '要 chatId' }
+      const rawId = get('chatId')
+      if (!rawId) return { ok: false, message: '要 chatId' }
+      // 服务端也兜一层归一：面板走 /read 时已归一过，但模块命令 / 手工调接口可能直接传「私聊:…」
+      const chatId = normalizeChatId(rawId) || rawId
       return { ok: true, ...read(chatId, { month: get('month'), day: get('day'), keyword: get('keyword'), lineLimit: Number(get('lines')) || 40 }) }
     })
 
