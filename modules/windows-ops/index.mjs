@@ -33,7 +33,7 @@ import { createGuides } from './lib/guides.mjs'
 export default {
   id: 'windows-ops',
   name: '逛电脑（Windows 自动化）',
-  version: '1.1.0',
+  version: '1.1.1',
   api: 1,
   description: '经 PowerShell 操作这台电脑：窗口枚举/激活/关闭、截屏、剪贴板读写、键鼠模拟。默认仅主人可用，带操作白名单、危险操作确认门槛与指引体系。',
   panel: 'panel.js', // 自定义面板：settings 数组留空，全部字段由 panel.js 接管（仿 phone）
