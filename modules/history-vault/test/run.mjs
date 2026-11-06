@@ -305,6 +305,15 @@ check('未知 chatId 类型不录', shouldRecord({ chatId: 'system:x' }, {}) ===
   env.api.core.http.query = () => ({ chatId: '私聊:749830684', day: dayKeyOf(Date.now()) })
   const cn = await env.routes['/read']({ headers: {} })
   check('填「私聊:号码」也能查到', (cn.lines || []).length > 0, JSON.stringify(cn.lines?.length))
+
+  // ---------- 「列出全部内容」按钮（面板一眼看全三层，不用先知道 chatId） ----------
+  env.api.core.http.query = () => ({})
+  const dump = await env.routes['/dump']({ headers: {} })
+  check('/dump 返回三层统计', dump.ok && dump.stats.lines === 6 && dump.stats.days >= 0 && typeof dump.stats.months === 'number', JSON.stringify(dump.stats))
+  check('/dump 列出全部原文', dump.lines.length === 6 && dump.shown === 6, `lines=${dump.lines.length} shown=${dump.shown}`)
+  check('/dump 原文带方向与说话人', dump.lines.every((l) => l.dir === 'in' || l.dir === 'out') && dump.lines.some((l) => l.who === '她'), JSON.stringify(dump.lines.map((l) => `${l.dir}/${l.who}`)))
+  check('/dump 原文按时间正序', dump.lines.length > 1 && dump.lines[0].t <= dump.lines[dump.lines.length - 1].t)
+  check('/dump 三层字段都在', Array.isArray(dump.days) && Array.isArray(dump.months))
 }
 
 // ---------- 汇总 ----------

@@ -26,6 +26,7 @@ function normalizeChatId(raw) {
 return function Panel({ settings, save, toast }) {
   const [stats, setStats] = useState(null)
   const [chats, setChats] = useState(null)
+  const [dump, setDump] = useState(null)
   const [chatId, setChatId] = useState('')
   const [detail, setDetail] = useState(null)
   const [busy, setBusy] = useState('')
@@ -38,6 +39,15 @@ return function Panel({ settings, save, toast }) {
   }
   if (!stats) { loadStats() }
   if (!chats) { loadChats() }
+
+  // 「列出全部内容」：把整库三层一次性摊开（只读，不动任何数据）
+  const loadDump = async () => {
+    setBusy('dump')
+    try {
+      setDump(await call('/dump?lines=300'))
+    } catch (e) { toast('列出内容失败：' + e.message) }
+    setBusy('')
+  }
 
   const loadDetail = async () => {
     // 面板输入常被填成「私聊:QQ号」这种口语格式，而库里存的是 private:/group: 前缀。
@@ -88,6 +98,32 @@ return function Panel({ settings, save, toast }) {
     h(ui.Btn, { onClick: loadStats, style: { marginRight: 8 } }, '刷新统计'),
     h(ui.Btn, { onClick: () => { loadStats(); loadChats() }, style: { marginRight: 8 } }, '刷新聊天列表'),
     h(ui.Btn, { onClick: compressOnce, disabled: busy === 'compress' }, busy === 'compress' ? '压缩中……' : '手动压缩一次'),
+
+    // ---- 列出全部内容（只读，一眼看全三层，不用先知道 chatId）----
+    h('div', { style: { marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 } },
+      h(ui.Btn, { onClick: loadDump, disabled: busy === 'dump' }, busy === 'dump' ? '读取中……' : (dump ? '重新列出全部内容' : '列出全部内容')),
+      dump
+        ? h('span', { className: 'ab-note' },
+            `原文共 ${dump.stats?.lines ?? 0} 条 · 日摘要 ${dump.stats?.days ?? 0} 天 · 月印象 ${dump.stats?.months ?? 0} 月` +
+            (dump.shown < (dump.stats?.lines ?? 0) ? `（下面显示最近 ${dump.shown} 条）` : ''))
+        : h('span', { className: 'ab-note' }, '点一下，把库里所有内容摊开看（只看不改）'),
+    ),
+    dump && h('div', {
+      className: 'ab-note',
+      style: { marginTop: 8, whiteSpace: 'pre-wrap', maxHeight: 420, overflow: 'auto', lineHeight: 1.75 },
+    },
+      dump.months?.length
+        ? '【月印象】\n' + dump.months.map((m) => `${m.chatId} ${m.month}：${m.abstract}`).join('\n') + '\n\n'
+        : '',
+      dump.days?.length
+        ? '【日摘要】\n' + dump.days.map((d) => `${d.chatId} ${d.day}：${d.abstract}`).join('\n') + '\n\n'
+        : '',
+      dump.lines?.length
+        ? `【原文（${dump.lines.length} 条，按时间正序）】\n` + dump.lines.map((l) =>
+            `${l.day} ${new Date(l.t).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })} ` +
+            `[${l.dir === 'out' ? '她' : '收'}] ${l.who || '?'}：${l.text}`).join('\n')
+        : '库里还没有任何内容。',
+    ),
 
     h('h4', { style: { margin: '14px 0 4px' } }, '按聊天查看 / 清空'),
     h('p', { className: 'ab-note', style: { margin: '0 0 6px' } },

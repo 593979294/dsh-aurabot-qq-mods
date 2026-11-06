@@ -622,6 +622,32 @@ export default {
         GROUP BY chatId ORDER BY lastDay DESC, lines DESC`).all(),
     }))
 
+    /**
+     * 把整个库的内容摊开给面板看（只读，不做任何删除）。
+     * 面板那个「列出全部内容」按钮就调这里：一次看全三层，不用先知道 chatId。
+     * 原文默认取最近 300 条（再多面板渲染会卡，也看不过来）；要更多用 /read 按聊天 / 按天查。
+     */
+    api.route('/dump', async (req) => {
+      const guard = crossSite(req)
+      if (guard) return guard
+      const q = api.core.http.query(req)
+      const limit = Math.min(2000, Math.max(1, Number(q?.lines) || 300))
+      const lines = db.prepare('SELECT id, t, chatId, day, dir, who, text FROM vault_lines ORDER BY t DESC LIMIT ?').all(limit)
+      lines.reverse() // 面板按时间正序读更顺
+      return {
+        ok: true,
+        stats: {
+          lines: db.prepare('SELECT COUNT(*) AS n FROM vault_lines').get().n,
+          days: db.prepare("SELECT COUNT(*) AS n FROM vault_days WHERE abstract != ''").get().n,
+          months: db.prepare("SELECT COUNT(*) AS n FROM vault_months WHERE abstract != ''").get().n,
+        },
+        shown: lines.length,
+        lines,
+        days: db.prepare("SELECT chatId, day, abstract FROM vault_days WHERE abstract != '' ORDER BY day DESC LIMIT 200").all(),
+        months: db.prepare("SELECT chatId, month, abstract FROM vault_months WHERE abstract != '' ORDER BY month DESC LIMIT 100").all(),
+      }
+    })
+
     api.route('/read', async (req) => {
       const guard = crossSite(req)
       if (guard) return guard
