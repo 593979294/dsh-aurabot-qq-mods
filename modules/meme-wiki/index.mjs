@@ -19,7 +19,7 @@ const HINT_MAX = 4000 // 只防手滑，不当硬顶：最长词条 1409
 export default {
   id: 'meme-wiki',
   name: '梗百科',
-  version: '0.2.5',
+  version: '0.2.6',
   api: 1,
   description: '本地梗库：命中就把词条塞进上下文；词条从梗站按需导入，不随模块分发',
   tab: 'group',

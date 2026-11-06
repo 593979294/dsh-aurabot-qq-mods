@@ -1,13 +1,13 @@
 {
   "id": "group-admin",
   "name": "群管",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "主人开口时帮忙管群：禁言、解禁、踢人、改头衔、发公告。她也知道自己在群里有没有管理权限。",
   "category": "manage",
   "tags": [
     "群管"
   ],
-  "author": "Aurabot",
+  "author": "accomplish07zrh-eng",
   "license": "MIT",
   "api": 1,
   "minPluginVersion": "1.2.0",
