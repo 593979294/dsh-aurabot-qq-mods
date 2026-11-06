@@ -56,8 +56,20 @@ function makeApi({ settings = {}, askImpl = null } = {}) {
 }
 
 const mod = await import('./../index.mjs')
-const { dayKeyOf, monthKeyOf, cleanLineText, lineFromActivity, renderDayInput, renderMonthInput, parseAbstractOut, renderMemoHead, parseRecordList, shouldRecord, cutoffDayOf } = mod
+const { dayKeyOf, monthKeyOf, cleanLineText, lineFromActivity, renderDayInput, renderMonthInput, parseAbstractOut, renderMemoHead, parseRecordList, shouldRecord, cutoffDayOf, normalizeChatId } = mod
 const modDefault = mod.default
+
+// ---------- chatId 归一（面板「查看」填中文前缀时查不到，0.1.2 的实际毛病） ----------
+check('标准 private: 原样', normalizeChatId('private:749830684') === 'private:749830684')
+check('标准 group: 原样', normalizeChatId('group:1051200032') === 'group:1051200032')
+check('中文「私聊:」归一成 private:', normalizeChatId('私聊:749830684') === 'private:749830684', normalizeChatId('私聊:749830684'))
+check('中文「私聊：」全角冒号也认', normalizeChatId('私聊：749830684') === 'private:749830684')
+check('中文「群:」归一成 group:', normalizeChatId('群:1051200032') === 'group:1051200032', normalizeChatId('群:1051200032'))
+check('中文「群聊:」归一成 group:', normalizeChatId('群聊:1051200032') === 'group:1051200032')
+check('只填号码按私聊', normalizeChatId('749830684') === 'private:749830684')
+check('带空格也认', normalizeChatId('  私聊 : 749830684 ') === 'private:749830684')
+check('空串认不出（调用方去提示）', normalizeChatId('') === '')
+check('乱写认不出（不拿错 id 去查）', normalizeChatId('abc') === '' && normalizeChatId('private:123') === '')
 
 // ---------- 纯函数 ----------
 check('dayKeyOf 东八区', dayKeyOf(Date.UTC(2026, 10, 5, 20, 0, 0)) === '2026-11-06', dayKeyOf(Date.UTC(2026, 10, 5, 20, 0, 0)))
@@ -276,6 +288,23 @@ check('未知 chatId 类型不录', shouldRecord({ chatId: 'system:x' }, {}) ===
   check('纯 @ 不产生空行', !txt.some((t) => !t || t === '[at]'))
   check('后端自省回合不归档', !txt.includes('后台自言自语'))
   check('她的话统一记成「她」', rows.filter((l) => ['在的', '代发的内容', '[图片]'].includes(l.text)).every((l) => l.who === '她'), JSON.stringify(rows.map((l) => l.who)))
+
+  // ---------- 面板「按聊天查看」能真的看到东西（0.1.2 报「一直无归档」） ----------
+  // ① /chats 列出库里真实存在的聊天，面板据此给可点的 chatId
+  const cs = await env.routes['/chats']()
+  const hit = (cs.chats || []).find((c) => c.chatId === pri)
+  check('/chats 列出真实聊天', Boolean(hit) && hit.lines === 6, JSON.stringify(cs.chats))
+  check('/chats 不带 system 聊天', !(cs.chats || []).some((c) => c.chatId.startsWith('system:')))
+
+  // ② 面板默认查询（不带 day/keyword）时，原文层必须有东西 —— 这是「一直无归档」的正根：
+  //    旧面板只看 days/month/lines，没摘要的日子连原文都不显示，就报「没有归档」
+  const plain = await env.routes['/read']({ headers: {} })
+  check('不带 day/keyword 也能看到原文', (plain.lines || []).length > 0, JSON.stringify({ days: plain.days?.length, lines: plain.lines?.length }))
+
+  // ③ 填中文前缀也要能查到（归一化在服务端也兜一层）
+  env.api.core.http.query = () => ({ chatId: '私聊:749830684', day: dayKeyOf(Date.now()) })
+  const cn = await env.routes['/read']({ headers: {} })
+  check('填「私聊:号码」也能查到', (cn.lines || []).length > 0, JSON.stringify(cn.lines?.length))
 }
 
 // ---------- 汇总 ----------
