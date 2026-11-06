@@ -263,10 +263,20 @@ export default {
       if (n > MAX_LINES_PER_DAY) dropOldest.run(row.chatId, day, n - MAX_LINES_PER_DAY)
     }
 
-    // 只看不拦：收到的、发出去的每一条都记（发出去的 kind='out' 也有 —— 她自己说过什么同样是历史）
-    // 过三道闸：总开关 → 群开关（recordGroups）→ 白名单（群/私聊各自独立）
+    // ---------- L0 归档：入站走 activity，出站走 send ----------
+    // 两条通道各管一边，互不重叠，避免同一句话说两遍：
+    //
+    // 入站（activity kind='in'）：收到的每一条。也收 kind='silent' —— 她看见了但决定不搭理的消息，
+    //   宿主在 activity 'in' 之前就 return 了，只有 'silent' 带得出来，漏了它就等于丢掉「别人说过但没接」的话。
+    //
+    // 出站（send）：activity 的 out 只覆盖「她正常回复这一轮」（deliverTurn 末尾才广播）。
+    //   但私聊里大量内容是走别的出口的——命令回复、发图 / 发文件 / 语音文件、模块代发（api.send 系列）、
+    //   主动搭话、桌宠转述——它们都在 sendSegments 直发，不经过 deliverTurn，也就不广播 activity。
+    //   只靠 activity 会漏掉一半她说的话（0.1.x 实测私聊 28 条出站一条都没进库）。
+    //   API.md 写明 send 是「最终发给 QQ 的消息段」「所有发出去的消息都经过这里」，用它兜住全部出站。
     api.on('activity', (ev) => {
       try {
+        if (ev?.kind === 'out') return // 出站的唯一入口是 send，这里不重复记
         const row = lineFromActivity(ev)
         if (!row || !row.chatId) return
         const c = cfg()
@@ -276,6 +286,39 @@ export default {
       } catch (error) {
         log.debug?.('归档一行失败：', error.message)
       }
+    })
+
+    /** 从 OneBot 消息段里取出要归档的文字（图片/语音/文件记成占位符，和 activity 的口径一致） */
+    function textOfSegments(segments) {
+      const parts = []
+      for (const seg of [].concat(segments || [])) {
+        if (!seg || typeof seg !== 'object') continue
+        const t = seg.type
+        if (t === 'text') parts.push(String(seg.data?.text ?? ''))
+        else if (t === 'image') parts.push('[图片]')
+        else if (t === 'record') parts.push('[语音]')
+        else if (t === 'face') parts.push('[表情]')
+        else if (t === 'file') parts.push('[文件]')
+        // reply / at / mface 是元信息，不进正文
+      }
+      return cleanLineText(parts.join(' '))
+    }
+
+    api.on('send', (message, info) => {
+      try {
+        const c = cfg()
+        if (!c.enabled) return
+        const chatId = String(info?.chatId || '')
+        if (!chatId || chatId.startsWith('system:')) return // 后台自省回合没有归档价值
+        const text = textOfSegments(message)
+        if (!text) return // 纯 @ / 纯引用的空壳不发也不记
+        const row = { t: Date.now(), chatId, dir: 'out', who: '她', uid: '', text }
+        if (!shouldRecord(row, c)) return
+        archiveLine(row)
+      } catch (error) {
+        log.debug?.('归档出站消息失败：', error.message)
+      }
+      // 只看不拦：返回 undefined = 不改写这条消息（别的模块的 send 钩子照常生效）
     })
 
     // ---------- 压缩 ----------

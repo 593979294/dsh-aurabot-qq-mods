@@ -123,26 +123,35 @@ check('未知 chatId 类型不录', shouldRecord({ chatId: 'system:x' }, {}) ===
   const env = makeApi({ settings: { enabled: true, compressAfterDays: 1, monthAfterDays: 32, dailyCalls: 6 } })
   await modDefault.setup(env.api)
 
-  // ① activity 归档 L0（全部用 hub.js 真实广播的字段形状：out 只有 reply，没有 text）
+  // ① 入站走 activity，出站走 send（两条通道分工，见 index.mjs 注释）
   const onActivity = env.events.activity?.[0]
+  const onSend = env.events.send?.[0]
   const day = dayKeyOf(Date.now() - 3 * 86_400_000) // 3 天前，满足 compressAfterDays
   const base = Date.now() - 3 * 86_400_000
   onActivity({ kind: 'in', chatId: 'private:10001', userId: '10001', nickname: '主人', text: '明天记得买大米饭', t: base })
-  onActivity({ kind: 'out', chatId: 'private:10001', reply: '好，我记住了', userText: '明天记得买大米饭', t: base + 60_000 })
+  onSend([{ type: 'text', data: { text: '好，我记住了' } }], { chatId: 'private:10001' }) // 她发出去的话
   onActivity({ kind: 'in', chatId: 'private:10001', userId: '10001', nickname: '主人', text: '   ', t: base + 120_000 }) // 空的该被丢
 
   const stats = await env.routes['/stats']()
   check('L0 归档了 2 条（空的被丢）', stats.lines === 2, JSON.stringify(stats))
-  check('out 事件（reply 字段）也进了 L0', stats.lines === 2, `收 1 + 发 1 = 2，实际 ${stats.lines}`)
+  check('send 通道记下了她说的话', stats.lines === 2, `收 1 + 发 1 = 2，实际 ${stats.lines}`)
 
   // /read 内部走 api.core.http.query(req)：真机是普通对象，测试替身换成能给定查询的。
   // 注意 read() 不带 day/keyword 时是「备忘视角」，只回日摘要不回原文（模块本来就这样），所以这里按天查。
+  // send 通道按真实当前时间落库（它在真实世界里就是「此刻发出」），入站用的却是 3 天前，
+  // 两边不在同一天。这里分别按各自的日子读回来验。
   const dayOfBase = dayKeyOf(base)
   env.api.core.http.query = () => ({ chatId: 'private:10001', day: dayOfBase })
-  const rec = await env.routes['/read']({ headers: {} })
-  const texts = (rec.lines || []).map((l) => l.text)
-  check('读回原文同时含她说的话', texts.includes('好，我记住了') && texts.includes('明天记得买大米饭'), JSON.stringify(texts))
-  check('L0 行带上说话人（她/主人）', (rec.lines || []).some((l) => l.who === '她') && (rec.lines || []).some((l) => l.who === '主人'), JSON.stringify((rec.lines || []).map((l) => l.who)))
+  const recIn = await env.routes['/read']({ headers: {} })
+  const txtIn = (recIn.lines || []).map((l) => l.text)
+  check('读回原文含主人说的话', txtIn.includes('明天记得买大米饭'), JSON.stringify(txtIn))
+  check('主人消息的 who 记「主人」', (recIn.lines || []).every((l) => l.who === '主人'), JSON.stringify((recIn.lines || []).map((l) => l.who)))
+
+  env.api.core.http.query = () => ({ chatId: 'private:10001', day: dayKeyOf(Date.now()) })
+  const recOut = await env.routes['/read']({ headers: {} })
+  const txtOut = (recOut.lines || []).map((l) => l.text)
+  check('读回原文含她说的话', txtOut.includes('好，我记住了'), JSON.stringify(txtOut))
+  check('她的话 who 记「她」', (recOut.lines || []).every((l) => l.who === '她'), JSON.stringify((recOut.lines || []).map((l) => l.who)))
 
   // ② 压缩：跑两次，第二次不花模型调用（指纹幂等）
   // every 的替身没跑，直接调内部：通过让 compressTick 暴露 —— 这里用归档后等待不可行，改为直接调用 route 触发不了压缩。
@@ -161,8 +170,9 @@ check('未知 chatId 类型不录', shouldRecord({ chatId: 'system:x' }, {}) ===
 
   const base = Date.now() - 3 * 86_400_000
   const onActivity = env.events.activity?.[0]
+  const onSend = env.events.send?.[0]
   onActivity({ kind: 'in', chatId: 'group:42', userId: '2', nickname: '猫米', text: '今晚一起开黑', t: base })
-  onActivity({ kind: 'out', chatId: 'group:42', reply: '带上我', userText: '今晚一起开黑', t: base + 30_000 })
+  onSend([{ type: 'text', data: { text: '带上我' } }], { chatId: 'group:42' })
 
   await tick?.()
   check('tick 压出了日摘要（花了 1 次模型调用）', env.asks.length === 1, String(env.asks.length))
@@ -219,8 +229,53 @@ check('未知 chatId 类型不录', shouldRecord({ chatId: 'system:x' }, {}) ===
   const env3 = makeApi({ settings: { enabled: false } })
   await modDefault.setup(env3.api)
   env3.events.activity?.[0]?.({ kind: 'in', chatId: 'private:1', who: 'x', text: 'hi', t: Date.now() })
+  env3.events.send?.[0]?.([{ type: 'text', data: { text: '不该记' } }], { chatId: 'private:1' })
   const s3 = await env3.routes['/stats']()
   check('关掉后不归档', s3.lines === 0, String(s3.lines))
+}
+
+// ---------- 私聊完整性（用户重点：私聊必须都存下） ----------
+// 私聊里她说的话不止「正常回复」一种出口：命令回复、发图、模块代发、主动搭话都不经过
+// deliverTurn（也就不广播 activity），只靠 activity 会漏掉一半。这里逐条钉死。
+{
+  const env = makeApi({ settings: { enabled: true, compressAfterDays: 1, monthAfterDays: 32, dailyCalls: 6 } })
+  await modDefault.setup(env.api)
+  const pri = 'private:749830684'
+  const act = (e) => env.events.activity?.[0]?.(e)
+  const send = (segs, info) => env.events.send?.[0]?.(segs, info)
+
+  // 入站 + 静默观察（她看见但不接的话，只在 activity kind='silent' 里）
+  act({ kind: 'in', chatId: pri, userId: '749830684', nickname: '-', owner: true, text: '在吗' })
+  act({ kind: 'silent', chatId: pri, text: '别人说了但没接', nickname: '群友' })
+  // 正常回复：hub 会同时广播 activity out 并走 send —— 必须只记一次
+  act({ kind: 'out', chatId: pri, reply: '在的', userText: '在吗' })
+  send([{ type: 'text', data: { text: '在的' } }], { chatId: pri })
+  // 命令回复（只走 send）
+  send([{ type: 'text', data: { text: '历史库：原文 1 条' } }], { chatId: pri })
+  // 模块代发 / 主动搭话（只走 send）
+  send([{ type: 'text', data: { text: '代发的内容' } }], { chatId: pri })
+  // 发图（只走 send，正文没有 text 段）
+  send([{ type: 'image', data: { file: 'x.jpg' } }], { chatId: pri })
+  // 纯 @ / 空壳不该产生垃圾行
+  send([{ type: 'at', data: { qq: '123' } }], { chatId: pri })
+  // 后台自省回合不归档
+  send([{ type: 'text', data: { text: '后台自言自语' } }], { chatId: 'system:reflect' })
+
+  const s = await env.routes['/stats']()
+  check('私聊各出口全部归档（6 条）', s.lines === 6, `实际 ${s.lines}：收1 + 静默1 + 回复1 + 命令1 + 代发1 + 图1`)
+
+  env.api.core.http.query = () => ({ chatId: pri, day: dayKeyOf(Date.now()) })
+  const r = await env.routes['/read']({ headers: {} })
+  const rows = r.lines || []
+  const txt = rows.map((l) => l.text)
+  check('正常回复没有被记两遍（activity + send 不重复）', txt.filter((t) => t === '在的').length === 1, JSON.stringify(txt))
+  check('命令回复进库', txt.includes('历史库：原文 1 条'))
+  check('模块代发进库', txt.includes('代发的内容'))
+  check('发图记成占位符', txt.includes('[图片]'))
+  check('静默观察的话进库', txt.includes('别人说了但没接'))
+  check('纯 @ 不产生空行', !txt.some((t) => !t || t === '[at]'))
+  check('后端自省回合不归档', !txt.includes('后台自言自语'))
+  check('她的话统一记成「她」', rows.filter((l) => ['在的', '代发的内容', '[图片]'].includes(l.text)).every((l) => l.who === '她'), JSON.stringify(rows.map((l) => l.who)))
 }
 
 // ---------- 汇总 ----------
