@@ -1,4 +1,4 @@
-// 私聊收件箱（file-inbox）
+﻿// 私聊收件箱（file-inbox）
 // 作用：修复「主人私聊发文件，插件只收到 [文件 xxx] 占位预览、内容拿不到」的问题。
 // 原理：插件入站管线其实已把 file 段解析出来（但只在 recentFiles 里记账，
 // 且内置 qq_read_file 只肯读文本文件）。本模块监听 message 事件，从 msg.raw 原始 OneBot 事件里
@@ -146,7 +146,7 @@ function fileSegments(raw) {
 export default {
   id: 'file-inbox',
   name: '私聊收件箱',
-  version: '1.2.2',
+  version: '1.2.3',
   api: 1,
   description: '私聊收到的文件真的收下来：自动下载存进收件箱，她自己能用工具取',
   panel: 'panel.js',
