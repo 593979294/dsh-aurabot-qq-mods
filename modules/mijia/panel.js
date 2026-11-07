@@ -14,6 +14,7 @@ return function Panel({ settings, save, toast }) {
     whitelist: settings.whitelist || '',
     privateOnly: settings.privateOnly !== false,
     cacheSeconds: Number(settings.cacheSeconds) || 300,
+    homeName: String(settings.homeName || ''),
   })
   const set = (k, v) => setDraft((d) => ({ ...d, [k]: v }))
 
@@ -24,6 +25,9 @@ return function Panel({ settings, save, toast }) {
   // 筛选：房间 / 类型（「全部」= 不筛）
   const [roomFilter, setRoomFilter] = useState('全部')
   const [typeFilter, setTypeFilter] = useState('全部')
+  // 家庭：面板上临时只看哪一家（'全部' = 不限）；不落盘，改设置里的「默认只看」用 draft.homeName
+  const [homeFilter, setHomeFilter] = useState('全部')
+  const [homes, setHomes] = useState([])
 
   // ---- 扫码登录状态机：idle → qr（二维码已就绪，等待/轮询中）→ done ----
   const [qr, setQr] = useState(null) // { qr: 图片URL, loginUrl: 跳转链接 }
@@ -62,12 +66,17 @@ return function Panel({ settings, save, toast }) {
     finally { statesBusy.current = false }
   }, [])
 
-  const load = useCallback(async (refresh) => {
+  const load = useCallback(async (refresh, homeArg) => {
     setLoading(true)
     setError('')
     try {
-      const r = await call('/devices' + (refresh ? '?refresh=1' : ''))
+      const homeNow = homeArg === undefined ? homeFilter : homeArg
+      const qs = []
+      if (refresh) qs.push('refresh=1')
+      if (homeNow && homeNow !== '全部') qs.push('home=' + encodeURIComponent(homeNow))
+      const r = await call('/devices' + (qs.length ? '?' + qs.join('&') : ''))
       if (r && r.ok) {
+        if (r.homes) setHomes(r.homes)
         setDevices(r.devices || [])
         loadStates(r.devices || []) // 拉完列表顺手查真实状态
         if (refresh) toast(`已刷新，共 ${(r.devices || []).length} 台设备`)
@@ -79,7 +88,7 @@ return function Panel({ settings, save, toast }) {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [homeFilter])
 
   const control = async (d, on) => {
     setBusyDid(d.did)
@@ -198,6 +207,11 @@ return function Panel({ settings, save, toast }) {
   const online = list.filter((d) => d.isOnline)
   const offline = list.filter((d) => !d.isOnline)
   // 筛选项从设备列表现算（去重排序）；类型用 /devices 路由附带的 label（型号分类）
+  const homeOptions = ['全部', ...homes.map((hm) => hm.name)]
+  const homeLabel = (name) => {
+    const hm = homes.find((x) => x.name === name)
+    return hm && hm.shared ? `${name}（共享）` : name
+  }
   const roomOptions = ['全部', ...Array.from(new Set(list.map((d) => d.roomName || '未分配'))).sort()]
   const typeOptions = ['全部', ...Array.from(new Set(list.map((d) => d.label || '其他'))).sort()]
   const filtered = list.filter((d) =>
@@ -436,6 +450,15 @@ return function Panel({ settings, save, toast }) {
             ' 开')),
         field('设备缓存秒数',
           h('input', { className: 'ab-input', type: 'number', min: 30, max: 3600, step: 30, value: draft.cacheSeconds, onChange: (e) => set('cacheSeconds', e.target.value), style: { width: 120 } })))),
+      field('默认只看哪个家（空=全部家庭；房间/设备会按这个家限定）',
+        h('select', {
+          className: 'ab-input',
+          value: draft.homeName,
+          style: { width: 220 },
+          onChange: (e) => set('homeName', e.target.value),
+        }, ['', ...homes.map((hm) => hm.name)].map((o) => h('option', { key: o || 'all', value: o }, o ? homeLabel(o) : '全部家庭')),
+          homes.length ? null : h('option', { key: 'none', value: '' }, '（先扫码登录后才列得出家庭）')),
+        h('div', { className: 'ab-small ab-muted', style: { marginTop: 2 } }, '只影响 QQ 消息与工具调用；面板筛选随时可切。')),
 
     // ======== 设备列表（房间 / 类型筛选）========
     h('div', { style: { marginTop: 12 } },
@@ -444,6 +467,21 @@ return function Panel({ settings, save, toast }) {
           `设备：共 ${list.length} 台 · 在线 ${online.length} · 离线 ${offline.length}` +
           (filtered.length !== list.length ? ` · 筛出 ${filtered.length} 台` : '')),
         h('span', { style: { flex: 1 } }),
+        // 家庭下拉：切换后立刻按该家重新拉设备（服务端还会回一份家庭清单）
+        h('label', { className: 'ab-small ab-muted', style: { display: 'flex', alignItems: 'center', gap: 4 } },
+          '家庭',
+          h('select', {
+            className: 'ab-input',
+            value: homeFilter,
+            style: { width: 150 },
+            onChange: (e) => {
+              const v = e.target.value
+              setHomeFilter(v)
+              setRoomFilter('全部') // 换家后房间选项会变，先清零
+              load(false, v)
+            },
+          }, homeOptions.map((o) => h('option', { key: o, value: o }, o === '全部' ? '全部家庭' : homeLabel(o)))),
+          homes.length > 1 && h('span', { className: 'ab-small ab-muted' }, `（${homes.length} 个）`)),
         select(roomFilter, roomOptions, setRoomFilter, '房间'),
         select(typeFilter, typeOptions, setTypeFilter, '类型'),
         h(ui.Btn, { disabled: loading, onClick: () => load(true) }, loading ? '刷新中…' : '刷新设备列表')),
