@@ -149,6 +149,7 @@ export default {
   version: '1.2.2',
   api: 1,
   description: '私聊收到的文件真的收下来：自动下载存进收件箱，她自己能用工具取',
+  panel: 'panel.js',
   capabilities: ['network', 'filesystem', 'process'], // 联网下载 + 落盘保存 + ffmpeg 子进程转音频
   settings: [
     { key: 'scope', label: '收谁的文件', type: 'select', options: [{ value: 'owner', label: '只收主人私聊的（推荐）' }, { value: 'all', label: '所有私聊的都收' }], hint: '默认只收主人私聊，免得被陌生人塞文件撑爆硬盘' },

@@ -1,7 +1,7 @@
 {
   "id": "file-inbox",
   "name": "私聊收件箱",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "私聊收到的文件真的收下来：自动下载存进收件箱，她能查清单、读文本、报 zip 清单、听懂音频、把图片视频压缩包发回去",
   "category": "tool",
   "tags": [
