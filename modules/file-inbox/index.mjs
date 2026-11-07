@@ -1,4 +1,4 @@
-﻿// 私聊收件箱（file-inbox）
+// 私聊收件箱（file-inbox）
 // 作用：修复「主人私聊发文件，插件只收到 [文件 xxx] 占位预览、内容拿不到」的问题。
 // 原理：插件入站管线其实已把 file 段解析出来（但只在 recentFiles 里记账，
 // 且内置 qq_read_file 只肯读文本文件）。本模块监听 message 事件，从 msg.raw 原始 OneBot 事件里
@@ -11,6 +11,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawn } from 'node:child_process'
 import os from 'node:os'
+import { inflateRawSync } from 'node:zlib'
 
 const MAX_KEEP = 50 // 收件箱最多留几份文件（旧的自动删，防撑爆硬盘）
 
@@ -105,6 +106,112 @@ function runFfmpeg(bin, args, timeoutMs = 60000) {
     child.on('exit', (code) => { if (!done) { clearTimeout(timer); done = true; resolve(code === 0) } })
   })
 }
+// ---- 办公文件（docx/xlsx/pptx）抽正文：本质是 zip 包 XML，用自带 zlib 解压，无第三方依赖 ----
+/** 从 zip Buffer 里取出指定名称的条目内容（按中央目录找，支持目录前缀）。 */
+function zipExtract(buf, want) {
+  let eo = -1
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 22 - 65535); i--) {
+    if (buf.readUInt32LE(i) === 0x06054b50) { eo = i; break }
+  }
+  if (eo < 0) throw new Error('不是标准 zip')
+  const count = buf.readUInt16LE(eo + 10)
+  let off = buf.readUInt32LE(eo + 16)
+  for (let n = 0; n < count && off + 46 <= buf.length; n++) {
+    if (buf.readUInt32LE(off) !== 0x02014b50) break
+    const flags = buf.readUInt16LE(off + 8)
+    const method = buf.readUInt16LE(off + 10)
+    const csize = buf.readUInt32LE(off + 20)
+    const nameLen = buf.readUInt16LE(off + 28)
+    const extraLen = buf.readUInt16LE(off + 30)
+    const commentLen = buf.readUInt16LE(off + 32)
+    const local = buf.readUInt32LE(off + 42)
+    const name = (flags & 0x800) ? buf.toString('utf8', off + 46, off + 46 + nameLen) : buf.toString('latin1', off + 46, off + 46 + nameLen)
+    if (name === want || name.endsWith('/' + want)) {
+      if (flags & 1) throw new Error('条目已加密')
+      // 本地头里名字/额外字段长度可能与中央目录不同，以本地头为准
+      const lNameLen = buf.readUInt16LE(local + 26)
+      const lExtraLen = buf.readUInt16LE(local + 28)
+      const start = local + 30 + lNameLen + lExtraLen
+      const raw = buf.subarray(start, start + csize)
+      return method === 0 ? Buffer.from(raw) : inflateRawSync(raw)
+    }
+    off += 46 + nameLen + extraLen + commentLen
+  }
+  return null
+}
+const xmlText = (s) => String(s || '')
+  .replace(/<\/w:p>|<\/a:p>|<\/text:p>/g, '\n')      // 段落/页断行
+  .replace(/<w:tab[^>]*\/>|<[^>]+>/g, '')             // 去标签
+  .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/&quot;/g, '"')
+  .replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
+/** docx：word/document.xml 抽正文。 */
+function docxText(buf) {
+  const xml = zipExtract(buf, 'word/document.xml')
+  if (!xml) throw new Error('不是标准 docx（缺 word/document.xml）')
+  return xmlText(xml.toString('utf8'))
+}
+/** pptx：ppt/slides/slideN.xml 按页抽文字。 */
+function pptxText(buf) {
+  let eo = -1
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 22 - 65535); i--) if (buf.readUInt32LE(i) === 0x06054b50) { eo = i; break }
+  if (eo < 0) throw new Error('不是标准 pptx')
+  const count = buf.readUInt16LE(eo + 10)
+  let off = buf.readUInt32LE(eo + 16)
+  const slides = []
+  for (let n = 0; n < count && off + 46 <= buf.length; n++) {
+    if (buf.readUInt32LE(off) !== 0x02014b50) break
+    const nameLen = buf.readUInt16LE(off + 28)
+    const extraLen = buf.readUInt16LE(off + 30)
+    const commentLen = buf.readUInt16LE(off + 32)
+    const name = buf.toString('utf8', off + 46, off + 46 + nameLen)
+    const m = name.match(/^ppt\/slides\/(slide\d+\.xml)$/)
+    if (m) slides.push([Number(m[1].replace(/\D/g, '')), name])
+    off += 46 + nameLen + extraLen + commentLen
+  }
+  if (!slides.length) throw new Error('pptx 里没有幻灯片')
+  slides.sort((a, b) => a[0] - b[0])
+  return slides.map(([no, name]) => `【第 ${no} 页】\n` + (xmlText(zipExtract(buf, name)?.toString('utf8')) || '（本页无文字）')).join('\n\n')
+}
+/** xlsx：sharedStrings.xml + 每个 sheet 的单元格按行拼（字符/数值/内联串，公式取缓存值）。 */
+function xlsxText(buf) {
+  const shared = []
+  const ss = zipExtract(buf, 'xl/sharedStrings.xml')
+  if (ss) for (const m of ss.toString('utf8').matchAll(/<t[^>]*>([^<]*)<\/t>/g)) shared.push(xmlText(m[1]))
+  let eo = -1
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 22 - 65535); i--) if (buf.readUInt32LE(i) === 0x06054b50) { eo = i; break }
+  if (eo < 0) throw new Error('不是标准 xlsx')
+  const count = buf.readUInt16LE(eo + 10)
+  let off = buf.readUInt32LE(eo + 16)
+  const sheets = []
+  for (let n = 0; n < count && off + 46 <= buf.length; n++) {
+    if (buf.readUInt32LE(off) !== 0x02014b50) break
+    const nameLen = buf.readUInt16LE(off + 28)
+    const extraLen = buf.readUInt16LE(off + 30)
+    const commentLen = buf.readUInt16LE(off + 32)
+    const name = buf.toString('utf8', off + 46, off + 46 + nameLen)
+    if (/^xl\/worksheets\/sheet\d+\.xml$/.test(name)) sheets.push(name)
+    off += 46 + nameLen + extraLen + commentLen
+  }
+  if (!sheets.length) throw new Error('xlsx 里没有工作表')
+  return sheets.map((name, si) => {
+    const xml = zipExtract(buf, name)?.toString('utf8') || ''
+    const rows = []
+    for (const rm of xml.matchAll(/<row[^>]*>([\s\S]*?)<\/row>/g)) {
+      const cells = []
+      for (const cm of rm[1].matchAll(/<c([^>]*)>([\s\S]*?)<\/c>/g)) {
+        const [, attrs, inner] = cm
+        const type = attrs.match(/t="(\w+)"/)?.[1]
+        const v = inner.match(/<v>([^<]*)<\/v>/)?.[1]
+        const is = inner.match(/<is>[\s\S]*?<t[^>]*>([^<]*)<\/t>/)?.[1]
+        if (type === 's' && v !== undefined) cells.push(shared[Number(v)] ?? '')
+        else if (type === 'inlineStr' && is !== undefined) cells.push(xmlText(is))
+        else if (v !== undefined) cells.push(xmlText(v))
+      }
+      if (cells.some((c) => c !== '')) rows.push(cells.join(' | '))
+    }
+    return `【工作表 ${si + 1}（${name.split('/').pop()}）${rows.length} 行】\n` + (rows.slice(0, 300).join('\n') || '（空表）') + (rows.length > 300 ? `\n…还有 ${rows.length - 300} 行` : '')
+  }).join('\n\n')
+}
 const asrCache = new Map() // path → { at, text } 同一个音频别反复转写
 async function transcribeAudio(path, local, cfg) {
   const cached = asrCache.get(path)
@@ -146,7 +253,7 @@ function fileSegments(raw) {
 export default {
   id: 'file-inbox',
   name: '私聊收件箱',
-  version: '1.2.3',
+  version: '1.3.0',
   api: 1,
   description: '私聊收到的文件真的收下来：自动下载存进收件箱，她自己能用工具取',
   panel: 'panel.js',
@@ -299,7 +406,7 @@ export default {
       if (!chatAllowed(chat)) return [] // 群聊 / 别人私聊：工具不出现，更不会被套话
       return api.defineTool({
         name: 'inbox_files',
-        description: '查我的收件箱：列出最近收到的文件（含类型与本机路径）。指定编号可「读」内容：文本读全文、zip 报清单、音频转文字、图片/视频引导发回或给路径。',
+        description: '查我的收件箱：列出最近收到的文件（含类型与本机路径）。指定编号可「读」内容：文本读全文、zip 报清单、docx/pptx/xlsx 抽正文、音频转文字、图片/视频引导发回或给路径。',
         properties: {
           read: { type: 'number', description: '要读的文件编号（列表里的序号，从 1 开始）。不填就只列清单' },
         },
@@ -326,6 +433,22 @@ export default {
             }
             if (/\.zip$/i.test(p)) {
               return { ok: true, message: `《${it.name}》（${humanSize(it.size)}）里装着：\n${zipList(readFileSync(p))}` }
+            }
+            // 办公文件抽正文（pdf 除外：格式复杂，纯 JS 抽不可靠，如实说明）
+            if (/\.docx$/i.test(p)) {
+              const text = docxText(readFileSync(p))
+              return { ok: true, message: `《${it.name}》正文：\n${text.slice(0, 30000)}` }
+            }
+            if (/\.pptx$/i.test(p)) {
+              const text = pptxText(readFileSync(p))
+              return { ok: true, message: `《${it.name}》各页文字：\n${text.slice(0, 30000)}` }
+            }
+            if (/\.xlsx$/i.test(p)) {
+              const text = xlsxText(readFileSync(p))
+              return { ok: true, message: `《${it.name}》表格内容：\n${text.slice(0, 30000)}` }
+            }
+            if (/\.pdf$/i.test(p)) {
+              return { ok: true, message: `《${it.name}》是 PDF（${humanSize(it.size)}），PDF 文字提取做不到不丢字，本机路径 ${p}。要看内容请转成 docx/txt 再发一次，或用 inbox_send 发回聊天` }
             }
             if (cat === '音频') {
               const text = await transcribeAudio(p, api.core?.local, cfg)
