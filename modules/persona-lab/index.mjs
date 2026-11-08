@@ -1,4 +1,4 @@
-// 人格实验室：学群友口癖 + 允许她自己给「人格」追加一条自我调整。
+﻿// 人格实验室：学群友口癖 + 允许她自己给「人格」追加一条自我调整。
 // 只观察群聊；不改核心人格，不改插件代码；所有写入都在插件数据目录。
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, unlinkSync, statSync } from 'node:fs'
 import { join, basename } from 'node:path'
@@ -11,7 +11,7 @@ const BACKUP_KEEP = 12
 export default {
   id: 'persona-lab',
   name: '人格实验室',
-  version: '0.2.0',
+  version: '0.2.1',
   api: 1,
   description: '观察群友的说话习惯，并在允许时让她给自己的「人格」追加一条自我调整（有备份、可撤销）。',
   panel: 'panel.js',
@@ -27,6 +27,7 @@ export default {
     selfReflectHours: 6,
     selfReflectMaxPerDay: 2,
     groupList: '',
+    blockList: '',
   },
 
   settings: [
@@ -43,6 +44,7 @@ export default {
     { key: 'selfReflectHours', label: '反思间隔（小时）', type: 'number', min: 1, max: 72 },
     { key: 'selfReflectMaxPerDay', label: '每天最多反思几次', type: 'number', min: 0, max: 6 },
     { key: 'groupList', label: '学习哪些群', type: 'text', hint: '群号，逗号/换行分隔；留空 = 白名单里的所有群' },
+    { key: 'blockList', label: '不学习谁（QQ号黑名单）', type: 'text', hint: '填 QQ 号，逗号/换行分隔；这些人在群里说话不会被学习，也不会出现在样本里。填 QQ 号有效，群消息里的 userId 就是 QQ 号；不要填昵称。' },
   ],
 
   setup(api) {
@@ -57,6 +59,10 @@ export default {
     const groupAllowed = (gid) => {
       const list = String(settings().groupList || '').split(/[\s,，]+/).filter(Boolean)
       return list.length === 0 || list.includes(String(gid))
+    }
+    const blocked = (uid) => {
+      const list = String(settings().blockList || '').split(/[\s,，]+/).filter(Boolean)
+      return list.includes(String(uid))
     }
 
     // ---------- 群友说话习惯 ----------
@@ -100,6 +106,7 @@ export default {
       if (!settings().learnGroups) return
       if (!msg || msg.kind !== 'group' || !msg.groupId || !msg.userId) return
       if (String(msg.userId) === String(api.config().botQQ)) return
+      if (blocked(msg.userId)) return
       if (!groupAllowed(msg.groupId)) return
       const t = clean(text)
       if (!t || t.length < 2) return
@@ -155,6 +162,7 @@ export default {
       ].filter(Boolean).join('；')
     }
     function styleLineFor(groupId, uid) {
+      if (blocked(uid)) return ''
       const db = loadStyles()
       return summarize(db.members[styleKey(groupId, uid)] || {})
     }
@@ -194,7 +202,7 @@ export default {
           const sid = exec?.agent?.session?.id || exec?.session?.id || exec?.sessionId || ''
           if (!sid || api.core.hub?.turnSendersAllOwner?.(sid) !== true) return { ok: false, message: '群友口癖只给主人看。' }
           const db = loadStyles()
-          const list = Object.values(db.members || {})
+          const list = Object.values(db.members || {}).filter((m) => !blocked(m.uid))
           const q = String(name || '').trim()
           const hit = q ? list.filter((m) => String(m.name).includes(q) || String(m.uid) === q) : list.slice(-12)
           if (!hit.length) return { ok: true, message: '还没有学到群友的说话样本。' }
@@ -248,7 +256,7 @@ export default {
     })
     api.route('/styles', () => {
       const db = loadStyles()
-      const items = Object.entries(db.members || {}).map(([key, m]) => ({
+      const items = Object.entries(db.members || {}).filter(([, m]) => !blocked(m.uid)).map(([key, m]) => ({
         key,
         name: m.name || key,
         groupId: m.groupId || '',
@@ -431,4 +439,5 @@ export default {
     ])
   },
 }
+
 

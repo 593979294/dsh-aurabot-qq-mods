@@ -112,6 +112,13 @@ test('非主人不能查看群友样本', async () => {
   assert.match(r.message, /只给主人看/)
 })
 
+test('黑名单里的 QQ 不会被学习', async () => {
+  const f = makeApi({ settings: { blockList: 'u1' } })
+  msg(f, '哈哈哈哈 笑死 这也太离谱了')
+  const r = await tool(f, 'group_style_profile').execute({}, { sessionId: 's1' })
+  assert.match(r.message, /还没有学到/)
+})
+
 test('清空样本只清 styles.json', async () => {
   const f = makeApi()
   msg(f, '哈哈哈哈 笑死')
