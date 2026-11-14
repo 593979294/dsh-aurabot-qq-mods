@@ -87,11 +87,11 @@ return function Panel({ toast }) {
     ),
 
     state && h('div', { style: { marginBottom: 10 } },
-      h('p', { className: 'ab-small ab-muted', style: { marginBottom: 4 } }, '乐子清单（点「歇了」让她今天别碰这项）'),
-      state.joys.map((j) => h('div', { key: j.id, style: { display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(128,128,128,.08)', borderRadius: 8, padding: '5px 10px', marginBottom: 4 } },
-        h('span', { style: { flex: 1, fontSize: 13 } }, j.name, j.ok === false && h('span', { className: 'ab-small ab-muted', style: { marginLeft: 6 } }, '（对应模块没装，不会出现在她的清单里）')),
+      h('p', { className: 'ab-small ab-muted', style: { marginBottom: 4 } }, '乐子清单（点「歇了」让她今天别碰这项，点错了再点「记回来」就恢复）'),
+      state.joys.map((j) => h('div', { key: j.id, style: { display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(128,128,128,.08)', borderRadius: 8, padding: '5px 10px', marginBottom: 4, opacity: j.on === false ? 0.45 : 1 } },
+        h('span', { style: { flex: 1, fontSize: 13 } }, j.name, j.on === false && h('span', { className: 'ab-small ab-muted', style: { marginLeft: 6 } }, '（歇了）'), j.ok === false && h('span', { className: 'ab-small ab-muted', style: { marginLeft: 6 } }, '（对应模块没装，不会出现在她的清单里）')),
         h('span', { className: 'ab-small ab-muted' }, `兴趣 ${j.weight} · 上次 ${ago(j.lastAt)}`),
-        h('button', { onClick: () => toggle(j.id), style: { fontSize: 12, padding: '2px 10px', borderRadius: 6, border: '1px solid rgba(128,128,128,.3)', background: 'transparent', color: 'inherit', cursor: 'pointer' } }, '歇了'),
+        h('button', { onClick: () => toggle(j.id), style: { fontSize: 12, padding: '2px 10px', borderRadius: 6, border: '1px solid rgba(128,128,128,.3)', background: 'transparent', color: 'inherit', cursor: 'pointer' } }, j.on === false ? '记回来' : '歇了'),
       ))),
 
     h('p', { className: 'ab-small ab-muted', style: { marginBottom: 4 } }, '她这一天的痕迹（每道闸的判定都在，能回答"她今天为什么没醒"）'),
