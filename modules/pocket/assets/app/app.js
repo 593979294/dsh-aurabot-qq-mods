@@ -1266,6 +1266,33 @@ function showPairErr(text, codes = []) {
   openCodes(codes)
 }
 
+// 在手机浏览器里打开（不在 app 壳里，没有 __pocketApp 标记）：给一条下载 App 的路，
+// 新用户拿到配对链接就能自己装，不用找群主要安装包。iPhone 则提示直接用网页。
+async function maybeAppBanner() {
+  if (window.__pocketApp) return
+  const bar = $('#appdl')
+  if (!bar) return
+  const ios = /iPhone|iPad|iPod/i.test(navigator.userAgent)
+  $('#appdl-ios').hidden = !ios
+  $('#appdl-android').hidden = ios
+  let info = null
+  try {
+    info = await api('/api/app-info', { timeout: 5000 })
+  } catch {}
+  if (info && info.ok && info.available) {
+    const link = $('#appdl-link')
+    link.hidden = false
+    // 下载链接带 token（服务端 guard 认 query），浏览器点链接直接存文件
+    link.href = `${base()}/api/app-download?token=${encodeURIComponent(S.token)}`
+    $('#appdl-size').textContent = (info.version ? 'v' + info.version + ' · ' : '') + Math.max(1, Math.round(info.size / 1024)) + ' KB'
+    $('#appdl-note').hidden = true
+  } else {
+    $('#appdl-link').hidden = true
+    $('#appdl-note').hidden = ios
+  }
+  bar.hidden = false
+}
+
 function toPair(reason, codes) {
   stopPolling()
   if (reason) showPairErr(reason, codes || [])
@@ -1386,6 +1413,8 @@ async function boot() {
     }
   }
   for (const b of $$('.pet-btns [data-action]')) b.onclick = () => petAct(b.dataset.action)
+
+  maybeAppBanner()
 
   if (!S.token) return toPair()
 
