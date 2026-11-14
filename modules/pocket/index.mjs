@@ -17,7 +17,7 @@ import { spawn, execFileSync } from 'node:child_process'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
 const RING_MAX = 500
-const VERSION = '1.5.4'
+const VERSION = '1.5.5'
 const DEFAULT_PORT = 7788
 const MAX_MEDIA_BYTES = 12 * 1024 * 1024
 
@@ -701,6 +701,7 @@ export default {
       // 只读游标，不带事件体：app 启动时先问「现在到几号」，
       // 好把「历史接口已经画过」的那一段跳过去，否则历史 + 事件环会把同一条消息画两遍
       seq: () => ({ ok: true, seq }),
+      appApk: () => apkInfo(),
       history: (days) => ({ ok: true, list: readHistory(days) }),
       message: (text, image) => inject(text, image),
       voiceNote: (audio) => voiceNote(audio),
@@ -946,6 +947,35 @@ export default {
     const CF_SHA256 = 'd5c1d82031da6253dcdcff64c944cd0fe063016edeb2e4fd088075fc9bd52d0a'
     const CF_BASE = `https://github.com/cloudflare/cloudflared/releases/download/${CF_VERSION}/${CF_ASSET}`
     const CF_MIRRORS = [CF_BASE, `https://ghfast.top/${CF_BASE}`, `https://gh-proxy.com/${CF_BASE}`]
+
+    // 安卓 App 安装包：放数据目录 app/pocket.apk（可选同名 .json 写 {"version":"1.0.5"}）。
+    // 新用户在手机浏览器里打开配对页就能直接下载，不用再走 QQ 传文件；换包只要覆盖文件，不用改代码。
+    const apkFile = () => join(api.dataDir(), 'app', 'pocket.apk')
+    let apkCache = null // 按 mtime+size 缓存 hash，避免每次请求都算一遍 4MB 的 sha256
+    function apkInfo() {
+      const f = apkFile()
+      let st
+      try {
+        st = statSync(f)
+      } catch {
+        apkCache = null
+        return { ok: true, available: false, path: f }
+      }
+      if (apkCache && apkCache.mtimeMs === st.mtimeMs && apkCache.size === st.size) return { ok: true, available: true, ...apkCache, path: f }
+      const info = {
+        mtimeMs: st.mtimeMs,
+        size: st.size,
+        sha256: createHash('sha256').update(readFileSync(f)).digest('hex'),
+        updatedAt: st.mtime.toISOString(),
+      }
+      try {
+        info.version = String(JSON.parse(readFileSync(f + '.json', 'utf8')).version || '')
+      } catch {
+        info.version = ''
+      }
+      apkCache = info
+      return { ok: true, available: true, ...info, path: f }
+    }
     /**
      * 下载 cloudflared（普通用户最卡的一步：让人去 GitHub 找 releases、选对文件、再放 PATH，
      * 十个人有八个做不下来）。下到模块数据目录，失败时把「下一步怎么办」写清楚。
@@ -1316,6 +1346,7 @@ export default {
     api.route('/state', (req, res) => (guard(req, res) ? ops.state() : undefined))
     api.route('/events', (req, res) => (guard(req, res) ? ops.events(urlOf(req).searchParams.get('after')) : undefined))
     api.route('/seq', (req, res) => (guard(req, res) ? ops.seq() : undefined))
+    api.route('/app-info', (req, res) => (guard(req, res) ? ops.appApk() : undefined))
     api.route('/history', (req, res) => (guard(req, res) ? ops.history(Number(urlOf(req).searchParams.get('days') || 3) || 3) : undefined))
     api.route('/moments', async (req, res) => (guard(req, res) ? ops.moments() : undefined))
     api.route('/skin', (req, res) => (guard(req, res) ? ops.skin() : undefined))
@@ -1469,6 +1500,16 @@ export default {
         if (route === 'state') return json(res, 200, ops.state())
         if (route === 'events') return json(res, 200, ops.events(url.searchParams.get('after')))
         if (route === 'seq') return json(res, 200, ops.seq())
+        // 安装包：信息给网页判断要不要亮下载条；下载用原始字节流（浏览器点链接直接存）
+        if (route === 'app-info') return json(res, 200, apkInfo())
+        if (route === 'app-download') {
+          const info = apkInfo()
+          if (!info.available) return json(res, 404, { ok: false, message: '安装包还没放：把 APK 复制到 ' + apkFile() })
+          send(res, 200, readFileSync(info.path), 'application/vnd.android.package-archive', {
+            'content-disposition': 'attachment; filename="pocket-aurabot.apk"',
+          })
+          return undefined
+        }
         if (route === 'history') return json(res, 200, ops.history(Number(url.searchParams.get('days') || 3) || 3))
         if (route === 'moments') return json(res, 200, await ops.moments())
         if (route === 'skin') return json(res, 200, ops.skin())
@@ -1651,7 +1692,7 @@ export default {
       ...svcInfo(),
     })
 
-    hooks.__test = { inject, voiceNote, guard, petInteract, petState, pushEvent, ring: () => ring, readHistory, tokenOf, lanAddresses, urlOf, ops, handle, decodeImage, mediaBytesOf, sniffMime, installCloudflared, cfPolicy: { version: CF_VERSION, size: CF_SIZE, sha256: CF_SHA256, base: CF_BASE, mirrors: CF_MIRRORS } }
+    hooks.__test = { inject, voiceNote, guard, petInteract, petState, pushEvent, ring: () => ring, readHistory, tokenOf, lanAddresses, urlOf, ops, handle, decodeImage, mediaBytesOf, sniffMime, installCloudflared, apkInfo, apkFile, cfPolicy: { version: CF_VERSION, size: CF_SIZE, sha256: CF_SHA256, base: CF_BASE, mirrors: CF_MIRRORS } }
   },
 }
 

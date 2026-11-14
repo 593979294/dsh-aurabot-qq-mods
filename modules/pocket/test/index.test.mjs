@@ -1,5 +1,6 @@
 import { test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -166,6 +167,49 @@ test('seq 游标：只给号不给事件体（app 启动时靠它跳过历史已
   T.pushEvent('her', { text: '游标一' })
   const after = routes['/seq'](req(token, { url: '/seq' }), {})
   assert.equal(after.seq, before.seq + 1)
+})
+
+test('app-info / app-download：数据目录放了 APK 才可下载，字节与 hash 必须对得上', async () => {
+  const token = T.tokenOf()
+  // 没放安装包：available=false
+  rmSync(join(DATA_DIR, 'app'), { recursive: true, force: true })
+  const none = T.apkInfo()
+  assert.equal(none.ok, true)
+  assert.equal(none.available, false)
+  // 没放包时下载给 404，带放置路径提示
+  const res404 = mockRes()
+  await T.handle(mockReq({ url: `/api/app-download?token=${token}` }), res404)
+  assert.equal(res404.code, 404)
+
+  // 放一个假 APK：信息要算对，下载字节要逐字节一致
+  mkdirSync(join(DATA_DIR, 'app'), { recursive: true })
+  const fake = Buffer.concat([Buffer.from('PK\u0003\u0004'), Buffer.alloc(1024, 0x61)])
+  writeFileSync(join(DATA_DIR, 'app', 'pocket.apk'), fake)
+  writeFileSync(join(DATA_DIR, 'app', 'pocket.apk.json'), JSON.stringify({ version: '1.0.5' }))
+  try {
+    const info = routes['/app-info'](req(token, { url: '/app-info' }), {})
+    assert.equal(info.ok, true)
+    assert.equal(info.available, true)
+    assert.equal(info.size, fake.length)
+    assert.equal(info.version, '1.0.5')
+    assert.equal(info.sha256, createHash('sha256').update(fake).digest('hex'))
+
+    // 下载：类型 + 附件头 + 字节一致
+    const hres = mockRes()
+    await T.handle(mockReq({ url: `/api/app-download?token=${token}` }), hres)
+    assert.equal(hres.code, 200)
+    assert.equal(hres.type, 'application/vnd.android.package-archive')
+    assert.equal(Buffer.concat(hres.chunks).equals(fake), true)
+
+    // 没密钥拿不到
+    const res401 = mockRes()
+    await T.handle(mockReq({ url: '/api/app-download' }), res401)
+    assert.equal(res401.code, 401)
+  } finally {
+    rmSync(join(DATA_DIR, 'app'), { recursive: true, force: true })
+  }
+  // 删掉之后缓存必须失效：又变回不可用
+  assert.equal(T.apkInfo().available, false)
 })
 
 test('events 超过 200 条时 seq 停在批尾，不跳到全局（否则中间的事件会丢）', () => {

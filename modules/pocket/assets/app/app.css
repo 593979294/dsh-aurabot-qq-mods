@@ -517,6 +517,22 @@ body.dark .glass { background: color-mix(in srgb, var(--surface) 78%, transparen
 .pair-hint { color: var(--muted); font-size: 11.5px; line-height: 1.8; margin: 14px 0 0; }
 .pair-err { color: #d8534f; font-size: 12.5px; margin: 10px 0 0; line-height: 1.75; white-space: pre-line; word-break: break-word; }
 
+/* 下载条：只在手机浏览器里出现（app 壳里有 __pocketApp 标记，不显示） */
+.appdl {
+  margin: 10px 12px 0;
+  padding: 12px 14px;
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.appdl-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.appdl-text b { font-size: 13.5px; }
+.appdl-text span { color: var(--muted); font-size: 12px; line-height: 1.7; }
+.appdl-text .appdl-note { color: #c08a2d; }
+.appdl-btn { flex-shrink: 0; text-decoration: none; font-size: 13px; padding: 10px 14px; border-radius: 12px; }
+.appdl-btn[hidden] { display: none; }
+
 /* 代号速查（配对页折叠表）：报错时命中的那几条自动展开、标红 */
 .pair-codes { margin: 6px 0 0; }
 .pair-codes:empty { display: none; }

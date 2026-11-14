@@ -19,6 +19,17 @@
 
 <div id="app">
 
+  <!-- 在普通浏览器里打开（不在 app 壳里）才显示；app 内由 __pocketApp 标记跳过 -->
+  <div id="appdl" class="appdl glass" hidden>
+    <div class="appdl-text">
+      <b>还没装口袋 App？</b>
+      <span id="appdl-android">安卓：点下面下载安装包 → 安装（允许未知来源）→ 打开 App 扫码或把本页地址填进去配对。</span>
+      <span id="appdl-ios" hidden>iPhone：不用装 App，直接用本页就行（建议 Safari 菜单里「添加到主屏幕」，像个 App 一样用）。</span>
+      <span id="appdl-note" hidden class="appdl-note">电脑上还没放安装包：把 APK 复制到模块数据目录 app/pocket.apk 即可（可加同名 .json 写 {"version":"1.0.5"}）。</span>
+    </div>
+    <a id="appdl-link" class="btn-primary appdl-btn" href="#" download>下载 App（<span id="appdl-size"></span>）</a>
+  </div>
+
   <!-- 配对页（没地址/密钥时） -->
   <section id="view-pair" class="view" hidden>
     <div class="pair-card glass">
