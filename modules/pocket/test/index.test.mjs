@@ -212,6 +212,41 @@ test('app-info / app-download：数据目录放了 APK 才可下载，字节与 
   assert.equal(T.apkInfo().available, false)
 })
 
+test('apk 目录也认 + net-info 常显版本（面板不用翻日志就知道放了哪一版）', () => {
+  rmSync(join(DATA_DIR, 'app'), { recursive: true, force: true })
+  rmSync(join(DATA_DIR, 'apk'), { recursive: true, force: true })
+  const fake = Buffer.from('PK\u0003\u0004apk-dir')
+  try {
+    // 只放 apk/ 目录：总有人记成 apk/，也得能用
+    mkdirSync(join(DATA_DIR, 'apk'), { recursive: true })
+    writeFileSync(join(DATA_DIR, 'apk', 'pocket.apk'), fake)
+    writeFileSync(join(DATA_DIR, 'apk', 'pocket.apk.json'), JSON.stringify({ version: '1.0.6' }))
+    const info = T.apkInfo()
+    assert.equal(info.available, true)
+    assert.equal(info.version, '1.0.6')
+    assert.ok(info.path.includes(join('modules-data', 'phone', 'apk')), '应该落在 apk/ 目录：' + info.path)
+
+    // 面板数据源 /net-info 里带着 apk 信息，面板常显靠它
+    const net = routes['/net-info']()
+    assert.equal(net.apk.available, true)
+    assert.equal(net.apk.version, '1.0.6')
+    assert.equal(typeof net.apk.updatedAt, 'string')
+
+    // 包从 apk/ 挪回 app/：缓存必须按 path 失效，不能沿用 apk/ 那份的 hash/版本
+    mkdirSync(join(DATA_DIR, 'app'), { recursive: true })
+    writeFileSync(join(DATA_DIR, 'app', 'pocket.apk'), fake)
+    writeFileSync(join(DATA_DIR, 'app', 'pocket.apk.json'), JSON.stringify({ version: '1.0.7' }))
+    const moved = T.apkInfo()
+    assert.ok(moved.path.includes(join('modules-data', 'phone', 'app')), 'app/ 优先：' + moved.path)
+    assert.equal(moved.version, '1.0.7')
+    assert.equal(moved.sha256, createHash('sha256').update(fake).digest('hex'))
+  } finally {
+    rmSync(join(DATA_DIR, 'app'), { recursive: true, force: true })
+    rmSync(join(DATA_DIR, 'apk'), { recursive: true, force: true })
+  }
+  assert.equal(T.apkInfo().available, false)
+})
+
 test('events 超过 200 条时 seq 停在批尾，不跳到全局（否则中间的事件会丢）', () => {
   const token = T.tokenOf()
   const from = routes['/seq'](req(token, { url: '/seq' }), {}).seq

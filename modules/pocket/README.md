@@ -23,7 +23,7 @@ DSH 面板那个端口要登录态，手机拿不到。所以模组自带一个�
 
 ### 新用户没有 APK 怎么办（不用群主传文件）
 
-把安装包放到模块数据目录：`plugins-data/aurabot/modules-data/pocket/app/pocket.apk`（可加同名 `pocket.apk.json` 写 `{"version":"1.0.5"}` 用来在下载按钮上显示版本）。放好之后：
+把安装包放到模块数据目录：`plugins-data/aurabot/modules-data/pocket/app/pocket.apk`（放 `apk/pocket.apk` 也认，两个目录都有时 `app/` 优先）。强烈建议加同名 `pocket.apk.json` 写 `{"version":"1.0.5"}`——版本号会显示在**面板的「安卓安装包」一行**和手机下载条上，用户问「我这是最新的吗」时不用翻日志对 hash。放好之后：
 
 - 任何人在**手机浏览器**里打开配对链接，页面顶部会自动出现「还没装口袋 App？」的下载条，点一下就把 APK 下载到手机（下载走的是同一套密钥鉴权，链接里带 token，别人拿不到地址就下不了）
 - 装好 App 后打开，扫面板上的二维码、或把配对链接里的地址 + 密钥填进配对页即可
@@ -217,7 +217,7 @@ app 的地址解析认这几种写法：`192.168.1.5` / `host:7788` / `[240e::1]
 - 隧道进程：cloudflared 独立运行，pid 写在 `plugins-data/aurabot/modules-data/pocket/`，模组热重载不影响它
 - 隧道守护状态：同目录 `tunnel-want.json`（「用户希望隧道开着」+ 已自动重启次数）；删掉它就等于放弃自动重启
 - 自己下的 cloudflared：同目录 `bin/cloudflared.exe`（面板「一键下载」装在这里，删掉即可重下）
-- 安卓安装包：同目录 `app/pocket.apk`（新用户在手机浏览器打开配对页即可下载；可选 `app/pocket.apk.json` 标版本号）
+- 安卓安装包：同目录 `app/pocket.apk`（新用户在手机浏览器打开配对页即可下载；`app/pocket.apk.json` 标版本号，面板「安卓安装包」一行和下载条都会显示，忘了标面板上会红字提醒）
 - 聊天记录：不在本模块存——直接读她自己的 `chatlog/`（唯一事实来源）
 
 ## 测试

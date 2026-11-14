@@ -17,7 +17,7 @@ import { spawn, execFileSync } from 'node:child_process'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
 const RING_MAX = 500
-const VERSION = '1.5.5'
+const VERSION = '1.5.6'
 const DEFAULT_PORT = 7788
 const MAX_MEDIA_BYTES = 12 * 1024 * 1024
 
@@ -950,8 +950,18 @@ export default {
 
     // 安卓 App 安装包：放数据目录 app/pocket.apk（可选同名 .json 写 {"version":"1.0.5"}）。
     // 新用户在手机浏览器里打开配对页就能直接下载，不用再走 QQ 传文件；换包只要覆盖文件，不用改代码。
-    const apkFile = () => join(api.dataDir(), 'app', 'pocket.apk')
-    let apkCache = null // 按 mtime+size 缓存 hash，避免每次请求都算一遍 4MB 的 sha256
+    // apk/ 目录也认（总有人记成 apk/，实测包括机主本人）；两个目录都放时 app/ 优先。
+    const APK_DIRS = ['app', 'apk']
+    const apkFile = () =>
+      APK_DIRS.map((d) => join(api.dataDir(), d, 'pocket.apk')).find((f) => {
+        try {
+          statSync(f)
+          return true
+        } catch {
+          return false
+        }
+      }) || join(api.dataDir(), 'app', 'pocket.apk')
+    let apkCache = null // 按 path+mtime+size 缓存 hash，避免每次请求都算一遍 4MB 的 sha256
     function apkInfo() {
       const f = apkFile()
       let st
@@ -961,8 +971,10 @@ export default {
         apkCache = null
         return { ok: true, available: false, path: f }
       }
-      if (apkCache && apkCache.mtimeMs === st.mtimeMs && apkCache.size === st.size) return { ok: true, available: true, ...apkCache, path: f }
+      // path 也在缓存键里：包从 apk/ 挪回 app/ 时不能误用旧包的 hash
+      if (apkCache && apkCache.path === f && apkCache.mtimeMs === st.mtimeMs && apkCache.size === st.size) return { ok: true, available: true, ...apkCache }
       const info = {
+        path: f,
         mtimeMs: st.mtimeMs,
         size: st.size,
         sha256: createHash('sha256').update(readFileSync(f)).digest('hex'),
@@ -974,7 +986,7 @@ export default {
         info.version = ''
       }
       apkCache = info
-      return { ok: true, available: true, ...info, path: f }
+      return { ok: true, available: true, ...info }
     }
     /**
      * 下载 cloudflared（普通用户最卡的一步：让人去 GitHub 找 releases、选对文件、再放 PATH，
@@ -1317,7 +1329,8 @@ export default {
       if (on() && !server) start()
       // 隧道也顺手看一眼：不用等 60 秒的定时器，打开面板就能看到它被拉起来
       if (readWant().want === true) tunnelWatch().catch(() => {})
-      return { ok: true, addresses: lanAddresses(), enabled: on(), port: port(), tone: tone(), tunnel: tunnelInfo(), service: svcInfo(), stale: staleInfo() }
+      // apk 也带上：面板常显「放的是哪一版」，用户问「我这是最新的吗」不用翻日志
+      return { ok: true, addresses: lanAddresses(), enabled: on(), port: port(), tone: tone(), tunnel: tunnelInfo(), service: svcInfo(), stale: staleInfo(), apk: apkInfo() }
     })
     api.route('/service', async (req) => {
       const b = await bodyOf(req).catch(() => ({}))

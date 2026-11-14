@@ -131,6 +131,8 @@ return function Panel({ settings, save, toast }) {
           ? `端口 ${svc.wantPort} 被占用，实际在 ${svc.listening}（手机要填新端口）`
           : `服务端口 ${svc.listening || port}${svc.ipv4Only ? '（仅 IPv4）' : ''}`
   const tun = net?.tunnel || {}
+  const apk = net?.apk || {}
+  const apkDate = apk.updatedAt ? new Date(apk.updatedAt).toLocaleDateString('zh-CN') : ''
   const tunnelOrigin = tun.running && tun.url ? tun.url.replace(/^https?:\/\//, '') : ''
   const tunnelPair = tunnelOrigin ? `https://${tunnelOrigin}` : ''
   // 配对优先给隧道地址（外面也能用）；没跑隧道就用局域网第一条
@@ -303,6 +305,27 @@ return function Panel({ settings, save, toast }) {
         : h('p', { className: 'ab-small ab-muted' }, net ? '没找到局域网地址（没联网？）' : '读取中…'),
       h('p', { className: 'ab-small ab-muted', style: { marginTop: 6 } }, '密钥：'),
       h('code', { style: cell }, token || '（还没生成，动一下开关就会生成）'),
+    ),
+
+    // 安装包状态常显：机主一眼看到自己放的是哪一版、什么时候放的，
+    // 用户问「我下的是不是最新」时不用翻日志对 hash
+    h('div', { style: { marginTop: 10 } },
+      h('p', { className: 'ab-small', style: { fontWeight: 600 } }, '安卓安装包（新用户手机浏览器打开配对页就能下载）：'),
+      !net
+        ? h('p', { className: 'ab-small ab-muted', style: { margin: '4px 0 0' } }, '读取中…')
+        : apk.available
+          ? h('p', { className: 'ab-small ab-muted', style: { margin: '4px 0 0', lineHeight: 1.8 } },
+              'pocket.apk · ',
+              apk.version
+                ? h('b', null, 'v' + apk.version)
+                : h('span', { style: { color: '#c0392b' } }, '未标注版本'),
+              ' · ' + Math.max(1, Math.round((apk.size || 0) / 1024)) + ' KB · ' + apkDate + ' 放入',
+              apk.version
+                ? null
+                : h('span', null, '——在安装包旁边放个 pocket.apk.json 写 {"version":"x.y.z"}，这行和手机上的下载条就会显示版本号'),
+            )
+          : h('p', { className: 'ab-small ab-muted', style: { margin: '4px 0 0', lineHeight: 1.8 } },
+              '还没放：把 pocket.apk 复制到 plugins-data/aurabot/modules-data/pocket/app/ 下（放 apk/ 子目录也认），放好后这里会显示版本号'),
     ),
 
     h('div', { style: { marginTop: 12 } },
