@@ -8,7 +8,7 @@ import { makeApi, pinHunger } from './helpers.mjs'
 test('模块元信息：id、版本、面板、设置项', () => {
   assert.equal(plugin.id, 'feed')
   assert.equal(plugin.name, '喂食')
-  assert.equal(plugin.version, '3.2.0')
+  assert.equal(plugin.version, '3.2.1')
   assert.equal(plugin.api, 1)
   assert.equal(plugin.tab, 'persona')
   assert.equal(plugin.panel, 'panel.js')
@@ -41,7 +41,7 @@ test('/status 返回面板需要的字段', async (t) => {
   t.after(env.cleanup)
   const st = await env.call('/status')
   assert.equal(st.ok, true)
-  assert.equal(st.version, '3.2.0')
+  assert.equal(st.version, '3.2.1')
   assert.equal(typeof st.hunger, 'number')
   assert.equal(st.satiety, 100 - st.hunger)
   assert.ok(st.label)
