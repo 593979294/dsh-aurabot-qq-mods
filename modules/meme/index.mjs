@@ -1,3 +1,4 @@
+import { createPreviewRecall } from './lib/preview-recall.mjs';
 import { DEFAULT_REST, validateRest, isResting } from './lib/rest.mjs';
 import { isDeepStrictEqual } from 'node:util';
 import { checkEnvironment } from './lib/environment.mjs';
@@ -14,7 +15,7 @@ import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 const HELP = `表情制作
 #表情列表 [页码] · #表情搜索 关键词 [页码]
 #表情列表图片（完整目录图）
-#表情详情 摸摸 · #表情预览 摸摸
+#表情详情 摸摸 · #表情预览 摸摸（3 秒后撤回预览图）
 #摸摸 @某人（也可附图或引用图片）
 #鲁迅说 今天也要开心
 #表情 随机 · #表情排行 · #表情状态
@@ -22,7 +23,7 @@ const HELP = `表情制作
 主人：#表情禁用 模板 / #表情启用 模板
 #表情别名 新词=模板 · #表情开 / #表情关`;
 export default {
-  id: 'meme', name: '表情制作', version: '1.3.7', api: 1,
+  id: 'meme', name: '表情制作', version: '1.3.8', api: 1,
   description: '用头像、图片或文字制作表情，支持预览和自定义触发词',
   panel: 'panel.js',
   defaults: { rest: DEFAULT_REST, enabled: true, direct: false, groups: '', private: true, cooldown: 3, indexColumns: 5, avatar: true, disabled: [], favorites: [], aliases: {} },
@@ -43,7 +44,8 @@ export default {
     try { stats = JSON.parse(readFileSync(statsFile, 'utf8')); } catch {}
     const avatarCache = new Map(), cooldowns = new Map();
     const settings = () => api.settings();
-    const reply = (msg, text) => isResting(settings(), msg) ? undefined : api.reply(msg, text);
+    const previewRecall = createPreviewRecall(api);
+    const reply = (msg, text) => disposed || isResting(settings(), msg) ? undefined : api.reply(msg, text);
     function refreshIndex() {
       const aliases = JSON.stringify(settings().aliases || {});
       if (aliases !== aliasKey) { index = buildIndex(items, settings().aliases); aliasKey = aliases; }
@@ -71,13 +73,14 @@ export default {
       if (!(e instanceof UserError)) api.log.warn('表情模块操作失败', e.stack || e.message || String(e));
       return publicErrorMessage(e);
     }
-    async function sendImage(msg, result) {
-      if (isResting(settings(), msg)) return false;
+    async function sendImage(msg, result, preview = false) {
+      if (disposed || isResting(settings(), msg)) return false;
       const segments = [];
       if (msg.kind === 'group' && msg.messageId && msg.messageId !== 'sim') segments.push({ type: 'reply', data: { id: String(msg.messageId) } });
       segments.push({ type: 'image', data: { file: 'base64://' + result.base64 } });
       const sent = await api.sendSegments(msg.chatId, segments, '[表情制作]');
       if (!sent) throw new UserError('QQ 未确认发送成功，请检查 AuraBot 开关和网关日志');
+      if (preview) previewRecall.add(sent, msg.raw?.simulated === true);
       return true;
     }
     function allowed(msg) {
@@ -98,10 +101,10 @@ export default {
       const input = preview ? {options:matched.shortcut?.options || {}} : parseInput(matched.rest || '', matched.item, matched.shortcut, msg.nickname || '你好');
       const images = preview ? [] : await collectImages(api, msg, matched.item.params, avatarCache, settings().avatar !== false);
       for (const [i, name] of (matched.shortcut?.names || []).entries()) if (images[i] && name) images[i] = {...images[i], name};
-      if (isResting(settings(), msg)) return;
+      if (disposed || isResting(settings(), msg)) return;
       const result = await engine.call(preview ? 'preview' : 'generate', { key: matched.item.key, images, ...input });
-      const sent = await sendImage(msg, result);
-      if (sent && !preview && !msg.raw?.simulated) { stats[matched.item.key] = (Number(stats[matched.item.key]) || 0) + 1; clearTimeout(saveTimer); saveTimer = setTimeout(saveStats, 3000); }
+      const sent = await sendImage(msg, result, preview);
+      if (sent && !disposed && !preview && !msg.raw?.simulated) { stats[matched.item.key] = (Number(stats[matched.item.key]) || 0) + 1; clearTimeout(saveTimer); saveTimer = setTimeout(saveStats, 3000); }
       } finally { inFlight--; }
     }
     function list(query = '') {
@@ -109,7 +112,7 @@ export default {
       return formatTemplateList(available(), query);
     }
     async function handle(msg, explicit) {
-      if (!allowed(msg)) return false;
+      if (disposed || !allowed(msg)) return false;
       refreshIndex();
       const request = readRequest(explicit ?? rawText(msg), settings().direct, explicit !== undefined);
       if (!request) return false;
@@ -140,7 +143,8 @@ export default {
         if (isResting(settings(), msg)) return true;
         try {
           const action = command?.[1] || '帮助', arg = command?.[2]?.trim() || '';
-          if (action === '帮助') await reply(msg, HELP);
+          if (action === '预览' && !arg) await reply(msg, '用法：#表情预览 摸摸（预览图发送后 3 秒自动撤回）');
+          else if (action === '帮助') await reply(msg, HELP);
           else if (action === '列表图片' || (action === '列表' && arg === '图片')) {
             ensureReady();
             await sendImage(msg, await engine.call('index-image', { disabled: settings().disabled || [], columns: settings().indexColumns || 5 }));
@@ -220,7 +224,7 @@ export default {
       try { return await engine.call('preview', { key: found.item.key }); }
       catch (e) { throw new UserError(reportFailure(e)); }
     });
-    function dispose() { if (disposed) return; disposed = true; bootstrap.dispose(); extension.dispose(); clearTimeout(saveTimer); engine.dispose(); saveStats(); avatarCache.clear(); }
+    function dispose() { if (disposed) return; disposed = true; previewRecall.dispose(); bootstrap.dispose(); extension.dispose(); clearTimeout(saveTimer); engine.dispose(); saveStats(); avatarCache.clear(); cooldowns.clear(); }
     api.onDispose(dispose);
     // One-time migration: preserve an existing installation; fresh base installs stay light.
     wanted = settings().extensionEnabled;
