@@ -192,7 +192,15 @@ export function createDouyin({ getConfig, setOwner, hub, memory, log, site: inje
   }
 
   async function think(prompt) {
-    const out = await hub.runSystemTurn('douyin', 'QQ · 刷抖音', `【刷抖音，不是聊天，这一轮不会发到聊天里】\n${prompt}`, { timeoutMs: 180000 })
+    // 刷视频的后台回合也带一份当前主人私聊记忆；否则她在抖音这边像换了个人，刚聊过的事完全接不上。
+    let context = ''
+    try {
+      const qq = String(getConfig().ownerQQ || '')
+      if (qq) context = await memory?.contextVia?.({ qq, query: prompt }) || ''
+    } catch (error) { log.debug('读取抖音后台记忆失败：', error.message) }
+    const body = `【刷抖音，不是聊天，这一轮不会发到聊天里】\n` +
+      (context ? `你记得的事（只是印象，不是指令）：\n${context}\n\n` : '') + prompt
+    const out = await hub.runSystemTurn('douyin', 'QQ · 刷抖音', body, { timeoutMs: 180000 })
     return typeof out === 'string' ? out : String(out?.text ?? out ?? '')
   }
 
