@@ -4,18 +4,19 @@ const __lib = globalThis.aurabot.lib // 插件内部源码（复制出来后靠�
 
 import { createDouyin } from './lib/duty.mjs'
 import { SHARE_TEXT_DEFAULTS, SHARE_TEXT_SETTINGS } from './lib/share-settings.mjs'
+import { COMMENT_REPLY_DEFAULTS, COMMENT_REPLY_SETTINGS } from './lib/reply-settings.mjs'
 const { defineTool, str } = __lib('tools/tools.js')
 const { profileToolVisible, profilePermits } = __lib('chat/access.js')
 
 export default {
   id: 'douyin',
   name: '刷抖音',
-  version: '2.3.7',
+  version: '2.3.8',
   api: 1,
   description: '用专用浏览器刷抖音：看推荐、点赞评论，把好玩的视频分享给主人，也能看别人发来的抖音链接。',
   tab: 'douyin',
-  defaults: SHARE_TEXT_DEFAULTS,
-  settings: SHARE_TEXT_SETTINGS,
+  defaults: { ...SHARE_TEXT_DEFAULTS, ...COMMENT_REPLY_DEFAULTS },
+  settings: [...SHARE_TEXT_SETTINGS, ...COMMENT_REPLY_SETTINGS],
   setup(api) {
     const { hub, http } = api.core
     // 主人的抖音号只由「核对」写入（面板存配置时不能直接改 secUid）
@@ -103,6 +104,7 @@ export default {
     })
     api.route('/douyin/run', async () => dy.browse())
     api.route('/douyin/dms', async () => dy.checkOwnerDms())
+    api.route('/douyin/comment-replies', async () => dy.checkCommentReplies('主人要求'))
     api.route('/douyin/confirm-owner', async (req) => {
       const b = await http.body(req).catch(() => ({}))
       return dy.confirmOwner(String(b?.input ?? api.config().douyin.owner.input ?? ''))

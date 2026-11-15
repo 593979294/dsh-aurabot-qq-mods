@@ -67,6 +67,21 @@ test('解析：接口里的视频 → 标题、分类、抖音的内容摘要、
   assert.equal(site.normalizeAweme(aweme('7000000000000000004', { item_title: '' })).title, '视频7000000000000000004的文案')
 })
 
+test('解析：评论回复列表 → 从旧到新，带 uid / cid / 时间', () => {
+  const rs = site.parseReplies({ comments: [
+    { cid: '2', text: '后说的', user: { uid: 4182, nickname: '主人' }, create_time: 100, reply_id: '9', reply_to_reply_id: '8' },
+    { cid: '1', text: '先说的', user: { uid: 7 }, create_time: 50 },
+    { cid: '', text: '没 id', user: { uid: 1 }, create_time: 1 },
+    { cid: '3', text: '', user: { uid: 1 }, create_time: 2 },
+  ] })
+  assert.deepEqual(rs.map((x) => [x.id, x.text]), [['1', '先说的'], ['2', '后说的']])
+  assert.equal(rs[1].uid, '4182')
+  assert.equal(rs[1].nickname, '主人')
+  assert.equal(rs[1].replyId, '9')
+  assert.equal(rs[1].replyToReplyId, '8')
+  assert.equal(rs[1].at, 100000)
+})
+
 test('解析：热评按赞数排；给她看的摘要里有分类、摘要、文案、热评', () => {
   const cs = site.parseComments({ comments: [{ text: '一般', digg_count: 3, user: { nickname: 'a' } }, { text: '太可爱了', digg_count: 5000, user: { nickname: 'b' } }, { text: '', digg_count: 9 }] })
   assert.deepEqual(cs.map((c) => c.text), ['太可爱了', '一般'])
@@ -108,7 +123,7 @@ test('配置：总开关默认关；只剩 4 项权限且默认仅主人；1.0.x
 
 /** 假的抖音网页：记下每次点赞 / 评论落在哪个视频上。 */
 function fakeSite({ feed = [], loggedIn = true, verify = '', likeError = null, commentError = null, liked = new Set(), mentionFails = false, shareFails = false, chat = [] } = {}) {
-  const calls = { ensure: 0, watch: [], like: [], comment: [], share: [], feed: 0, dms: 0, dm: [], dmUid: '', dmSecUid: '', dmFail: 0, dmUncertain: 0 }
+  const calls = { ensure: 0, watch: [], like: [], comment: [], share: [], feed: 0, dms: 0, dm: [], dmUid: '', dmSecUid: '', dmFail: 0, dmUncertain: 0, replies: [], replyList: [] }
   return {
     calls,
     ensure: async () => { calls.ensure++; return { ok: true } },
@@ -123,7 +138,7 @@ function fakeSite({ feed = [], loggedIn = true, verify = '', likeError = null, c
       if (commentError) throw commentError
       if (o.at && mentionFails) throw Object.assign(new Error('@ 候选里没找到主人（可能互相没关注）'), { code: 'mention' })
       calls.comment.push(o.at ? [id, text, o.at] : [id, text])
-      return { ok: true, atOwner: Boolean(o.at) }
+      return { ok: true, atOwner: Boolean(o.at), cid: 'cid-' + id }
     },
     share: async (id, who) => { if (shareFails) throw Object.assign(new Error('分享面板里没找到主人（可能互相没关注、私信不通）'), { code: 'share' }); calls.share.push([id, who.secUid, who.nickname]); return { ok: true } },
     user: async (secUid) => ({ secUid, uid: '4182', nickname: '主人的新昵称', douyinId: 'master01' }),
@@ -142,6 +157,7 @@ function fakeSite({ feed = [], loggedIn = true, verify = '', likeError = null, c
       calls.dm.push(text)
       return { ok: true }
     },
+    replies: async (id, commentId) => { calls.replies.push([id, commentId]); return calls.replyList.slice() },
     loginStart: async () => ({ ok: true, loggedIn: false, shot: 'data:image/png;base64,QR' }),
     loginPoll: async () => ({ ok: true, loggedIn: true, me: { secUid: 'MS4wSELF', nickname: '她的小号' } }),
     show: async () => {},
@@ -150,13 +166,18 @@ function fakeSite({ feed = [], loggedIn = true, verify = '', likeError = null, c
 }
 
 let n = 0
-function setup({ decisions = [], cfgOver = {}, douyinOver = {}, siteOpts = {}, settingsOver = {}, now, onWait = () => {}, owner, turn, proactive } = {}) {
+function setup({ decisions = [], cfgOver = {}, douyinOver = {}, siteOpts = {}, settingsOver = {}, now, onWait = () => {}, owner, turn, commentTurn, proactive } = {}) {
   process.env.AURABOT_DATA_DIR = mkdtempSync(join(tmpdir(), 'aurabot-douyin-' + n++ + '-'))
   const sent = []
   const events = []
   const prompts = []
   const hub = {
-    runSystemTurn: async (name, title, prompt) => { prompts.push(prompt); return turn && name === 'douyin-dm' ? turn(prompt) : JSON.stringify(decisions) },
+    runSystemTurn: async (name, title, prompt) => {
+      prompts.push(prompt)
+      if (turn && name === 'douyin-dm') return turn(prompt)
+      if (commentTurn && name === 'douyin-comment') return commentTurn(prompt)
+      return JSON.stringify(decisions)
+    },
     sendText: async (chatId, text) => { sent.push([chatId, text]); return { message_id: 1 } },
     pushToSession: async (chat, content) => { pushed.push([chat.chatId, content[0].text]) },
   }
@@ -472,6 +493,60 @@ test('site.dm：没 uid 或空内容在开浏览器之前就拒绝', async () =>
   const s = site.createSite({ browser: {}, log: { info() {}, warn() {}, debug() {} } })
   await assert.rejects(() => s.dm('', '你好'), /没有核对过|要发给谁/)
   await assert.rejects(() => s.dm('4182', '   '), /空的/)
+})
+
+// ---------- 评论区接着聊（主人回复她 @ 过的那条评论） ----------
+
+test('评论区接着聊：她 @ 过主人的评论会记下 cid；主人回复后带上原来的评论接一句并真 @ 回去', async () => {
+  const { dy, fs, prompts } = setup({
+    owner: OWNER,
+    decisions: [{ i: 1, comment: '猫猫会开门了', at: true }],
+    douyinOver: { caps: { comment: 5 } },
+    settingsOver: { commentReply: true },
+    commentTurn: () => '哈哈哈真的',
+  })
+  await dy.run({ force: true })
+  assert.equal(fs.calls.comment.length, 1)
+  assert.equal(fs.calls.comment[0][2].uid, '4182', '第一次评论真 @ 了主人')
+
+  fs.calls.replyList = [{ id: 'r1', uid: '4182', nickname: '主人小号', text: '哈哈真的假的', at: Date.now() }]
+  const r = await dy.checkCommentReplies()
+  assert.equal(r.ok, true, r.message)
+  assert.equal(r.replied, 1)
+  assert.deepEqual(fs.calls.replies, [['7000000000000000001', 'cid-7000000000000000001']], '按记下的评论 cid 查回复')
+  const last = fs.calls.comment.at(-1)
+  assert.equal(last[0], '7000000000000000001')
+  assert.equal(last[1], '哈哈哈真的')
+  assert.equal(last[2].uid, '4182', '接话时还是真 @ 主人，主人能收到通知')
+  assert.ok(prompts.some((p) => p.includes('你之前评论：猫猫会开门了') && p.includes('主人回复：哈哈真的假的')), '提示词带上原来的评论和主人的回复')
+  assert.ok(dy.state().history.some((x) => x.kind === 'comment-reply'))
+
+  // 同一条回复看过就记下，不重复接
+  await dy.checkCommentReplies()
+  assert.equal(fs.calls.comment.length, 2)
+})
+
+test('评论区接着聊：面板默认关；太旧的回复不接；别人的回复不接', async () => {
+  const off = setup({ owner: OWNER })
+  const r = await off.dy.checkCommentReplies()
+  assert.equal(r.ok, false)
+  assert.match(r.message, /没打开/)
+
+  const run = setup({
+    owner: OWNER,
+    decisions: [{ i: 1, comment: '猫猫', at: true }],
+    douyinOver: { caps: { comment: 5 } },
+    settingsOver: { commentReply: true },
+    commentTurn: () => '不该回',
+  })
+  await run.dy.run({ force: true })
+  run.fs.calls.replyList = [
+    { id: 'old', uid: '4182', text: '很久以前的回复', at: Date.now() - 25 * 3600_000 },
+    { id: 'other', uid: '9999', text: '路人也来回复', at: Date.now() },
+  ]
+  const rr = await run.dy.checkCommentReplies()
+  assert.equal(rr.replied, 0)
+  assert.equal(run.fs.calls.comment.length, 1, '旧回复和别人的回复都不接')
 })
 
 const until = async (fn, ms = 2000) => { const end = Date.now() + ms; while (!fn() && Date.now() < end) await new Promise((r) => setTimeout(r, 10)); return fn() }
