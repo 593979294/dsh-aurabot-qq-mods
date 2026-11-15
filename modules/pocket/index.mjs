@@ -17,7 +17,7 @@ import { spawn, execFileSync } from 'node:child_process'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
 const RING_MAX = 500
-const VERSION = '1.5.13'
+const VERSION = '1.5.14'
 const DEFAULT_PORT = 7788
 const MAX_MEDIA_BYTES = 12 * 1024 * 1024
 
@@ -1152,8 +1152,22 @@ export default {
 
     // 写隧道状态。地址一变就把「旧地址 + 变更时间」记下来：
     // 临时隧道重建必换域名，而手机里存的是旧地址 —— 光重建没用，得让机主知道要重发一次。
+    // 单独记一份「上一次地址」，**故意不复用 tunnel.json**：点「停止隧道」会删 tunnel.json，
+    // 之后手动重启就无从比较，面板那句「地址换过了，手机要重新配对」就不会亮——
+    // 2026-11-15 13:32 正是这么踩的（手动重启换了域名，面板一声不吭，用户拿着旧链接看 1033）。
+    const lastFile = () => join(api.dataDir(), 'tunnel-last.json')
+    function readLast() {
+      try {
+        const j = JSON.parse(readFileSync(lastFile(), 'utf8'))
+        return j && typeof j === 'object' ? j : {}
+      } catch {
+        return {}
+      }
+    }
     function saveTunnel(next) {
-      const old = readTunnelFile()
+      const cur = readTunnelFile()
+      const last = readLast()
+      const old = { ...last, ...(cur.url ? { url: cur.url } : {}) }
       const out = { ...next }
       if (old.url && out.url && String(old.url) !== String(out.url)) {
         out.prevUrl = String(old.url)
@@ -1166,6 +1180,9 @@ export default {
       }
       try {
         writeFileSync(tunnelFile(), JSON.stringify(out))
+      } catch {}
+      try {
+        writeFileSync(lastFile(), JSON.stringify({ url: out.url || '', prevUrl: out.prevUrl || '', changedAt: out.changedAt || 0, at: out.at || Date.now() }))
       } catch {}
       return out
     }
@@ -1353,6 +1370,7 @@ export default {
 
     function tunnelInfo() {
       const saved = readTunnelFile()
+      const last = readLast()
       const alive = cfRunning()
       const tok = namedToken()
       const host = namedHost()
@@ -1391,8 +1409,8 @@ export default {
         restarts: Number(w.restarts || 0),
         lastRestartAt: Number(w.lastAt || 0),
         // 地址变更记录：quick 隧道重建必然换域名，面板要能直接提醒机主「手机该重新配对了」
-        changedAt: Number(saved.changedAt || 0),
-        prevUrl: String(saved.prevUrl || ''),
+        changedAt: Number(saved.changedAt || last.changedAt || 0),
+        prevUrl: String(saved.prevUrl || last.prevUrl || ''),
         // 公网自检：面板上直接显示「隧道真的通吗」，而不是只看进程在不在
         probe: probeSnapshot(),
       }

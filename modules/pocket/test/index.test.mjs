@@ -450,6 +450,25 @@ test('diag：隧道自检自己打的请求不算「有人访问」', async () =
   assert.equal(ni2.recent[ni2.recent.length - 1].ip, '9.9.9.9')
 })
 
+test('隧道：手动「停止→启动」换了域名也能记上（tunnel.json 被删也照样提示）', async () => {
+  // 前面用例可能留下状态，先清干净
+  rmSync(join(DATA_DIR, 'tunnel.json'), { force: true })
+  rmSync(join(DATA_DIR, 'tunnel-last.json'), { force: true })
+  const first = T.saveTunnel({ url: 'https://aaa.trycloudflare.com', pid: 1, at: 1 })
+  assert.equal(first.prevUrl, undefined)
+  // 停止隧道会删掉 tunnel.json —— 这里直接删，模拟「停止」之后又手动启动
+  rmSync(join(DATA_DIR, 'tunnel.json'), { force: true })
+  const second = T.saveTunnel({ url: 'https://bbb.trycloudflare.com', pid: 2, at: 2 })
+  assert.equal(second.prevUrl, 'https://aaa.trycloudflare.com', '手动重启换了域名必须记 prevUrl')
+  assert.ok(second.changedAt > 0)
+  // tunnel.json 再次被删（停止状态）时，tunnelInfo 仍能从隧道历史里给出「上次换过地址」
+  rmSync(join(DATA_DIR, 'tunnel.json'), { force: true })
+  const info = T.tunnelInfo()
+  assert.equal(info.prevUrl, 'https://aaa.trycloudflare.com')
+  assert.ok(info.changedAt > 0)
+  rmSync(join(DATA_DIR, 'tunnel-last.json'), { force: true })
+})
+
 test('state 返回人格、心情和宠物数值', () => {
   const token = T.tokenOf()
   const r = routes['/state'](req(token, { url: '/state' }), {})
