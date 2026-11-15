@@ -17,7 +17,7 @@ import { spawn, execFileSync } from 'node:child_process'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
 const RING_MAX = 500
-const VERSION = '1.5.12'
+const VERSION = '1.5.13'
 const DEFAULT_PORT = 7788
 const MAX_MEDIA_BYTES = 12 * 1024 * 1024
 
@@ -985,6 +985,8 @@ export default {
         path: String(url.pathname || ''),
         ip: String(h['cf-connecting-ip'] || h['x-real-ip'] || h['x-forwarded-for'] || req.socket?.remoteAddress || ''),
         via: h['cf-ray'] ? 'cloudflare' : 'direct',
+        probe: String(h['x-pocket-probe'] || '') === '1', // 隧道自检自己打的，不算「有人访问」
+
         ua: String(h['user-agent'] || '').slice(0, 80),
       })
       if (hits.length > 60) hits.splice(0, hits.length - 60)
@@ -1062,7 +1064,10 @@ export default {
       if (!info.running || !url) return // 还没起来/域名还没抓到：下一轮再探
       if (url !== probeState.url) probeState = { ...probeState, url, fails: 0 }
       try {
-        const r = await fetch(url.replace(/\/+$/, '') + '/api/health', { signal: AbortSignal.timeout(8000) })
+        const r = await fetch(url.replace(/\/+$/, '') + '/api/health', {
+          headers: { 'x-pocket-probe': '1' }, // 打个标记：面板的「最近访问」要能把自己人排除掉
+          signal: AbortSignal.timeout(8000),
+        })
         if (!r.ok) throw new Error('HTTP ' + r.status)
         await r.arrayBuffer() // 读掉响应体，别把连接吊着
         probeState.fails = 0
@@ -1598,7 +1603,7 @@ export default {
       // 隧道也顺手看一眼：不用等 60 秒的定时器，打开面板就能看到它被拉起来
       if (readWant().want === true) tunnelWatch().catch(() => {})
       // apk 也带上：面板常显「放的是哪一版」，用户问「我这是最新的吗」不用翻日志
-      return { ok: true, addresses: lanAddresses(), enabled: on(), port: port(), tone: tone(), tunnel: tunnelInfo(), service: svcInfo(), stale: staleInfo(), apk: apkOffer(), recent: hits.slice(-8) }
+      return { ok: true, addresses: lanAddresses(), enabled: on(), port: port(), tone: tone(), tunnel: tunnelInfo(), service: svcInfo(), stale: staleInfo(), apk: apkOffer(), recent: hits.filter((x) => !x.probe).slice(-8) }
     })
     api.route('/service', async (req) => {
       const b = await bodyOf(req).catch(() => ({}))

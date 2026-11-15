@@ -426,6 +426,30 @@ test('diag：记录最近访问（谁打过、从公网还是本机、哪个域�
   assert.equal(noauth.code, 401)
 })
 
+test('diag：隧道自检自己打的请求不算「有人访问」', async () => {
+  const token = T.tokenOf()
+  // 自检请求带 x-pocket-probe 标记
+  const p1 = mockRes()
+  await T.handle(mockReq({ url: '/api/health', headers: { 'x-pocket-probe': '1', 'cf-ray': 'x' } }), p1)
+  const d = mockRes()
+  await T.handle(mockReq({ url: `/api/diag?token=${token}` }), d)
+  const body = JSON.parse(Buffer.concat(d.chunks).toString('utf8'))
+  const probes = body.hits.filter((x) => x.probe)
+  assert.ok(probes.length >= 1, '自检请求应被标记')
+  assert.equal(probes[probes.length - 1].path, '/api/health')
+
+  // 面板只拿真实访问：全是自检时 recent 里不该有东西
+  const ni = routes['/net-info']()
+  assert.ok(Array.isArray(ni.recent))
+  assert.equal(ni.recent.every((x) => !x.probe), true, 'recent 里混进了自检')
+
+  // 真设备打一次，就要出现在 recent 里
+  const real = mockRes()
+  await T.handle(mockReq({ url: '/api/health', headers: { 'cf-ray': 'y', 'cf-connecting-ip': '9.9.9.9', 'user-agent': 'okhttp' } }), real)
+  const ni2 = routes['/net-info']()
+  assert.equal(ni2.recent[ni2.recent.length - 1].ip, '9.9.9.9')
+})
+
 test('state 返回人格、心情和宠物数值', () => {
   const token = T.tokenOf()
   const r = routes['/state'](req(token, { url: '/state' }), {})

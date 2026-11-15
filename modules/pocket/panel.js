@@ -459,7 +459,7 @@ return function Panel({ settings, save, toast }) {
         !net
           ? '读取中…'
           : (net.recent || []).length
-            ? (net.recent || []).slice(-3).map((x, i) =>
+            ? (net.recent || []).slice(-4).map((x, i) =>
                 h('span', { key: i },
                   (i ? ' ｜ ' : ''),
                   new Date(x.at).toLocaleTimeString('zh-CN', { hour12: false }),
@@ -467,7 +467,7 @@ return function Panel({ settings, save, toast }) {
                   h('b', { style: { color: x.via === 'cloudflare' ? '#2e8b57' : '#8a8f98' } }, x.via === 'cloudflare' ? '公网' : '本机'),
                   ' ', x.path, x.ip ? '（' + String(x.ip).slice(0, 24) + '）' : ''),
               )
-            : '这段时间没人访问——手机连不上就是请求压根没到电脑（多半是地址/网络路径的问题）',
+            : '这段时间没有任何设备访问过（不含每 60 秒的隧道自检）——手机连不上说明请求压根没到电脑，问题在手机那条网络到 Cloudflare 之间，换域名没用',
       ),
       // 固定域名隧道：临时隧道每次重启换域名，手机里存的地址就废了 —— 这才是「昨天能连今天不能」的主因
       h('div', { style: { marginTop: 10, padding: '8px 10px', borderLeft: '3px solid rgba(84,168,230,.55)', background: 'rgba(84,168,230,.07)', borderRadius: 6 } },
