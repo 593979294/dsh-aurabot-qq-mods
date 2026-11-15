@@ -741,3 +741,21 @@ test('新用户第一次按话筒：先引导「点允许再按一次」，不�
   // 原生录音没回音时不能静默：界面已恢复，用户会以为「按了没反应」
   assert.match(src, /这条语音没录上：麦克风可能被别的应用占着/)
 })
+
+test('环境自检：四项状态 + 一句「能连到哪里」的结论（云电脑最容易缺 ffmpeg）', () => {
+  const e = routes['/env']()
+  assert.equal(e.ok, true)
+  assert.equal(typeof e.ffmpeg.ok, 'boolean', 'ffmpeg 要有明确状态')
+  assert.ok(e.ffmpeg.ok || e.ffmpeg.why, '缺 ffmpeg 要说清缺在哪')
+  assert.equal(typeof e.cloudflared.ok, 'boolean')
+  assert.equal(typeof e.tunnel.ok, 'boolean')
+  assert.equal(typeof e.token.ok, 'boolean')
+  assert.ok(['anywhere', 'lan', 'lan-only'].includes(e.reach), '给结论：任何网络 / 只同一 WiFi')
+  assert.match(e.dataDir, /modules-data/i, '暴露数据目录——云电脑还原盘据此提醒会丢配置')
+
+  const p = readFileSync(new URL('../panel.js', import.meta.url), 'utf8')
+  assert.match(p, /运行环境自检/, '面板要有这张卡片')
+  assert.match(p, /winget install Gyan\.FFmpeg/, '缺 ffmpeg 时给出装法')
+  assert.match(p, /关机还原/, '云电脑还原盘要提醒')
+  assert.ok(p.indexOf("call('/env')") > 0, '面板要单独异步拉自检，别拖慢首发')
+})

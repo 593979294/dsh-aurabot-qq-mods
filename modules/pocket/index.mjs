@@ -17,7 +17,7 @@ import { spawn, execFileSync } from 'node:child_process'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
 const RING_MAX = 500
-const VERSION = '1.5.18'
+const VERSION = '1.5.19'
 const DEFAULT_PORT = 7788
 const MAX_MEDIA_BYTES = 12 * 1024 * 1024
 
@@ -1416,6 +1416,51 @@ export default {
       }
     }
 
+    // ---------- 运行环境自检 ----------
+    // 交给别人用（尤其云电脑）时最容易踩的坑：不是「装不上」，而是发第一条语音、
+    // 点一次启动才发现缺东西。依赖摆到面板上，缺什么一眼看得见，不用先踩一遍。
+    let ffCache = null
+
+    // 语音转文字全靠本机 ffmpeg（手机录的音频要转 16k 单声道 wav 给 DSH）。
+    // 结果缓存 5 分钟：ffmpeg -version 在 Windows 上要起一个进程，别每次开面板都等它。
+    function ffmpegInfo() {
+      const now = Date.now()
+      if (ffCache && now - Number(ffCache.at || 0) < 300000) return ffCache
+      let ok = false
+      let ver = ''
+      let why = ''
+      try {
+        const out = String(execFileSync('ffmpeg', ['-version'], { windowsHide: true, timeout: 4000, encoding: 'utf8' }) || '')
+        ok = true
+        ver = (out.split('\n')[0] || '').replace(/^ffmpeg version\s*/i, '').trim().slice(0, 48)
+      } catch (e) {
+        why = e && e.code === 'ENOENT' ? 'PATH 里找不到 ffmpeg' : String((e && e.message) || e).slice(0, 80)
+      }
+      ffCache = { ok, ver, why, at: now }
+      return ffCache
+    }
+
+    function envCheck() {
+      const t = tunnelInfo()
+      const ff = ffmpegInfo()
+      const cf = findCloudflared() || ''
+      const hasToken = !!String(s().token || '').trim()
+      // 能连到哪里：同一 WiFi / 任何网络 —— 这是用户真正想知道的结论，不是四个状态点
+      const reach = t.running ? 'anywhere' : cf ? 'lan' : 'lan-only'
+      return {
+        ok: true,
+        port: port(),
+        ffmpeg: ff,
+        cloudflared: { ok: !!cf, path: String(cf) },
+        tunnel: { ok: !!t.running, mode: t.mode, url: t.url || '', installed: !!cf },
+        token: { ok: hasToken },
+        reach,
+        // 云电脑若是「关机还原盘」，重启后这份配置就没了 → token 变 → 手机旧链接全废
+        dataDir: String(api.dataDir() || ''),
+        node: process.version,
+      }
+    }
+
     // cloudflared 是不是在跑（不管是谁拉起来的：模组、面板按钮、还是用户自己开的）
     function cfRunning() {
       try {
@@ -1623,6 +1668,8 @@ export default {
       // apk 也带上：面板常显「放的是哪一版」，用户问「我这是最新的吗」不用翻日志
       return { ok: true, addresses: lanAddresses(), enabled: on(), port: port(), tone: tone(), tunnel: tunnelInfo(), service: svcInfo(), stale: staleInfo(), apk: apkOffer(), recent: hits.filter((x) => !x.probe).slice(-8) }
     })
+    // 环境自检单独一条：ffmpeg -version 要起进程，别拖慢面板首发（面板是异步拉的）
+    api.route('/env', () => envCheck())
     api.route('/service', async (req) => {
       const b = await bodyOf(req).catch(() => ({}))
       if (b.action === 'restart') return restart()
