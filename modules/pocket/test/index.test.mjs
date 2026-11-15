@@ -368,6 +368,107 @@ test('摸摸头 / 陪玩真的会换着说', async () => {
   assert.ok(seen.size >= 3, `12 次陪玩只出现 ${seen.size} 种句子`)
 })
 
+test('隧道重建换地址时，记下旧地址和变更时间（面板据此提醒手机重新配对）', () => {
+  const f = join(DATA_DIR, 'tunnel.json')
+  // 先放一条旧地址
+  writeFileSync(f, JSON.stringify({ url: 'https://old-name.trycloudflare.com', pid: 1, at: Date.now() }), 'utf8')
+  assert.equal(T.readTunnelFile().url, 'https://old-name.trycloudflare.com')
+
+  // 地址变了：必须记 prevUrl + changedAt
+  const before = Date.now()
+  const a = T.saveTunnel({ url: 'https://new-name.trycloudflare.com', pid: 2, at: Date.now() })
+  assert.equal(a.prevUrl, 'https://old-name.trycloudflare.com')
+  assert.ok(a.changedAt >= before, 'changedAt 要记成变更时刻')
+  const onDisk = T.readTunnelFile()
+  assert.equal(onDisk.prevUrl, 'https://old-name.trycloudflare.com')
+
+  // 地址没变（重启同一条 named/同域名）：变更记录要保留，不能被清掉
+  const b = T.saveTunnel({ url: 'https://new-name.trycloudflare.com', pid: 3, at: Date.now() })
+  assert.equal(b.prevUrl, 'https://old-name.trycloudflare.com')
+  assert.equal(b.changedAt, a.changedAt, '地址没变就不该刷新变更时间')
+
+  // 面板读的字段要在 tunnelInfo 里露出来
+  const info = T.tunnelInfo()
+  assert.equal(info.prevUrl, 'https://old-name.trycloudflare.com')
+  assert.ok(info.changedAt > 0)
+  rmSync(f, { force: true })
+})
+
+test('diag：记录最近访问（谁打过、从公网还是本机、哪个域名）', async () => {
+  const token = T.tokenOf()
+  // 先打一次 health（不需要密钥），再打 diag
+  const h = mockRes()
+  await T.handle(mockReq({ url: '/api/health' }), h)
+  assert.equal(h.code, 200)
+  const d = mockRes()
+  await T.handle(
+    mockReq({
+      url: `/api/diag?token=${token}`,
+      headers: { host: 'petroleum-x.trycloudflare.com', 'cf-ray': 'abc', 'cf-connecting-ip': '1.2.3.4', 'user-agent': 'okhttp/4.9' },
+    }),
+    d,
+  )
+  assert.equal(d.code, 200)
+  const body = JSON.parse(Buffer.concat(d.chunks).toString('utf8'))
+  assert.equal(body.ok, true)
+  assert.equal(body.version, T.VERSION)
+  assert.ok(Array.isArray(body.hits) && body.hits.length >= 2)
+  const last = body.hits[body.hits.length - 1]
+  assert.equal(last.path, '/api/diag')
+  assert.equal(last.via, 'cloudflare') // 带 cf-ray 说明请求是从隧道进来的
+  assert.equal(last.ip, '1.2.3.4')
+  assert.equal(last.host, 'petroleum-x.trycloudflare.com')
+  assert.ok(body.probe && typeof body.probe.fails === 'number')
+
+  // 没密钥不给看（访问记录里带 IP，属于内部信息）
+  const noauth = mockRes()
+  await T.handle(mockReq({ url: '/api/diag' }), noauth)
+  assert.equal(noauth.code, 401)
+})
+
+test('diag：隧道自检自己打的请求不算「有人访问」', async () => {
+  const token = T.tokenOf()
+  // 自检请求带 x-pocket-probe 标记
+  const p1 = mockRes()
+  await T.handle(mockReq({ url: '/api/health', headers: { 'x-pocket-probe': '1', 'cf-ray': 'x' } }), p1)
+  const d = mockRes()
+  await T.handle(mockReq({ url: `/api/diag?token=${token}` }), d)
+  const body = JSON.parse(Buffer.concat(d.chunks).toString('utf8'))
+  const probes = body.hits.filter((x) => x.probe)
+  assert.ok(probes.length >= 1, '自检请求应被标记')
+  assert.equal(probes[probes.length - 1].path, '/api/health')
+
+  // 面板只拿真实访问：全是自检时 recent 里不该有东西
+  const ni = routes['/net-info']()
+  assert.ok(Array.isArray(ni.recent))
+  assert.equal(ni.recent.every((x) => !x.probe), true, 'recent 里混进了自检')
+
+  // 真设备打一次，就要出现在 recent 里
+  const real = mockRes()
+  await T.handle(mockReq({ url: '/api/health', headers: { 'cf-ray': 'y', 'cf-connecting-ip': '9.9.9.9', 'user-agent': 'okhttp' } }), real)
+  const ni2 = routes['/net-info']()
+  assert.equal(ni2.recent[ni2.recent.length - 1].ip, '9.9.9.9')
+})
+
+test('隧道：手动「停止→启动」换了域名也能记上（tunnel.json 被删也照样提示）', async () => {
+  // 前面用例可能留下状态，先清干净
+  rmSync(join(DATA_DIR, 'tunnel.json'), { force: true })
+  rmSync(join(DATA_DIR, 'tunnel-last.json'), { force: true })
+  const first = T.saveTunnel({ url: 'https://aaa.trycloudflare.com', pid: 1, at: 1 })
+  assert.equal(first.prevUrl, undefined)
+  // 停止隧道会删掉 tunnel.json —— 这里直接删，模拟「停止」之后又手动启动
+  rmSync(join(DATA_DIR, 'tunnel.json'), { force: true })
+  const second = T.saveTunnel({ url: 'https://bbb.trycloudflare.com', pid: 2, at: 2 })
+  assert.equal(second.prevUrl, 'https://aaa.trycloudflare.com', '手动重启换了域名必须记 prevUrl')
+  assert.ok(second.changedAt > 0)
+  // tunnel.json 再次被删（停止状态）时，tunnelInfo 仍能从隧道历史里给出「上次换过地址」
+  rmSync(join(DATA_DIR, 'tunnel.json'), { force: true })
+  const info = T.tunnelInfo()
+  assert.equal(info.prevUrl, 'https://aaa.trycloudflare.com')
+  assert.ok(info.changedAt > 0)
+  rmSync(join(DATA_DIR, 'tunnel-last.json'), { force: true })
+})
+
 test('state 返回人格、心情和宠物数值', () => {
   const token = T.tokenOf()
   const r = routes['/state'](req(token, { url: '/state' }), {})

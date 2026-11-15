@@ -17,7 +17,7 @@ import { spawn, execFileSync } from 'node:child_process'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
 const RING_MAX = 500
-const VERSION = '1.5.10'
+const VERSION = '1.5.14'
 const DEFAULT_PORT = 7788
 const MAX_MEDIA_BYTES = 12 * 1024 * 1024
 
@@ -973,6 +973,24 @@ export default {
       fails.set(k, arr)
     }
     const clearFails = (req) => fails.delete(failKeyOf(req))
+
+    // 最近访问记录（环形 60 条）：排查「手机到底有没有打进来、打的是哪个域名」时唯一可靠的证据。
+    // 手机上显示「所有地址都连不上」时，看这里就知道是「请求根本没到」还是「到了但被拒」。
+    const hits = []
+    function noteHit(req, url) {
+      const h = req.headers || {}
+      hits.push({
+        at: Date.now(),
+        host: String(h.host || ''),
+        path: String(url.pathname || ''),
+        ip: String(h['cf-connecting-ip'] || h['x-real-ip'] || h['x-forwarded-for'] || req.socket?.remoteAddress || ''),
+        via: h['cf-ray'] ? 'cloudflare' : 'direct',
+        probe: String(h['x-pocket-probe'] || '') === '1', // 隧道自检自己打的，不算「有人访问」
+
+        ua: String(h['user-agent'] || '').slice(0, 80),
+      })
+      if (hits.length > 60) hits.splice(0, hits.length - 60)
+    }
     function guard(req, res) {
       if (!on()) {
         deny(res, 403, '手机接口关着')
@@ -1046,7 +1064,10 @@ export default {
       if (!info.running || !url) return // 还没起来/域名还没抓到：下一轮再探
       if (url !== probeState.url) probeState = { ...probeState, url, fails: 0 }
       try {
-        const r = await fetch(url.replace(/\/+$/, '') + '/api/health', { signal: AbortSignal.timeout(8000) })
+        const r = await fetch(url.replace(/\/+$/, '') + '/api/health', {
+          headers: { 'x-pocket-probe': '1' }, // 打个标记：面板的「最近访问」要能把自己人排除掉
+          signal: AbortSignal.timeout(8000),
+        })
         if (!r.ok) throw new Error('HTTP ' + r.status)
         await r.arrayBuffer() // 读掉响应体，别把连接吊着
         probeState.fails = 0
@@ -1059,8 +1080,9 @@ export default {
         probeState.failAt = Date.now()
         tunnelErr = `公网自检失败（${probeState.fails} 次）：${String(e?.message || e)}`
       }
-      if (probeState.fails < 2 || Date.now() - probeState.lastRestartAt < 180000) return
-      // 连续两次都不通，且距上次重建超过 3 分钟：认定边缘连接死了，重建
+      if (probeState.fails < 3 || Date.now() - probeState.lastRestartAt < 180000) return
+      // 连续三次（约 3 分钟）都不通，且距上次重建超过 3 分钟：认定边缘连接死了，重建。
+      // 阈值从 2 提到 3：每次重建都会换域名，手机端要重新配对，误判的代价比多等 1 分钟大得多。
       probeState.lastRestartAt = Date.now()
       probeState.fails = 0
       const w = readWant()
@@ -1126,6 +1148,43 @@ export default {
       } catch {
         return {}
       }
+    }
+
+    // 写隧道状态。地址一变就把「旧地址 + 变更时间」记下来：
+    // 临时隧道重建必换域名，而手机里存的是旧地址 —— 光重建没用，得让机主知道要重发一次。
+    // 单独记一份「上一次地址」，**故意不复用 tunnel.json**：点「停止隧道」会删 tunnel.json，
+    // 之后手动重启就无从比较，面板那句「地址换过了，手机要重新配对」就不会亮——
+    // 2026-11-15 13:32 正是这么踩的（手动重启换了域名，面板一声不吭，用户拿着旧链接看 1033）。
+    const lastFile = () => join(api.dataDir(), 'tunnel-last.json')
+    function readLast() {
+      try {
+        const j = JSON.parse(readFileSync(lastFile(), 'utf8'))
+        return j && typeof j === 'object' ? j : {}
+      } catch {
+        return {}
+      }
+    }
+    function saveTunnel(next) {
+      const cur = readTunnelFile()
+      const last = readLast()
+      const old = { ...last, ...(cur.url ? { url: cur.url } : {}) }
+      const out = { ...next }
+      if (old.url && out.url && String(old.url) !== String(out.url)) {
+        out.prevUrl = String(old.url)
+        out.changedAt = Date.now()
+        bootLog(`隧道地址变更：${old.url} → ${out.url}（手机要重新配对）`)
+      } else {
+        // 地址没变就沿用上次的变更时间，面板据此判断「最近换过没有」
+        if (old.changedAt) out.changedAt = old.changedAt
+        if (old.prevUrl && !out.prevUrl) out.prevUrl = old.prevUrl
+      }
+      try {
+        writeFileSync(tunnelFile(), JSON.stringify(out))
+      } catch {}
+      try {
+        writeFileSync(lastFile(), JSON.stringify({ url: out.url || '', prevUrl: out.prevUrl || '', changedAt: out.changedAt || 0, at: out.at || Date.now() }))
+      } catch {}
+      return out
     }
 
     function pidAlive(pid) {
@@ -1311,6 +1370,7 @@ export default {
 
     function tunnelInfo() {
       const saved = readTunnelFile()
+      const last = readLast()
       const alive = cfRunning()
       const tok = namedToken()
       const host = namedHost()
@@ -1348,6 +1408,9 @@ export default {
         want: w.want === true,
         restarts: Number(w.restarts || 0),
         lastRestartAt: Number(w.lastAt || 0),
+        // 地址变更记录：quick 隧道重建必然换域名，面板要能直接提醒机主「手机该重新配对了」
+        changedAt: Number(saved.changedAt || last.changedAt || 0),
+        prevUrl: String(saved.prevUrl || last.prevUrl || ''),
         // 公网自检：面板上直接显示「隧道真的通吗」，而不是只看进程在不在
         probe: probeSnapshot(),
       }
@@ -1443,7 +1506,7 @@ export default {
         if (m && !tunnelUrl) {
           tunnelUrl = m[0]
           try {
-            writeFileSync(tunnelFile(), JSON.stringify({ url: tunnelUrl, pid: p.pid, at: Date.now() }))
+            saveTunnel({ url: tunnelUrl, pid: p.pid, at: Date.now() })
           } catch {}
         }
       }
@@ -1504,7 +1567,7 @@ export default {
         }
       })
       try {
-        writeFileSync(tunnelFile(), JSON.stringify({ url: target, pid: p.pid, at: Date.now(), mode: 'named' }))
+        saveTunnel({ url: target, pid: p.pid, at: Date.now(), mode: 'named' })
       } catch {}
       for (let i = 0; i < 12; i++) {
         await new Promise((r) => setTimeout(r, 2500))
@@ -1558,7 +1621,7 @@ export default {
       // 隧道也顺手看一眼：不用等 60 秒的定时器，打开面板就能看到它被拉起来
       if (readWant().want === true) tunnelWatch().catch(() => {})
       // apk 也带上：面板常显「放的是哪一版」，用户问「我这是最新的吗」不用翻日志
-      return { ok: true, addresses: lanAddresses(), enabled: on(), port: port(), tone: tone(), tunnel: tunnelInfo(), service: svcInfo(), stale: staleInfo(), apk: apkOffer() }
+      return { ok: true, addresses: lanAddresses(), enabled: on(), port: port(), tone: tone(), tunnel: tunnelInfo(), service: svcInfo(), stale: staleInfo(), apk: apkOffer(), recent: hits.filter((x) => !x.probe).slice(-8) }
     })
     api.route('/service', async (req) => {
       const b = await bodyOf(req).catch(() => ({}))
@@ -1709,6 +1772,7 @@ export default {
         return json(res, 400, { ok: false, message: 'bad url' })
       }
       if (req.method === 'OPTIONS') return send(res, 204, '', 'text/plain')
+      noteHit(req, url)
 
       const p = url.pathname
       if (!p.startsWith('/api/')) return serveStatic(res, p)
@@ -1738,6 +1802,7 @@ export default {
           }
           return json(res, 200, tunnelInfo())
         }
+        if (route === 'diag') return json(res, 200, { ok: true, version: VERSION, port: listening || port(), enabled: on(), tunnel: tunnelInfo(), probe: probeSnapshot(), hits: hits.slice(-20) })
         if (route === 'state') return json(res, 200, ops.state())
         if (route === 'events') return json(res, 200, ops.events(url.searchParams.get('after')))
         if (route === 'seq') return json(res, 200, ops.seq())
@@ -1937,7 +2002,7 @@ export default {
       ...svcInfo(),
     })
 
-    hooks.__test = { inject, voiceNote, FOODS, feedLine, PET_LINES, PLAY_LINES, guard, petInteract, petState, pushEvent, ring: () => ring, readHistory, tokenOf, lanAddresses, urlOf, ops, handle, decodeImage, mediaBytesOf, sniffMime, installCloudflared, apkInfo, apkOffer, apkFile, cfPolicy: { version: CF_VERSION, size: CF_SIZE, sha256: CF_SHA256, base: CF_BASE, mirrors: CF_MIRRORS } }
+    hooks.__test = { VERSION, inject, voiceNote, FOODS, feedLine, PET_LINES, PLAY_LINES, saveTunnel, readTunnelFile, tunnelInfo, guard, petInteract, petState, pushEvent, ring: () => ring, readHistory, tokenOf, lanAddresses, urlOf, ops, handle, decodeImage, mediaBytesOf, sniffMime, installCloudflared, apkInfo, apkOffer, apkFile, cfPolicy: { version: CF_VERSION, size: CF_SIZE, sha256: CF_SHA256, base: CF_BASE, mirrors: CF_MIRRORS } }
   },
 }
 

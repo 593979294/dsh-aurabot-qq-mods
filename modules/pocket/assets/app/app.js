@@ -146,7 +146,7 @@ async function switchHost() {
   for (const cand of S.hosts) {
     if (cand === S.host) continue
     try {
-      const r = await fetch(`${cand}/api/health`, { signal: AbortSignal.timeout(5000) })
+      const r = await fetch(`${cand}/api/health`, { signal: AbortSignal.timeout(10000) })
       if (r.ok) {
         S.host = cand
         S.hosts = [cand, ...S.hosts.filter((x) => x !== cand)]
@@ -289,7 +289,7 @@ async function netBaseline(ms = 4000) {
 }
 
 /** 并行探一遍所有候选地址，谁先通用谁；全不通时逐条给代号，并顺手判断是不是手机自己没网 */
-async function probeAll(list, ms = 6000) {
+async function probeAll(list, ms = 12000) {
   const out = await Promise.all(
     list.map(async (cand) => {
       try {
@@ -1375,7 +1375,11 @@ async function doPair() {
       const tip = probe.selfDown
         ? '[P30] 手机现在这个网络本身没通\n先用浏览器随便打开一个网页：能上网再回来配对（公共 WiFi 常要先点「同意 / 登录」这一步）。\n\n这几条地址也都试了，同样不通：\n' +
           probe.detail
-        : '这几条都不通：\n' + probe.detail + '\n\n点下面「代号速查」看每条怎么修；报障把代号发我（比如 P11）就够。'
+        : '这几条都不通：\n' + probe.detail + '\n\n' +
+          (/trycloudflare\.com/i.test(hosts.join(','))
+            ? '如果走的是免费临时隧道：电脑那边重建过隧道，地址就变了（每次重建域名都不一样）——找机主要一个新的配对链接或二维码，扫一下会自动改过来。\n'
+            : '') +
+          '点下面「代号速查」看每条怎么修；报障把代号发我（比如 P11）就够。'
       throw Object.assign(new Error(tip), { plain: true, codes })
     }
     const ok = probe.ok
@@ -1509,7 +1513,11 @@ async function boot() {
     if (p && !p.ok) {
       const codes = p.selfDown ? ['P30', ...p.results.map((x) => x.code)] : p.results.map((x) => x.code)
       toPair(
-        (p.selfDown ? '[P30] 手机现在这个网络本身没通\n' : '连不上电脑：\n') + p.detail + '\n会自动重试，也可以点「重试」。',
+        (p.selfDown ? '[P30] 手机现在这个网络本身没通\n' : '连不上电脑：\n') + p.detail +
+          (/trycloudflare\.com/i.test(list.join(','))
+            ? '\n如果电脑那边重启过隧道，地址会变（免费临时域名每次都不一样）——找机主要新的配对链接或二维码。'
+            : '') +
+          '\n会自动重试，也可以点「重试」。',
         codes,
       )
       // 隧道恢复（或电脑重新上线）后自动接回去，用户不用守着点

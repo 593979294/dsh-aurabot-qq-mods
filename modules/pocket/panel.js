@@ -155,6 +155,16 @@ return function Panel({ settings, save, toast }) {
   }
   if (!qrLink && pairBase && token) qrNote = '这条地址太长，塞不进二维码（超过 134 字节）——用上面「复制配对链接」发到手机里粘贴也一样。'
 
+  // 隧道地址变更提醒：quick 隧道重建必换域名，手机里存的还是旧的，会一直「所有地址都连不上」。
+  // 七天内的变更都提示（面板刷新不会丢），过期自动收起，不长期占地方。
+  const tunChanged = tun.mode !== 'named' && tun.changedAt && Date.now() - tun.changedAt < 7 * 864e5
+  const fmtAt = (ms) => {
+    const d = new Date(Number(ms) || Date.now())
+    const p = (n) => String(n).padStart(2, '0')
+    return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+  }
+  const shortHost = (u) => String(u || '').replace(/^https?:\/\//, '')
+
   // 给每个地址标一句「什么时候填它」，免得对着三个地址不知道抄哪个
   const addrLabel = (ip) => {
     const v4 = ip.replace(/^\[|\]$/g, '')
@@ -286,6 +296,21 @@ return function Panel({ settings, save, toast }) {
               '装好 app 后在配对页点「扫一扫电脑上的二维码」——地址和密钥都会自动填好。没装 app 用手机相机或微信扫也行，打开就是网页版（网页版录不了语音，要语音就装 app）。'),
             qrNote ? h('p', { className: 'ab-small ab-muted', style: { margin: '4px 0 0', color: '#c0392b' } }, qrNote) : null,
           ))
+      : null,
+
+    // 地址变过就顶在最上面说清楚：用户看到的是「所有地址都连不上」，根本猜不到是域名换了
+    tunChanged
+      ? h('div', { style: { marginTop: 10, padding: '9px 11px', borderLeft: '3px solid #c0392b', background: 'rgba(192,57,43,.08)', borderRadius: 6 } },
+          h('p', { className: 'ab-small', style: { margin: 0, fontWeight: 600 } },
+            `隧道地址 ${fmtAt(tun.changedAt)} 换过了——手机里存的还是旧地址，所以会一直显示「所有地址都连不上」`),
+          h('p', { className: 'ab-small ab-muted', style: { margin: '5px 0 0', lineHeight: 1.85 } },
+            '旧：', h('code', { style: { wordBreak: 'break-all' } }, shortHost(tun.prevUrl)),
+            ' → 新：', h('code', { style: { wordBreak: 'break-all' } }, shortHost(tun.url || pairBase)),
+            '。点右边按钮把新链接发到手机，手机上打开就自动填好；也可以在 App 配对页重新扫上面的二维码。'),
+          h('div', { style: { display: 'flex', gap: 8, marginTop: 7, flexWrap: 'wrap' } },
+            h(ui.Btn, { onClick: () => copyText(pairLink, '新配对链接已复制——发到手机上打开就恢复') }, '复制新配对链接'),
+          ),
+        )
       : null,
 
     // 服务没起来时把话说清楚：这是「127.0.0.1 也连不上」的那种情况，不是网络问题
@@ -423,11 +448,27 @@ return function Panel({ settings, save, toast }) {
               ? h('b', { style: { color: '#c0392b' } }, `连续失败 ${tun.probe.fails} 次`)
               : h('b', { style: { color: '#2e8b57' } }, '正常'),
             ' · 最近一次通过 ' + Math.max(0, Math.round((Date.now() - tun.probe.okAt) / 1000)) + ' 秒前',
-            '（每 60 秒探一次，连续 2 次不通就自动重建隧道）',
+            '（每 60 秒探一次，连续 3 次不通才自动重建隧道）',
             tun.probe.lastRestartAt
               ? '；上次自动重建 ' + Math.round((Date.now() - tun.probe.lastRestartAt) / 60000) + ' 分钟前'
               : '')
         : null,
+      // 最近访问：手机上「所有地址都连不上」时，这一行能立刻分辨「请求根本没到」还是「到了被拒」
+      h('p', { className: 'ab-small ab-muted', style: { margin: '6px 0 0', lineHeight: 1.8 } },
+        '最近访问：',
+        !net
+          ? '读取中…'
+          : (net.recent || []).length
+            ? (net.recent || []).slice(-4).map((x, i) =>
+                h('span', { key: i },
+                  (i ? ' ｜ ' : ''),
+                  new Date(x.at).toLocaleTimeString('zh-CN', { hour12: false }),
+                  ' ',
+                  h('b', { style: { color: x.via === 'cloudflare' ? '#2e8b57' : '#8a8f98' } }, x.via === 'cloudflare' ? '公网' : '本机'),
+                  ' ', x.path, x.ip ? '（' + String(x.ip).slice(0, 24) + '）' : ''),
+              )
+            : '这段时间没有任何设备访问过（不含每 60 秒的隧道自检）——手机连不上说明请求压根没到电脑，问题在手机那条网络到 Cloudflare 之间，换域名没用',
+      ),
       // 固定域名隧道：临时隧道每次重启换域名，手机里存的地址就废了 —— 这才是「昨天能连今天不能」的主因
       h('div', { style: { marginTop: 10, padding: '8px 10px', borderLeft: '3px solid rgba(84,168,230,.55)', background: 'rgba(84,168,230,.07)', borderRadius: 6 } },
         h('p', { className: 'ab-small', style: { margin: 0, fontWeight: 600 } },
