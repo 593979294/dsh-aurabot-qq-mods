@@ -517,15 +517,33 @@ body.dark .glass { background: color-mix(in srgb, var(--surface) 78%, transparen
 .pair-hint { color: var(--muted); font-size: 11.5px; line-height: 1.8; margin: 14px 0 0; }
 .pair-err { color: #d8534f; font-size: 12.5px; margin: 10px 0 0; line-height: 1.75; white-space: pre-line; word-break: break-word; }
 
-/* 下载条：只在手机浏览器里出现（app 壳里有 __pocketApp 标记，不显示） */
+/* 下载条：只在手机浏览器里出现（app 壳里有 __pocketApp / PocketMic 标记，不显示）；
+   右上角有关闭按钮，关过就记在 localStorage，不再骚扰 */
 .appdl {
   margin: 10px 12px 0;
-  padding: 12px 14px;
+  padding: 12px 40px 12px 14px;
   border-radius: 16px;
   display: flex;
   align-items: center;
   gap: 12px;
+  position: relative;
 }
+.appdl-x {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.appdl-x:active { background: rgba(128, 128, 128, 0.18); }
 .appdl-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .appdl-text b { font-size: 13.5px; }
 .appdl-text span { color: var(--muted); font-size: 12px; line-height: 1.7; }

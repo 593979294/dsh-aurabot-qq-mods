@@ -1266,12 +1266,30 @@ function showPairErr(text, codes = []) {
   openCodes(codes)
 }
 
-// 在手机浏览器里打开（不在 app 壳里，没有 __pocketApp 标记）：给一条下载 App 的路，
-// 新用户拿到配对链接就能自己装，不用找群主要安装包。iPhone 则提示直接用网页。
+// 在手机浏览器里打开（不在 app 壳里）：给一条下载 App 的路，新用户拿到配对链接就能自己装。
+// 三类人三种待遇：app 壳里不显示；有安装包才显示下载按钮；没安装包只有机主自己（本机）需要看提示，
+// 外地用户看到「电脑上还没放安装包」既看不懂也没用 —— 直接收起。
+// 壳的 __pocketApp 是 onPageFinished 才注入的，可能晚于这里，所以还要再等一拍复检；
+// PocketMic 桥是 addJavascriptInterface 挂的，页面 JS 一跑就有，最可靠。
+const APP_BANNER_KEY = 'pocket.appdl.dismissed'
+const inAppShell = () => Boolean(window.__pocketApp || window.PocketMic || window.__pocketShell)
+
 async function maybeAppBanner() {
-  if (window.__pocketApp) return
   const bar = $('#appdl')
   if (!bar) return
+  const hide = (remember) => {
+    bar.hidden = true
+    if (remember) {
+      try { localStorage.setItem(APP_BANNER_KEY, '1') } catch {}
+    }
+  }
+  if (inAppShell()) return hide(false)
+  const close = $('#appdl-close')
+  if (close) close.onclick = () => hide(true)
+  // 用户自己关过就不再出现（这台设备上）
+  try {
+    if (localStorage.getItem(APP_BANNER_KEY) === '1') return hide(false)
+  } catch {}
   const ios = /iPhone|iPad|iPod/i.test(navigator.userAgent)
   $('#appdl-ios').hidden = !ios
   $('#appdl-android').hidden = ios
@@ -1282,15 +1300,42 @@ async function maybeAppBanner() {
   if (info && info.ok && info.available) {
     const link = $('#appdl-link')
     link.hidden = false
-    // 下载链接带 token（服务端 guard 认 query），浏览器点链接直接存文件
-    link.href = `${base()}/api/app-download?token=${encodeURIComponent(S.token)}`
+    // 默认直连发布地址（GitHub Release 或机主自填镜像）：不占机主上行，也不需要密钥；
+    // 没外链时才回落到电脑上的那份（走 guard，链接里带 token）。
+    if (/^https?:\/\//i.test(info.url || '')) {
+      link.href = info.url
+      link.removeAttribute('download')
+    } else {
+      link.href = `${base()}/api/app-download?token=${encodeURIComponent(S.token)}`
+    }
     $('#appdl-size').textContent = (info.version ? 'v' + info.version + ' · ' : '') + Math.max(1, Math.round(info.size / 1024)) + ' KB'
     $('#appdl-note').hidden = true
   } else {
+    // 没包：iPhone 还能告诉人家「直接用网页」；安卓用户就别摆一条点不动的提示了
     $('#appdl-link').hidden = true
-    $('#appdl-note').hidden = ios
+    const local = /^(localhost|127\.0\.0\.1|\[::1\]|::1)$/i.test(location.hostname)
+    if (!ios && !local) return hide(false)
+    $('#appdl-note').hidden = !local
   }
   bar.hidden = false
+  // 等一下再看一眼：壳里（尤其老版本壳）注入标记晚于本轮，是壳就立刻撤掉，不记「已关闭」
+  setTimeout(() => { if (inAppShell()) hide(false) }, 1200)
+}
+
+// 隧道抖动很常见：进程活着、边缘连接断了，几十秒后可能自己恢复。
+// 所以连不上时不要只让用户手点「重试」——每 20 秒自动再试一次，用户什么都不用做。
+let retryTimer = null
+function stopAutoRetry() {
+  if (retryTimer) clearTimeout(retryTimer)
+  retryTimer = null
+}
+function scheduleAutoRetry() {
+  stopAutoRetry()
+  retryTimer = setTimeout(() => {
+    retryTimer = null
+    const pair = $('#view-pair')
+    if (pair && !pair.hidden) boot() // 只在还停在配对页时重试，别打断已经在聊天的人
+  }, 20000)
 }
 
 function toPair(reason, codes) {
@@ -1307,6 +1352,7 @@ function toPair(reason, codes) {
 }
 
 async function doPair() {
+  stopAutoRetry()
   const err = $('#pair-err')
   const raw = String($('#pair-host').value || '').trim()
   const hosts = hostList(raw)
@@ -1364,6 +1410,7 @@ function autoGrow() {
 }
 
 async function boot() {
+  stopAutoRetry()
   takeFromUrl()
   paintTone(S.tone)
   buildToneGrid()
@@ -1461,10 +1508,13 @@ async function boot() {
     const p = list.length ? await probeAll(list).catch(() => null) : null
     if (p && !p.ok) {
       const codes = p.selfDown ? ['P30', ...p.results.map((x) => x.code)] : p.results.map((x) => x.code)
-      return toPair(
-        (p.selfDown ? '[P30] 手机现在这个网络本身没通\n' : '连不上电脑：\n') + p.detail + '\n报障把代号发我（比如 P11）就够。',
+      toPair(
+        (p.selfDown ? '[P30] 手机现在这个网络本身没通\n' : '连不上电脑：\n') + p.detail + '\n会自动重试，也可以点「重试」。',
         codes,
       )
+      // 隧道恢复（或电脑重新上线）后自动接回去，用户不用守着点
+      if (!p.selfDown) scheduleAutoRetry()
+      return
     }
     const c = failCode(S.host || list[0] || '', e)
     toPair(`[${c}] ${CODES[c].t}\n${CODES[c].fix}`, [c])

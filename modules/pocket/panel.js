@@ -131,6 +131,7 @@ return function Panel({ settings, save, toast }) {
           ? `端口 ${svc.wantPort} 被占用，实际在 ${svc.listening}（手机要填新端口）`
           : `服务端口 ${svc.listening || port}${svc.ipv4Only ? '（仅 IPv4）' : ''}`
   const tun = net?.tunnel || {}
+  const apk = net?.apk || {}
   const tunnelOrigin = tun.running && tun.url ? tun.url.replace(/^https?:\/\//, '') : ''
   const tunnelPair = tunnelOrigin ? `https://${tunnelOrigin}` : ''
   // 配对优先给隧道地址（外面也能用）；没跑隧道就用局域网第一条
@@ -232,6 +233,18 @@ return function Panel({ settings, save, toast }) {
   }
 
   const cell = { border: '1px solid rgba(128,128,128,.3)', borderRadius: 8, padding: '5px 10px', fontSize: 13, fontFamily: 'monospace', wordBreak: 'break-all' }
+  // 复制：剪贴板在部分环境会被拒（没焦点/没授权），失败时把内容摆出来让人手动选，别静默失败
+  const copyText = (text, ok) => {
+    const v = String(text || '')
+    if (!v) return
+    try {
+      const p = navigator.clipboard && navigator.clipboard.writeText(v)
+      if (p && p.then) p.then(() => toast(ok)).catch(() => toast('复制被拦下了，手动选中复制：' + v))
+      else toast('这个环境不支持自动复制，手动选中复制：' + v)
+    } catch (e) {
+      toast('复制失败，手动选中复制：' + v)
+    }
+  }
   const sw = { width: 34, height: 34, borderRadius: 10, border: '2px solid transparent', cursor: 'pointer', padding: 0 }
   const inp = { flex: '1 1 180px', minWidth: 0, padding: '6px 8px', borderRadius: 6, border: '1px solid rgba(128,128,128,.35)', background: 'transparent', color: 'inherit', fontSize: 12.5 }
 
@@ -305,10 +318,61 @@ return function Panel({ settings, save, toast }) {
       h('code', { style: cell }, token || '（还没生成，动一下开关就会生成）'),
     ),
 
+    // 安装包状态常显：机主一眼看到手机端会下到哪一版、从哪下，
+    // 不用翻日志对 hash；下载默认走外链，不占你电脑带宽
+    h('div', { style: { marginTop: 10 } },
+      h('p', { className: 'ab-small', style: { fontWeight: 600 } }, '安卓安装包（新用户手机浏览器打开配对页就能下载）：'),
+      !net
+        ? h('p', { className: 'ab-small ab-muted', style: { margin: '4px 0 0' } }, '读取中…')
+        : apk.available
+          ? h('div', { style: { margin: '4px 0 0' } },
+              h('p', { className: 'ab-small ab-muted', style: { margin: 0, lineHeight: 1.8 } },
+                apk.version
+                  ? h('b', null, 'v' + apk.version)
+                  : h('span', { style: { color: '#c0392b' } }, '未标注版本'),
+                apk.size ? ' · ' + Math.max(1, Math.round(apk.size / 1024)) + ' KB' : '',
+                ' · 下载来源：',
+                h('b', null, apk.source === 'custom' ? '你填的备用地址' : 'GitHub Release'),
+                apk.local
+                  ? '；本机也放了一份作兜底'
+                  : '；本机没放包也没关系',
+                apk.version ? null : h('span', null, '。装版本号：在本机那份旁边放 pocket.apk.json 写 {"version":"x.y.z"}'),
+              ),
+              // 给新用户的下载地址：能点、能复制。新用户拿不到安装包，就是缺这一条能发出去的东西
+              apk.url
+                ? h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' } },
+                    h('a', {
+                      href: apk.url,
+                      target: '_blank',
+                      rel: 'noreferrer noopener',
+                      title: '点一下用浏览器打开、直接下载（不经过这台电脑）',
+                      style: {
+                        ...cell,
+                        flex: '1 1 250px',
+                        minWidth: 0,
+                        color: '#2d7ff9',
+                        textDecoration: 'underline',
+                        textUnderlineOffset: 2,
+                        cursor: 'pointer',
+                      },
+                    }, '⬇ ' + String(apk.url).replace(/^https?:\/\//, '')),
+                    h(ui.Btn, { onClick: () => copyText(apk.url, '安装包下载链接已复制——发到群里，对方点开就能下') }, '复制下载链接'),
+                  )
+                : null,
+              apk.url
+                ? h('p', { className: 'ab-small ab-muted', style: { margin: '4px 0 0', lineHeight: 1.8 } },
+                    '点链接＝手机/电脑浏览器直连下载，不经过这台电脑（所以关机、断网也不影响别人装）。GitHub 在国内偶尔慢，换自己的对象存储/网盘直链填「备用下载地址」即可。装好后还要配对才能连上——点上面「复制配对链接」一并发过去。')
+                : null,
+            )
+          : h('p', { className: 'ab-small ab-muted', style: { margin: '4px 0 0', lineHeight: 1.8 } },
+              '安装包地址被清空且本机也没放包：把 pocket.apk 放进 plugins-data/aurabot/modules-data/pocket/app/（放 apk/ 也认），或在设置里填「备用下载地址」。'),
+    ),
+
     h('div', { style: { marginTop: 12 } },
       h('p', { className: 'ab-small', style: { fontWeight: 600 } }, '怎么用：'),
       h('ol', { className: 'ab-small ab-muted', style: { margin: '4px 0 0', paddingLeft: 20, lineHeight: 1.8 } },
-        h('li', null, '手机装好「口袋aurabot」app，配对页点「扫一扫电脑上的二维码」，扫上面这个码（或直接用手机浏览器开上面的地址）'),
+        h('li', null, '手机浏览器打开上面那个下载链接，装好「口袋aurabot」App（允许安装未知来源）'),
+        h('li', null, '打开 App，配对页点「扫一扫电脑上的二维码」，扫上面这个码（或直接用手机浏览器开上面的地址）'),
         h('li', null, '没相机 / 扫不动：app 配对页把地址填进去——在家填「家里 WiFi」那条；在外面填「公网 IPv6」或「隧道」地址；拿不准就把几条都填上，逗号隔开（中英文逗号都行）'),
         h('li', null, '密钥抄下面这条（或点上面的「复制配对链接」，手机浏览器打开就自动填好）'),
         h('li', null, '点「连上她」即可；换密钥后所有设备要重新配对'),
@@ -345,12 +409,25 @@ return function Panel({ settings, save, toast }) {
                     ? '临时隧道运行中'
                     : '连接中…') +
                 (tun.want
-                  ? `（有守护：进程退了会自动重启${tun.restarts ? `，已重启 ${tun.restarts} 次` : ''}）`
+                  ? `（有守护：进程退了自动重启、公网断了自动重建${tun.restarts ? `，已处理 ${tun.restarts} 次` : ''}）`
                   : '')
               : tun.want
                 ? '刚刚断了，守护正在重启（最多等一分钟，刷新看看）'
                 : '未启动'),
       ),
+      // 公网自检：光看「进程在不在」会被骗——cloudflared 常出现「进程活着、边缘连接已死」
+      tun.running && tun.probe && tun.probe.okAt
+        ? h('p', { className: 'ab-small ab-muted', style: { margin: '6px 0 0' } },
+            '公网自检：',
+            tun.probe.fails
+              ? h('b', { style: { color: '#c0392b' } }, `连续失败 ${tun.probe.fails} 次`)
+              : h('b', { style: { color: '#2e8b57' } }, '正常'),
+            ' · 最近一次通过 ' + Math.max(0, Math.round((Date.now() - tun.probe.okAt) / 1000)) + ' 秒前',
+            '（每 60 秒探一次，连续 2 次不通就自动重建隧道）',
+            tun.probe.lastRestartAt
+              ? '；上次自动重建 ' + Math.round((Date.now() - tun.probe.lastRestartAt) / 60000) + ' 分钟前'
+              : '')
+        : null,
       // 固定域名隧道：临时隧道每次重启换域名，手机里存的地址就废了 —— 这才是「昨天能连今天不能」的主因
       h('div', { style: { marginTop: 10, padding: '8px 10px', borderLeft: '3px solid rgba(84,168,230,.55)', background: 'rgba(84,168,230,.07)', borderRadius: 6 } },
         h('p', { className: 'ab-small', style: { margin: 0, fontWeight: 600 } },

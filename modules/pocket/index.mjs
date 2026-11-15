@@ -17,7 +17,7 @@ import { spawn, execFileSync } from 'node:child_process'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
 const RING_MAX = 500
-const VERSION = '1.5.5'
+const VERSION = '1.5.9'
 const DEFAULT_PORT = 7788
 const MAX_MEDIA_BYTES = 12 * 1024 * 1024
 
@@ -411,7 +411,7 @@ export default {
   minPluginVersion: '1.2.0',
   requires: [],
   capabilities: ['filesystem', 'plugin-config', 'plugin-internals', 'network', 'process'],
-  defaults: { enabled: false, token: '', port: DEFAULT_PORT, tone: 'ocean', tunnelAuto: false, tunnelToken: '', tunnelHost: '' },
+  defaults: { enabled: false, token: '', port: DEFAULT_PORT, tone: 'ocean', tunnelAuto: false, tunnelToken: '', tunnelHost: '', appUrl: '' },
   panel: 'panel.js',
   settings: [
     { key: 'enabled', label: '启用手机接口', type: 'switch', hint: '关掉后 app 连不上（QQ 端不受影响）' },
@@ -420,6 +420,7 @@ export default {
     { key: 'tone', label: '图标色调', type: 'string', hint: '手机端配色：ocean/sakura/mint/grape/sunset/moon/abyss/rose' },
     { key: 'tunnelToken', label: '固定隧道 Token（可选）', type: 'string', hint: 'Cloudflare Zero Trust 里创建隧道后复制的 token；填了就走固定域名，地址不再每次都变' },
     { key: 'tunnelHost', label: '固定隧道域名（可选）', type: 'string', hint: '隧道里配的 Public Hostname，如 pocket.example.com（不要写 https://）' },
+    { key: 'appUrl', label: '备用下载地址（可选）', type: 'string', hint: '留空＝用默认的 GitHub Release 地址；填了就用你给的镜像，比如自己的对象存储。手机下载直连这里，不占你电脑带宽' },
   ],
 
   setup(api) {
@@ -701,7 +702,7 @@ export default {
       // 只读游标，不带事件体：app 启动时先问「现在到几号」，
       // 好把「历史接口已经画过」的那一段跳过去，否则历史 + 事件环会把同一条消息画两遍
       seq: () => ({ ok: true, seq }),
-      appApk: () => apkInfo(),
+      appApk: () => apkOffer(),
       history: (days) => ({ ok: true, list: readHistory(days) }),
       message: (text, image) => inject(text, image),
       voiceNote: (audio) => voiceNote(audio),
@@ -880,12 +881,61 @@ export default {
     // 不加锁就会启动两个 cloudflared、抢同一个端口、还各自注册一条隧道。实测过。
     let tunnelStarting = false
     let tunnelAutoTimer = null
-    // 每 60 秒看一眼：进程在不在；不在就重新拉起来。只做进程判活（不探公网），
-    // 因为 quick 隧道地址本来就会变，探旧地址必然失败，会把「正常」误判成「挂了」。
+    // 公网自检状态：进程活着 ≠ 隧道通。quick 隧道最常见的坏法是「cloudflared 还在跑，
+    // 到 Cloudflare 边缘的连接已经死了」——面板显示运行中，手机却所有地址都连不上，
+    // 只能停掉重建。所以除了进程判活，每 60 秒再探一次公网 /api/health：
+    // 连续 2 次不通就自动重建（quick 换新域名、named 域名不变直接恢复），3 分钟内最多重建一次。
+    let probeState = { url: '', fails: 0, okAt: 0, failAt: 0, lastRestartAt: 0 }
+    const probeSnapshot = () => ({ url: probeState.url, fails: probeState.fails, okAt: probeState.okAt, failAt: probeState.failAt, lastRestartAt: probeState.lastRestartAt })
+
+    async function probeTunnel() {
+      const info = tunnelInfo()
+      const url = info.url
+      if (!info.running || !url) return // 还没起来/域名还没抓到：下一轮再探
+      if (url !== probeState.url) probeState = { ...probeState, url, fails: 0 }
+      try {
+        const r = await fetch(url.replace(/\/+$/, '') + '/api/health', { signal: AbortSignal.timeout(8000) })
+        if (!r.ok) throw new Error('HTTP ' + r.status)
+        await r.arrayBuffer() // 读掉响应体，别把连接吊着
+        probeState.fails = 0
+        probeState.okAt = Date.now()
+        // 自检恢复了就把之前的红字撤掉，别让面板一直挂着「刚刚断了」
+        if (/^公网/.test(String(tunnelErr || ''))) tunnelErr = ''
+        return
+      } catch (e) {
+        probeState.fails++
+        probeState.failAt = Date.now()
+        tunnelErr = `公网自检失败（${probeState.fails} 次）：${String(e?.message || e)}`
+      }
+      if (probeState.fails < 2 || Date.now() - probeState.lastRestartAt < 180000) return
+      // 连续两次都不通，且距上次重建超过 3 分钟：认定边缘连接死了，重建
+      probeState.lastRestartAt = Date.now()
+      probeState.fails = 0
+      const w = readWant()
+      bootLog('隧道守护：公网自检连续失败，开始重建隧道')
+      try {
+        await tunnelStop()
+      } catch {}
+      try {
+        const r = await tunnelStart({ silent: true })
+        if (r && r.ok) {
+          writeWant({ restarts: Number(w.restarts || 0) + 1, lastAt: Date.now() })
+          bootLog(`隧道守护：已重建（第 ${Number(w.restarts || 0) + 1} 次），新地址 ${r.url || '获取中'}`)
+          tunnelErr = '公网连接刚刚断了，已自动重建隧道'
+        } else {
+          tunnelErr = (r && r.message) || '隧道重建失败'
+        }
+      } catch (e) {
+        tunnelErr = String(e?.message || e)
+      }
+    }
+
+    // 每 60 秒看一眼：进程在不在；在的话再探一次公网通不通。
     async function tunnelWatch() {
       if (readWant().want !== true) return
       if (cfRunning()) {
         guardTry = 0
+        await probeTunnel()
         return
       }
       // 上一轮刚失败过就别连着打，退到 30 秒一次
@@ -948,10 +998,29 @@ export default {
     const CF_BASE = `https://github.com/cloudflare/cloudflared/releases/download/${CF_VERSION}/${CF_ASSET}`
     const CF_MIRRORS = [CF_BASE, `https://ghfast.top/${CF_BASE}`, `https://gh-proxy.com/${CF_BASE}`]
 
+    // 官方安装包发布地址（GitHub Release）。默认让手机直连这里下载：不占机主上行、
+    // 机主电脑上不必放包；要换自己的镜像就在面板里填「备用下载地址」。
+    const APK_RELEASE = {
+      version: '1.0.5',
+      size: 410409,
+      sha256: '9f336449ead0362d558aea8149ad7746e75c88a3a8fe4316c3eec52d5af20181',
+      url: 'https://github.com/Ariz0324/dsh-aurabot-qq-mods/releases/download/pocket-app-v1.0.5/pocket-aurabot-1.0.5.apk',
+    }
+
     // 安卓 App 安装包：放数据目录 app/pocket.apk（可选同名 .json 写 {"version":"1.0.5"}）。
     // 新用户在手机浏览器里打开配对页就能直接下载，不用再走 QQ 传文件；换包只要覆盖文件，不用改代码。
-    const apkFile = () => join(api.dataDir(), 'app', 'pocket.apk')
-    let apkCache = null // 按 mtime+size 缓存 hash，避免每次请求都算一遍 4MB 的 sha256
+    // apk/ 目录也认（总有人记成 apk/，实测包括机主本人）；两个目录都放时 app/ 优先。
+    const APK_DIRS = ['app', 'apk']
+    const apkFile = () =>
+      APK_DIRS.map((d) => join(api.dataDir(), d, 'pocket.apk')).find((f) => {
+        try {
+          statSync(f)
+          return true
+        } catch {
+          return false
+        }
+      }) || join(api.dataDir(), 'app', 'pocket.apk')
+    let apkCache = null // 按 path+mtime+size 缓存 hash，避免每次请求都算一遍 4MB 的 sha256
     function apkInfo() {
       const f = apkFile()
       let st
@@ -961,8 +1030,10 @@ export default {
         apkCache = null
         return { ok: true, available: false, path: f }
       }
-      if (apkCache && apkCache.mtimeMs === st.mtimeMs && apkCache.size === st.size) return { ok: true, available: true, ...apkCache, path: f }
+      // path 也在缓存键里：包从 apk/ 挪回 app/ 时不能误用旧包的 hash
+      if (apkCache && apkCache.path === f && apkCache.mtimeMs === st.mtimeMs && apkCache.size === st.size) return { ok: true, available: true, ...apkCache }
       const info = {
+        path: f,
         mtimeMs: st.mtimeMs,
         size: st.size,
         sha256: createHash('sha256').update(readFileSync(f)).digest('hex'),
@@ -974,7 +1045,22 @@ export default {
         info.version = ''
       }
       apkCache = info
-      return { ok: true, available: true, ...info, path: f }
+      return { ok: true, available: true, ...info }
+    }
+    /**
+     * 给前端 / 面板的统一「能不能下、从哪下」视图。
+     * 下载默认走外链（GitHub Release 或机主自填镜像）：新用户拿包不经过机主电脑，
+     * 机主上行带宽、开关机、隧道域名都不再影响别人装 App；本机那份只当兼底
+     * （/api/app-download 仍能拿，没网/没外链时用）。
+     */
+    function apkOffer() {
+      const local = apkInfo()
+      const cfg = String(s().appUrl || '').trim()
+      const url = cfg || APK_RELEASE.url
+      const meta = local.available
+        ? { version: local.version || '', size: local.size, updatedAt: local.updatedAt, sha256: local.sha256, path: local.path }
+        : { version: cfg ? '' : APK_RELEASE.version, size: cfg ? 0 : APK_RELEASE.size, updatedAt: '', sha256: cfg ? '' : APK_RELEASE.sha256 }
+      return { ok: true, available: Boolean(url || local.available), source: cfg ? 'custom' : 'release', url, local: local.available, ...meta }
     }
     /**
      * 下载 cloudflared（普通用户最卡的一步：让人去 GitHub 找 releases、选对文件、再放 PATH，
@@ -1110,6 +1196,8 @@ export default {
         want: w.want === true,
         restarts: Number(w.restarts || 0),
         lastRestartAt: Number(w.lastAt || 0),
+        // 公网自检：面板上直接显示「隧道真的通吗」，而不是只看进程在不在
+        probe: probeSnapshot(),
       }
     }
 
@@ -1317,7 +1405,8 @@ export default {
       if (on() && !server) start()
       // 隧道也顺手看一眼：不用等 60 秒的定时器，打开面板就能看到它被拉起来
       if (readWant().want === true) tunnelWatch().catch(() => {})
-      return { ok: true, addresses: lanAddresses(), enabled: on(), port: port(), tone: tone(), tunnel: tunnelInfo(), service: svcInfo(), stale: staleInfo() }
+      // apk 也带上：面板常显「放的是哪一版」，用户问「我这是最新的吗」不用翻日志
+      return { ok: true, addresses: lanAddresses(), enabled: on(), port: port(), tone: tone(), tunnel: tunnelInfo(), service: svcInfo(), stale: staleInfo(), apk: apkOffer() }
     })
     api.route('/service', async (req) => {
       const b = await bodyOf(req).catch(() => ({}))
@@ -1501,14 +1590,18 @@ export default {
         if (route === 'events') return json(res, 200, ops.events(url.searchParams.get('after')))
         if (route === 'seq') return json(res, 200, ops.seq())
         // 安装包：信息给网页判断要不要亮下载条；下载用原始字节流（浏览器点链接直接存）
-        if (route === 'app-info') return json(res, 200, apkInfo())
+        // 安装包：信息给网页判断要不要亮下载条；下载优先外链（不占机主上行），本机有包走字节流
+        if (route === 'app-info') return json(res, 200, apkOffer())
         if (route === 'app-download') {
-          const info = apkInfo()
-          if (!info.available) return json(res, 404, { ok: false, message: '安装包还没放：把 APK 复制到 ' + apkFile() })
-          send(res, 200, readFileSync(info.path), 'application/vnd.android.package-archive', {
+          const offer = apkOffer()
+          const local = apkInfo()
+          // 外链存在且与本机文件不是同一份时就 302（本机那份只当兼底：带 ?local=1 强制）
+          const wantLocal = url.searchParams.get('local') === '1'
+          if (offer.url && !wantLocal) return send(res, 302, '', 'text/plain; charset=utf-8', { location: offer.url })
+          if (!local.available) return json(res, 404, { ok: false, message: '还没配安装包：放一份到 ' + apkFile() + '，或者在面板里填「备用下载地址」' })
+          return send(res, 200, readFileSync(local.path), 'application/vnd.android.package-archive', {
             'content-disposition': 'attachment; filename="pocket-aurabot.apk"',
           })
-          return undefined
         }
         if (route === 'history') return json(res, 200, ops.history(Number(url.searchParams.get('days') || 3) || 3))
         if (route === 'moments') return json(res, 200, await ops.moments())
@@ -1692,7 +1785,7 @@ export default {
       ...svcInfo(),
     })
 
-    hooks.__test = { inject, voiceNote, guard, petInteract, petState, pushEvent, ring: () => ring, readHistory, tokenOf, lanAddresses, urlOf, ops, handle, decodeImage, mediaBytesOf, sniffMime, installCloudflared, apkInfo, apkFile, cfPolicy: { version: CF_VERSION, size: CF_SIZE, sha256: CF_SHA256, base: CF_BASE, mirrors: CF_MIRRORS } }
+    hooks.__test = { inject, voiceNote, guard, petInteract, petState, pushEvent, ring: () => ring, readHistory, tokenOf, lanAddresses, urlOf, ops, handle, decodeImage, mediaBytesOf, sniffMime, installCloudflared, apkInfo, apkOffer, apkFile, cfPolicy: { version: CF_VERSION, size: CF_SIZE, sha256: CF_SHA256, base: CF_BASE, mirrors: CF_MIRRORS } }
   },
 }
 
