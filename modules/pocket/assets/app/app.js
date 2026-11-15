@@ -1322,6 +1322,22 @@ async function maybeAppBanner() {
   setTimeout(() => { if (inAppShell()) hide(false) }, 1200)
 }
 
+// 隧道抖动很常见：进程活着、边缘连接断了，几十秒后可能自己恢复。
+// 所以连不上时不要只让用户手点「重试」——每 20 秒自动再试一次，用户什么都不用做。
+let retryTimer = null
+function stopAutoRetry() {
+  if (retryTimer) clearTimeout(retryTimer)
+  retryTimer = null
+}
+function scheduleAutoRetry() {
+  stopAutoRetry()
+  retryTimer = setTimeout(() => {
+    retryTimer = null
+    const pair = $('#view-pair')
+    if (pair && !pair.hidden) boot() // 只在还停在配对页时重试，别打断已经在聊天的人
+  }, 20000)
+}
+
 function toPair(reason, codes) {
   stopPolling()
   if (reason) showPairErr(reason, codes || [])
@@ -1336,6 +1352,7 @@ function toPair(reason, codes) {
 }
 
 async function doPair() {
+  stopAutoRetry()
   const err = $('#pair-err')
   const raw = String($('#pair-host').value || '').trim()
   const hosts = hostList(raw)
@@ -1393,6 +1410,7 @@ function autoGrow() {
 }
 
 async function boot() {
+  stopAutoRetry()
   takeFromUrl()
   paintTone(S.tone)
   buildToneGrid()
@@ -1490,10 +1508,13 @@ async function boot() {
     const p = list.length ? await probeAll(list).catch(() => null) : null
     if (p && !p.ok) {
       const codes = p.selfDown ? ['P30', ...p.results.map((x) => x.code)] : p.results.map((x) => x.code)
-      return toPair(
-        (p.selfDown ? '[P30] 手机现在这个网络本身没通\n' : '连不上电脑：\n') + p.detail + '\n报障把代号发我（比如 P11）就够。',
+      toPair(
+        (p.selfDown ? '[P30] 手机现在这个网络本身没通\n' : '连不上电脑：\n') + p.detail + '\n会自动重试，也可以点「重试」。',
         codes,
       )
+      // 隧道恢复（或电脑重新上线）后自动接回去，用户不用守着点
+      if (!p.selfDown) scheduleAutoRetry()
+      return
     }
     const c = failCode(S.host || list[0] || '', e)
     toPair(`[${c}] ${CODES[c].t}\n${CODES[c].fix}`, [c])

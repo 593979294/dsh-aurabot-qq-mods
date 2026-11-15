@@ -17,7 +17,7 @@ import { spawn, execFileSync } from 'node:child_process'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
 const RING_MAX = 500
-const VERSION = '1.5.7'
+const VERSION = '1.5.8'
 const DEFAULT_PORT = 7788
 const MAX_MEDIA_BYTES = 12 * 1024 * 1024
 
@@ -881,12 +881,61 @@ export default {
     // 不加锁就会启动两个 cloudflared、抢同一个端口、还各自注册一条隧道。实测过。
     let tunnelStarting = false
     let tunnelAutoTimer = null
-    // 每 60 秒看一眼：进程在不在；不在就重新拉起来。只做进程判活（不探公网），
-    // 因为 quick 隧道地址本来就会变，探旧地址必然失败，会把「正常」误判成「挂了」。
+    // 公网自检状态：进程活着 ≠ 隧道通。quick 隧道最常见的坏法是「cloudflared 还在跑，
+    // 到 Cloudflare 边缘的连接已经死了」——面板显示运行中，手机却所有地址都连不上，
+    // 只能停掉重建。所以除了进程判活，每 60 秒再探一次公网 /api/health：
+    // 连续 2 次不通就自动重建（quick 换新域名、named 域名不变直接恢复），3 分钟内最多重建一次。
+    let probeState = { url: '', fails: 0, okAt: 0, failAt: 0, lastRestartAt: 0 }
+    const probeSnapshot = () => ({ url: probeState.url, fails: probeState.fails, okAt: probeState.okAt, failAt: probeState.failAt, lastRestartAt: probeState.lastRestartAt })
+
+    async function probeTunnel() {
+      const info = tunnelInfo()
+      const url = info.url
+      if (!info.running || !url) return // 还没起来/域名还没抓到：下一轮再探
+      if (url !== probeState.url) probeState = { ...probeState, url, fails: 0 }
+      try {
+        const r = await fetch(url.replace(/\/+$/, '') + '/api/health', { signal: AbortSignal.timeout(8000) })
+        if (!r.ok) throw new Error('HTTP ' + r.status)
+        await r.arrayBuffer() // 读掉响应体，别把连接吊着
+        probeState.fails = 0
+        probeState.okAt = Date.now()
+        // 自检恢复了就把之前的红字撤掉，别让面板一直挂着「刚刚断了」
+        if (/^公网/.test(String(tunnelErr || ''))) tunnelErr = ''
+        return
+      } catch (e) {
+        probeState.fails++
+        probeState.failAt = Date.now()
+        tunnelErr = `公网自检失败（${probeState.fails} 次）：${String(e?.message || e)}`
+      }
+      if (probeState.fails < 2 || Date.now() - probeState.lastRestartAt < 180000) return
+      // 连续两次都不通，且距上次重建超过 3 分钟：认定边缘连接死了，重建
+      probeState.lastRestartAt = Date.now()
+      probeState.fails = 0
+      const w = readWant()
+      bootLog('隧道守护：公网自检连续失败，开始重建隧道')
+      try {
+        await tunnelStop()
+      } catch {}
+      try {
+        const r = await tunnelStart({ silent: true })
+        if (r && r.ok) {
+          writeWant({ restarts: Number(w.restarts || 0) + 1, lastAt: Date.now() })
+          bootLog(`隧道守护：已重建（第 ${Number(w.restarts || 0) + 1} 次），新地址 ${r.url || '获取中'}`)
+          tunnelErr = '公网连接刚刚断了，已自动重建隧道'
+        } else {
+          tunnelErr = (r && r.message) || '隧道重建失败'
+        }
+      } catch (e) {
+        tunnelErr = String(e?.message || e)
+      }
+    }
+
+    // 每 60 秒看一眼：进程在不在；在的话再探一次公网通不通。
     async function tunnelWatch() {
       if (readWant().want !== true) return
       if (cfRunning()) {
         guardTry = 0
+        await probeTunnel()
         return
       }
       // 上一轮刚失败过就别连着打，退到 30 秒一次
@@ -1147,6 +1196,8 @@ export default {
         want: w.want === true,
         restarts: Number(w.restarts || 0),
         lastRestartAt: Number(w.lastAt || 0),
+        // 公网自检：面板上直接显示「隧道真的通吗」，而不是只看进程在不在
+        probe: probeSnapshot(),
       }
     }
 

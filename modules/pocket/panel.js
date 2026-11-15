@@ -373,12 +373,25 @@ return function Panel({ settings, save, toast }) {
                     ? '临时隧道运行中'
                     : '连接中…') +
                 (tun.want
-                  ? `（有守护：进程退了会自动重启${tun.restarts ? `，已重启 ${tun.restarts} 次` : ''}）`
+                  ? `（有守护：进程退了自动重启、公网断了自动重建${tun.restarts ? `，已处理 ${tun.restarts} 次` : ''}）`
                   : '')
               : tun.want
                 ? '刚刚断了，守护正在重启（最多等一分钟，刷新看看）'
                 : '未启动'),
       ),
+      // 公网自检：光看「进程在不在」会被骗——cloudflared 常出现「进程活着、边缘连接已死」
+      tun.running && tun.probe && tun.probe.okAt
+        ? h('p', { className: 'ab-small ab-muted', style: { margin: '6px 0 0' } },
+            '公网自检：',
+            tun.probe.fails
+              ? h('b', { style: { color: '#c0392b' } }, `连续失败 ${tun.probe.fails} 次`)
+              : h('b', { style: { color: '#2e8b57' } }, '正常'),
+            ' · 最近一次通过 ' + Math.max(0, Math.round((Date.now() - tun.probe.okAt) / 1000)) + ' 秒前',
+            '（每 60 秒探一次，连续 2 次不通就自动重建隧道）',
+            tun.probe.lastRestartAt
+              ? '；上次自动重建 ' + Math.round((Date.now() - tun.probe.lastRestartAt) / 60000) + ' 分钟前'
+              : '')
+        : null,
       // 固定域名隧道：临时隧道每次重启换域名，手机里存的地址就废了 —— 这才是「昨天能连今天不能」的主因
       h('div', { style: { marginTop: 10, padding: '8px 10px', borderLeft: '3px solid rgba(84,168,230,.55)', background: 'rgba(84,168,230,.07)', borderRadius: 6 } },
         h('p', { className: 'ab-small', style: { margin: 0, fontWeight: 600 } },
