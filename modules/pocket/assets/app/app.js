@@ -57,6 +57,8 @@ function takeFromUrl() {
       S.hosts = list
       S.host = list[0]
     }
+  } else {
+    adoptUrlHost()
   }
   if (token) {
     localStorage.setItem(LS.token, token)
@@ -67,6 +69,29 @@ function takeFromUrl() {
       history.replaceState(null, '', location.pathname)
     } catch {}
   }
+}
+
+/**
+ * 「你从哪个地址打开的，就先用哪个地址」。
+ *
+ * quick 隧道每次重建必换域名，而手机里存的是上一个域名：页面本身能从新链接打开
+ * （HTML/JS/CSS 走的是新域名，所以看得出「页面有了」），但所有 /api 请求仍然打
+ * 旧的、早就 1033 的域名 → 表现成「怎么都连不上，明明用的是最新隧道」。
+ * 面板二维码因为域名太长塞不下，退化成只带 token 的短链，正好踩这个坑。
+ * 所以这里用 location.origin 自愈：扫什么地址进来的，就先认这个地址。
+ */
+function adoptUrlHost() {
+  if (!/^https?:$/.test(location.protocol)) return // file:// 之类不管
+  if (/^(localhost|127\.0\.0\.1|\[::1\]|::1)$/i.test(location.hostname)) return // 本机直连，base() 本来就回落 origin
+  const origin = location.origin
+  const list = hostList(S.hosts.join(','))
+  if (list[0] === origin) return
+  const next = [origin, ...list.filter((x) => x !== origin)].slice(0, 6)
+  try {
+    localStorage.setItem(LS.host, next.join(','))
+  } catch {}
+  S.hosts = next
+  S.host = origin
 }
 
 /**

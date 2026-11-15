@@ -701,3 +701,14 @@ function mockRes() {
 function mockReq({ url = '/', headers = {}, method = 'GET' } = {}) {
   return { url, headers, method }
 }
+
+test('换了隧道域名：从新链接打开就自动认新地址（不再死磕手机里存的旧域名）', () => {
+  const src = readFileSync(new URL('../assets/app/app.js', import.meta.url), 'utf8')
+  // quick 隧道重建必换域名，而二维码退回的短链只带 token、不带 host：
+  // 不做这个自愈，页面能从新链接打开，但所有 /api 还在打早就 1033 的旧域名。
+  assert.match(src, /function adoptUrlHost\(/, '缺 adoptUrlHost：从新地址打开时不会自愈')
+  assert.match(src, /else\s*\{\s*adoptUrlHost\(\)\s*\}/, 'takeFromUrl 在没有显式 host 参数时必须调用 adoptUrlHost')
+  assert.match(src, /const origin = location\.origin/, '要用「页面是从哪个地址打开的」作为首选地址')
+  // 显式带 host 的链接（面板「复制配对链接」）优先级更高，不能被覆盖
+  assert.ok(src.indexOf('if (host) {') < src.indexOf('adoptUrlHost()'), '显式 host 必须先处理')
+})
