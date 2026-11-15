@@ -155,6 +155,16 @@ return function Panel({ settings, save, toast }) {
   }
   if (!qrLink && pairBase && token) qrNote = '这条地址太长，塞不进二维码（超过 134 字节）——用上面「复制配对链接」发到手机里粘贴也一样。'
 
+  // 隧道地址变更提醒：quick 隧道重建必换域名，手机里存的还是旧的，会一直「所有地址都连不上」。
+  // 七天内的变更都提示（面板刷新不会丢），过期自动收起，不长期占地方。
+  const tunChanged = tun.mode !== 'named' && tun.changedAt && Date.now() - tun.changedAt < 7 * 864e5
+  const fmtAt = (ms) => {
+    const d = new Date(Number(ms) || Date.now())
+    const p = (n) => String(n).padStart(2, '0')
+    return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+  }
+  const shortHost = (u) => String(u || '').replace(/^https?:\/\//, '')
+
   // 给每个地址标一句「什么时候填它」，免得对着三个地址不知道抄哪个
   const addrLabel = (ip) => {
     const v4 = ip.replace(/^\[|\]$/g, '')
@@ -286,6 +296,21 @@ return function Panel({ settings, save, toast }) {
               '装好 app 后在配对页点「扫一扫电脑上的二维码」——地址和密钥都会自动填好。没装 app 用手机相机或微信扫也行，打开就是网页版（网页版录不了语音，要语音就装 app）。'),
             qrNote ? h('p', { className: 'ab-small ab-muted', style: { margin: '4px 0 0', color: '#c0392b' } }, qrNote) : null,
           ))
+      : null,
+
+    // 地址变过就顶在最上面说清楚：用户看到的是「所有地址都连不上」，根本猜不到是域名换了
+    tunChanged
+      ? h('div', { style: { marginTop: 10, padding: '9px 11px', borderLeft: '3px solid #c0392b', background: 'rgba(192,57,43,.08)', borderRadius: 6 } },
+          h('p', { className: 'ab-small', style: { margin: 0, fontWeight: 600 } },
+            `隧道地址 ${fmtAt(tun.changedAt)} 换过了——手机里存的还是旧地址，所以会一直显示「所有地址都连不上」`),
+          h('p', { className: 'ab-small ab-muted', style: { margin: '5px 0 0', lineHeight: 1.85 } },
+            '旧：', h('code', { style: { wordBreak: 'break-all' } }, shortHost(tun.prevUrl)),
+            ' → 新：', h('code', { style: { wordBreak: 'break-all' } }, shortHost(tun.url || pairBase)),
+            '。点右边按钮把新链接发到手机，手机上打开就自动填好；也可以在 App 配对页重新扫上面的二维码。'),
+          h('div', { style: { display: 'flex', gap: 8, marginTop: 7, flexWrap: 'wrap' } },
+            h(ui.Btn, { onClick: () => copyText(pairLink, '新配对链接已复制——发到手机上打开就恢复') }, '复制新配对链接'),
+          ),
+        )
       : null,
 
     // 服务没起来时把话说清楚：这是「127.0.0.1 也连不上」的那种情况，不是网络问题

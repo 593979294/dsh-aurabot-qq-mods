@@ -368,6 +368,32 @@ test('摸摸头 / 陪玩真的会换着说', async () => {
   assert.ok(seen.size >= 3, `12 次陪玩只出现 ${seen.size} 种句子`)
 })
 
+test('隧道重建换地址时，记下旧地址和变更时间（面板据此提醒手机重新配对）', () => {
+  const f = join(DATA_DIR, 'tunnel.json')
+  // 先放一条旧地址
+  writeFileSync(f, JSON.stringify({ url: 'https://old-name.trycloudflare.com', pid: 1, at: Date.now() }), 'utf8')
+  assert.equal(T.readTunnelFile().url, 'https://old-name.trycloudflare.com')
+
+  // 地址变了：必须记 prevUrl + changedAt
+  const before = Date.now()
+  const a = T.saveTunnel({ url: 'https://new-name.trycloudflare.com', pid: 2, at: Date.now() })
+  assert.equal(a.prevUrl, 'https://old-name.trycloudflare.com')
+  assert.ok(a.changedAt >= before, 'changedAt 要记成变更时刻')
+  const onDisk = T.readTunnelFile()
+  assert.equal(onDisk.prevUrl, 'https://old-name.trycloudflare.com')
+
+  // 地址没变（重启同一条 named/同域名）：变更记录要保留，不能被清掉
+  const b = T.saveTunnel({ url: 'https://new-name.trycloudflare.com', pid: 3, at: Date.now() })
+  assert.equal(b.prevUrl, 'https://old-name.trycloudflare.com')
+  assert.equal(b.changedAt, a.changedAt, '地址没变就不该刷新变更时间')
+
+  // 面板读的字段要在 tunnelInfo 里露出来
+  const info = T.tunnelInfo()
+  assert.equal(info.prevUrl, 'https://old-name.trycloudflare.com')
+  assert.ok(info.changedAt > 0)
+  rmSync(f, { force: true })
+})
+
 test('state 返回人格、心情和宠物数值', () => {
   const token = T.tokenOf()
   const r = routes['/state'](req(token, { url: '/state' }), {})

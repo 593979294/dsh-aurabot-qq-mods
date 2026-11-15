@@ -17,7 +17,7 @@ import { spawn, execFileSync } from 'node:child_process'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
 const RING_MAX = 500
-const VERSION = '1.5.10'
+const VERSION = '1.5.11'
 const DEFAULT_PORT = 7788
 const MAX_MEDIA_BYTES = 12 * 1024 * 1024
 
@@ -1128,6 +1128,26 @@ export default {
       }
     }
 
+    // 写隧道状态。地址一变就把「旧地址 + 变更时间」记下来：
+    // 临时隧道重建必换域名，而手机里存的是旧地址 —— 光重建没用，得让机主知道要重发一次。
+    function saveTunnel(next) {
+      const old = readTunnelFile()
+      const out = { ...next }
+      if (old.url && out.url && String(old.url) !== String(out.url)) {
+        out.prevUrl = String(old.url)
+        out.changedAt = Date.now()
+        bootLog(`隧道地址变更：${old.url} → ${out.url}（手机要重新配对）`)
+      } else {
+        // 地址没变就沿用上次的变更时间，面板据此判断「最近换过没有」
+        if (old.changedAt) out.changedAt = old.changedAt
+        if (old.prevUrl && !out.prevUrl) out.prevUrl = old.prevUrl
+      }
+      try {
+        writeFileSync(tunnelFile(), JSON.stringify(out))
+      } catch {}
+      return out
+    }
+
     function pidAlive(pid) {
       const n = Number(pid)
       if (!n || n === process.pid) return false
@@ -1348,6 +1368,9 @@ export default {
         want: w.want === true,
         restarts: Number(w.restarts || 0),
         lastRestartAt: Number(w.lastAt || 0),
+        // 地址变更记录：quick 隧道重建必然换域名，面板要能直接提醒机主「手机该重新配对了」
+        changedAt: Number(saved.changedAt || 0),
+        prevUrl: String(saved.prevUrl || ''),
         // 公网自检：面板上直接显示「隧道真的通吗」，而不是只看进程在不在
         probe: probeSnapshot(),
       }
@@ -1443,7 +1466,7 @@ export default {
         if (m && !tunnelUrl) {
           tunnelUrl = m[0]
           try {
-            writeFileSync(tunnelFile(), JSON.stringify({ url: tunnelUrl, pid: p.pid, at: Date.now() }))
+            saveTunnel({ url: tunnelUrl, pid: p.pid, at: Date.now() })
           } catch {}
         }
       }
@@ -1504,7 +1527,7 @@ export default {
         }
       })
       try {
-        writeFileSync(tunnelFile(), JSON.stringify({ url: target, pid: p.pid, at: Date.now(), mode: 'named' }))
+        saveTunnel({ url: target, pid: p.pid, at: Date.now(), mode: 'named' })
       } catch {}
       for (let i = 0; i < 12; i++) {
         await new Promise((r) => setTimeout(r, 2500))
@@ -1937,7 +1960,7 @@ export default {
       ...svcInfo(),
     })
 
-    hooks.__test = { inject, voiceNote, FOODS, feedLine, PET_LINES, PLAY_LINES, guard, petInteract, petState, pushEvent, ring: () => ring, readHistory, tokenOf, lanAddresses, urlOf, ops, handle, decodeImage, mediaBytesOf, sniffMime, installCloudflared, apkInfo, apkOffer, apkFile, cfPolicy: { version: CF_VERSION, size: CF_SIZE, sha256: CF_SHA256, base: CF_BASE, mirrors: CF_MIRRORS } }
+    hooks.__test = { inject, voiceNote, FOODS, feedLine, PET_LINES, PLAY_LINES, saveTunnel, readTunnelFile, tunnelInfo, guard, petInteract, petState, pushEvent, ring: () => ring, readHistory, tokenOf, lanAddresses, urlOf, ops, handle, decodeImage, mediaBytesOf, sniffMime, installCloudflared, apkInfo, apkOffer, apkFile, cfPolicy: { version: CF_VERSION, size: CF_SIZE, sha256: CF_SHA256, base: CF_BASE, mirrors: CF_MIRRORS } }
   },
 }
 
