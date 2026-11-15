@@ -17,7 +17,7 @@ import { spawn, execFileSync } from 'node:child_process'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
 const RING_MAX = 500
-const VERSION = '1.5.11'
+const VERSION = '1.5.12'
 const DEFAULT_PORT = 7788
 const MAX_MEDIA_BYTES = 12 * 1024 * 1024
 
@@ -973,6 +973,22 @@ export default {
       fails.set(k, arr)
     }
     const clearFails = (req) => fails.delete(failKeyOf(req))
+
+    // 最近访问记录（环形 60 条）：排查「手机到底有没有打进来、打的是哪个域名」时唯一可靠的证据。
+    // 手机上显示「所有地址都连不上」时，看这里就知道是「请求根本没到」还是「到了但被拒」。
+    const hits = []
+    function noteHit(req, url) {
+      const h = req.headers || {}
+      hits.push({
+        at: Date.now(),
+        host: String(h.host || ''),
+        path: String(url.pathname || ''),
+        ip: String(h['cf-connecting-ip'] || h['x-real-ip'] || h['x-forwarded-for'] || req.socket?.remoteAddress || ''),
+        via: h['cf-ray'] ? 'cloudflare' : 'direct',
+        ua: String(h['user-agent'] || '').slice(0, 80),
+      })
+      if (hits.length > 60) hits.splice(0, hits.length - 60)
+    }
     function guard(req, res) {
       if (!on()) {
         deny(res, 403, '手机接口关着')
@@ -1059,8 +1075,9 @@ export default {
         probeState.failAt = Date.now()
         tunnelErr = `公网自检失败（${probeState.fails} 次）：${String(e?.message || e)}`
       }
-      if (probeState.fails < 2 || Date.now() - probeState.lastRestartAt < 180000) return
-      // 连续两次都不通，且距上次重建超过 3 分钟：认定边缘连接死了，重建
+      if (probeState.fails < 3 || Date.now() - probeState.lastRestartAt < 180000) return
+      // 连续三次（约 3 分钟）都不通，且距上次重建超过 3 分钟：认定边缘连接死了，重建。
+      // 阈值从 2 提到 3：每次重建都会换域名，手机端要重新配对，误判的代价比多等 1 分钟大得多。
       probeState.lastRestartAt = Date.now()
       probeState.fails = 0
       const w = readWant()
@@ -1581,7 +1598,7 @@ export default {
       // 隧道也顺手看一眼：不用等 60 秒的定时器，打开面板就能看到它被拉起来
       if (readWant().want === true) tunnelWatch().catch(() => {})
       // apk 也带上：面板常显「放的是哪一版」，用户问「我这是最新的吗」不用翻日志
-      return { ok: true, addresses: lanAddresses(), enabled: on(), port: port(), tone: tone(), tunnel: tunnelInfo(), service: svcInfo(), stale: staleInfo(), apk: apkOffer() }
+      return { ok: true, addresses: lanAddresses(), enabled: on(), port: port(), tone: tone(), tunnel: tunnelInfo(), service: svcInfo(), stale: staleInfo(), apk: apkOffer(), recent: hits.slice(-8) }
     })
     api.route('/service', async (req) => {
       const b = await bodyOf(req).catch(() => ({}))
@@ -1732,6 +1749,7 @@ export default {
         return json(res, 400, { ok: false, message: 'bad url' })
       }
       if (req.method === 'OPTIONS') return send(res, 204, '', 'text/plain')
+      noteHit(req, url)
 
       const p = url.pathname
       if (!p.startsWith('/api/')) return serveStatic(res, p)
@@ -1761,6 +1779,7 @@ export default {
           }
           return json(res, 200, tunnelInfo())
         }
+        if (route === 'diag') return json(res, 200, { ok: true, version: VERSION, port: listening || port(), enabled: on(), tunnel: tunnelInfo(), probe: probeSnapshot(), hits: hits.slice(-20) })
         if (route === 'state') return json(res, 200, ops.state())
         if (route === 'events') return json(res, 200, ops.events(url.searchParams.get('after')))
         if (route === 'seq') return json(res, 200, ops.seq())
@@ -1960,7 +1979,7 @@ export default {
       ...svcInfo(),
     })
 
-    hooks.__test = { inject, voiceNote, FOODS, feedLine, PET_LINES, PLAY_LINES, saveTunnel, readTunnelFile, tunnelInfo, guard, petInteract, petState, pushEvent, ring: () => ring, readHistory, tokenOf, lanAddresses, urlOf, ops, handle, decodeImage, mediaBytesOf, sniffMime, installCloudflared, apkInfo, apkOffer, apkFile, cfPolicy: { version: CF_VERSION, size: CF_SIZE, sha256: CF_SHA256, base: CF_BASE, mirrors: CF_MIRRORS } }
+    hooks.__test = { VERSION, inject, voiceNote, FOODS, feedLine, PET_LINES, PLAY_LINES, saveTunnel, readTunnelFile, tunnelInfo, guard, petInteract, petState, pushEvent, ring: () => ring, readHistory, tokenOf, lanAddresses, urlOf, ops, handle, decodeImage, mediaBytesOf, sniffMime, installCloudflared, apkInfo, apkOffer, apkFile, cfPolicy: { version: CF_VERSION, size: CF_SIZE, sha256: CF_SHA256, base: CF_BASE, mirrors: CF_MIRRORS } }
   },
 }
 

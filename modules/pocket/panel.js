@@ -448,11 +448,27 @@ return function Panel({ settings, save, toast }) {
               ? h('b', { style: { color: '#c0392b' } }, `连续失败 ${tun.probe.fails} 次`)
               : h('b', { style: { color: '#2e8b57' } }, '正常'),
             ' · 最近一次通过 ' + Math.max(0, Math.round((Date.now() - tun.probe.okAt) / 1000)) + ' 秒前',
-            '（每 60 秒探一次，连续 2 次不通就自动重建隧道）',
+            '（每 60 秒探一次，连续 3 次不通才自动重建隧道）',
             tun.probe.lastRestartAt
               ? '；上次自动重建 ' + Math.round((Date.now() - tun.probe.lastRestartAt) / 60000) + ' 分钟前'
               : '')
         : null,
+      // 最近访问：手机上「所有地址都连不上」时，这一行能立刻分辨「请求根本没到」还是「到了被拒」
+      h('p', { className: 'ab-small ab-muted', style: { margin: '6px 0 0', lineHeight: 1.8 } },
+        '最近访问：',
+        !net
+          ? '读取中…'
+          : (net.recent || []).length
+            ? (net.recent || []).slice(-3).map((x, i) =>
+                h('span', { key: i },
+                  (i ? ' ｜ ' : ''),
+                  new Date(x.at).toLocaleTimeString('zh-CN', { hour12: false }),
+                  ' ',
+                  h('b', { style: { color: x.via === 'cloudflare' ? '#2e8b57' : '#8a8f98' } }, x.via === 'cloudflare' ? '公网' : '本机'),
+                  ' ', x.path, x.ip ? '（' + String(x.ip).slice(0, 24) + '）' : ''),
+              )
+            : '这段时间没人访问——手机连不上就是请求压根没到电脑（多半是地址/网络路径的问题）',
+      ),
       // 固定域名隧道：临时隧道每次重启换域名，手机里存的地址就废了 —— 这才是「昨天能连今天不能」的主因
       h('div', { style: { marginTop: 10, padding: '8px 10px', borderLeft: '3px solid rgba(84,168,230,.55)', background: 'rgba(84,168,230,.07)', borderRadius: 6 } },
         h('p', { className: 'ab-small', style: { margin: 0, fontWeight: 600 } },

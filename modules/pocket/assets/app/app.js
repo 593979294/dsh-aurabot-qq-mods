@@ -146,7 +146,7 @@ async function switchHost() {
   for (const cand of S.hosts) {
     if (cand === S.host) continue
     try {
-      const r = await fetch(`${cand}/api/health`, { signal: AbortSignal.timeout(5000) })
+      const r = await fetch(`${cand}/api/health`, { signal: AbortSignal.timeout(10000) })
       if (r.ok) {
         S.host = cand
         S.hosts = [cand, ...S.hosts.filter((x) => x !== cand)]
@@ -289,7 +289,7 @@ async function netBaseline(ms = 4000) {
 }
 
 /** 并行探一遍所有候选地址，谁先通用谁；全不通时逐条给代号，并顺手判断是不是手机自己没网 */
-async function probeAll(list, ms = 6000) {
+async function probeAll(list, ms = 12000) {
   const out = await Promise.all(
     list.map(async (cand) => {
       try {

@@ -394,6 +394,38 @@ test('隧道重建换地址时，记下旧地址和变更时间（面板据此�
   rmSync(f, { force: true })
 })
 
+test('diag：记录最近访问（谁打过、从公网还是本机、哪个域名）', async () => {
+  const token = T.tokenOf()
+  // 先打一次 health（不需要密钥），再打 diag
+  const h = mockRes()
+  await T.handle(mockReq({ url: '/api/health' }), h)
+  assert.equal(h.code, 200)
+  const d = mockRes()
+  await T.handle(
+    mockReq({
+      url: `/api/diag?token=${token}`,
+      headers: { host: 'petroleum-x.trycloudflare.com', 'cf-ray': 'abc', 'cf-connecting-ip': '1.2.3.4', 'user-agent': 'okhttp/4.9' },
+    }),
+    d,
+  )
+  assert.equal(d.code, 200)
+  const body = JSON.parse(Buffer.concat(d.chunks).toString('utf8'))
+  assert.equal(body.ok, true)
+  assert.equal(body.version, T.VERSION)
+  assert.ok(Array.isArray(body.hits) && body.hits.length >= 2)
+  const last = body.hits[body.hits.length - 1]
+  assert.equal(last.path, '/api/diag')
+  assert.equal(last.via, 'cloudflare') // 带 cf-ray 说明请求是从隧道进来的
+  assert.equal(last.ip, '1.2.3.4')
+  assert.equal(last.host, 'petroleum-x.trycloudflare.com')
+  assert.ok(body.probe && typeof body.probe.fails === 'number')
+
+  // 没密钥不给看（访问记录里带 IP，属于内部信息）
+  const noauth = mockRes()
+  await T.handle(mockReq({ url: '/api/diag' }), noauth)
+  assert.equal(noauth.code, 401)
+})
+
 test('state 返回人格、心情和宠物数值', () => {
   const token = T.tokenOf()
   const r = routes['/state'](req(token, { url: '/state' }), {})
