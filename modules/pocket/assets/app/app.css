@@ -21,6 +21,13 @@
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
+/* hidden 属性必须真的能藏住东西。
+   浏览器默认样式里 [hidden] 只是 display:none，优先级最低 —— 元素自己一旦写了
+   display:flex/block（比如 .appdl），就等于把 hidden 废掉：JS 里 el.hidden = true
+   看着没反应、按钮还点不动（因为代码已经按「藏起来」提前 return 了，链接根本没填）。
+   所以这里做全局兜底，以后新增带 hidden 的元素不用再一个个补规则。 */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   height: 100%;
@@ -125,6 +132,8 @@ body.dark .glass { background: color-mix(in srgb, var(--surface) 78%, transparen
   display: grid; place-items: center;
 }
 .icon-btn:active { transform: scale(.94); }
+/* http 地址下浏览器不给录音：按钮淡下去，别装作能按（点它会说明原因和出路） */
+.icon-btn.mic-off { opacity: .4; }
 
 /* ---------- 聊天 ---------- */
 .chat-list {
@@ -548,7 +557,21 @@ body.dark .glass { background: color-mix(in srgb, var(--surface) 78%, transparen
 .appdl-text b { font-size: 13.5px; }
 .appdl-text span { color: var(--muted); font-size: 12px; line-height: 1.7; }
 .appdl-text .appdl-note { color: #c08a2d; }
-.appdl-btn { flex-shrink: 0; text-decoration: none; font-size: 13px; padding: 10px 14px; border-radius: 12px; }
+.appdl-btn {
+  flex-shrink: 0;
+  text-decoration: none;
+  font-size: 13px;
+  padding: 8px 14px;
+  border-radius: 12px;
+  white-space: nowrap;
+  /* 版本号走第二行小字：写进括号里会把按钮撑出屏幕（窄屏上没法收） */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.25;
+}
+.appdl-btn i { font-style: normal; font-size: 10.5px; opacity: .85; }
+.appdl-btn i:empty { display: none; }
 .appdl-btn[hidden] { display: none; }
 
 /* 代号速查（配对页折叠表）：报错时命中的那几条自动展开、标红 */
