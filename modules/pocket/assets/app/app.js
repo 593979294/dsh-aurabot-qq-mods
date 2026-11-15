@@ -1300,8 +1300,14 @@ async function maybeAppBanner() {
   if (info && info.ok && info.available) {
     const link = $('#appdl-link')
     link.hidden = false
-    // 下载链接带 token（服务端 guard 认 query），浏览器点链接直接存文件
-    link.href = `${base()}/api/app-download?token=${encodeURIComponent(S.token)}`
+    // 默认直连发布地址（GitHub Release 或机主自填镜像）：不占机主上行，也不需要密钥；
+    // 没外链时才回落到电脑上的那份（走 guard，链接里带 token）。
+    if (/^https?:\/\//i.test(info.url || '')) {
+      link.href = info.url
+      link.removeAttribute('download')
+    } else {
+      link.href = `${base()}/api/app-download?token=${encodeURIComponent(S.token)}`
+    }
     $('#appdl-size').textContent = (info.version ? 'v' + info.version + ' · ' : '') + Math.max(1, Math.round(info.size / 1024)) + ' KB'
     $('#appdl-note').hidden = true
   } else {

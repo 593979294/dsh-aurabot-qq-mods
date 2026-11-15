@@ -132,7 +132,6 @@ return function Panel({ settings, save, toast }) {
           : `服务端口 ${svc.listening || port}${svc.ipv4Only ? '（仅 IPv4）' : ''}`
   const tun = net?.tunnel || {}
   const apk = net?.apk || {}
-  const apkDate = apk.updatedAt ? new Date(apk.updatedAt).toLocaleDateString('zh-CN') : ''
   const tunnelOrigin = tun.running && tun.url ? tun.url.replace(/^https?:\/\//, '') : ''
   const tunnelPair = tunnelOrigin ? `https://${tunnelOrigin}` : ''
   // 配对优先给隧道地址（外面也能用）；没跑隧道就用局域网第一条
@@ -307,25 +306,31 @@ return function Panel({ settings, save, toast }) {
       h('code', { style: cell }, token || '（还没生成，动一下开关就会生成）'),
     ),
 
-    // 安装包状态常显：机主一眼看到自己放的是哪一版、什么时候放的，
-    // 用户问「我下的是不是最新」时不用翻日志对 hash
+    // 安装包状态常显：机主一眼看到手机端会下到哪一版、从哪下，
+    // 不用翻日志对 hash；下载默认走外链，不占你电脑带宽
     h('div', { style: { marginTop: 10 } },
       h('p', { className: 'ab-small', style: { fontWeight: 600 } }, '安卓安装包（新用户手机浏览器打开配对页就能下载）：'),
       !net
         ? h('p', { className: 'ab-small ab-muted', style: { margin: '4px 0 0' } }, '读取中…')
         : apk.available
           ? h('p', { className: 'ab-small ab-muted', style: { margin: '4px 0 0', lineHeight: 1.8 } },
-              'pocket.apk · ',
               apk.version
                 ? h('b', null, 'v' + apk.version)
                 : h('span', { style: { color: '#c0392b' } }, '未标注版本'),
-              ' · ' + Math.max(1, Math.round((apk.size || 0) / 1024)) + ' KB · ' + apkDate + ' 放入',
-              apk.version
-                ? null
-                : h('span', null, '——在安装包旁边放个 pocket.apk.json 写 {"version":"x.y.z"}，这行和手机上的下载条就会显示版本号'),
+              apk.size ? ' · ' + Math.max(1, Math.round(apk.size / 1024)) + ' KB' : '',
+              ' · 下载来源：',
+              h('b', null, apk.source === 'custom' ? '你填的备用地址' : 'GitHub Release'),
+              apk.source === 'custom'
+                ? h('span', null, '（' + String(apk.url || '').replace(/^https?:\/\//, '').slice(0, 60) + '）')
+                : null,
+              '——手机直连这里下载，不占你电脑带宽',
+              apk.local
+                ? h('span', null, '；本机也放了一份作兜底（地址后面加 ?local=1 可强制走本机）')
+                : h('span', null, '；本机没放包也没关系'),
+              apk.version ? null : h('span', null, '。装版本号：在本机那份旁边放 pocket.apk.json 写 {"version":"x.y.z"}'),
             )
           : h('p', { className: 'ab-small ab-muted', style: { margin: '4px 0 0', lineHeight: 1.8 } },
-              '还没放：把 pocket.apk 复制到 plugins-data/aurabot/modules-data/pocket/app/ 下（放 apk/ 子目录也认），放好后这里会显示版本号'),
+              '安装包地址被清空且本机也没放包：把 pocket.apk 放进 plugins-data/aurabot/modules-data/pocket/app/（放 apk/ 也认），或在设置里填「备用下载地址」。'),
     ),
 
     h('div', { style: { marginTop: 12 } },

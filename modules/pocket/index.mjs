@@ -17,7 +17,7 @@ import { spawn, execFileSync } from 'node:child_process'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
 const RING_MAX = 500
-const VERSION = '1.5.6'
+const VERSION = '1.5.7'
 const DEFAULT_PORT = 7788
 const MAX_MEDIA_BYTES = 12 * 1024 * 1024
 
@@ -411,7 +411,7 @@ export default {
   minPluginVersion: '1.2.0',
   requires: [],
   capabilities: ['filesystem', 'plugin-config', 'plugin-internals', 'network', 'process'],
-  defaults: { enabled: false, token: '', port: DEFAULT_PORT, tone: 'ocean', tunnelAuto: false, tunnelToken: '', tunnelHost: '' },
+  defaults: { enabled: false, token: '', port: DEFAULT_PORT, tone: 'ocean', tunnelAuto: false, tunnelToken: '', tunnelHost: '', appUrl: '' },
   panel: 'panel.js',
   settings: [
     { key: 'enabled', label: '启用手机接口', type: 'switch', hint: '关掉后 app 连不上（QQ 端不受影响）' },
@@ -420,6 +420,7 @@ export default {
     { key: 'tone', label: '图标色调', type: 'string', hint: '手机端配色：ocean/sakura/mint/grape/sunset/moon/abyss/rose' },
     { key: 'tunnelToken', label: '固定隧道 Token（可选）', type: 'string', hint: 'Cloudflare Zero Trust 里创建隧道后复制的 token；填了就走固定域名，地址不再每次都变' },
     { key: 'tunnelHost', label: '固定隧道域名（可选）', type: 'string', hint: '隧道里配的 Public Hostname，如 pocket.example.com（不要写 https://）' },
+    { key: 'appUrl', label: '备用下载地址（可选）', type: 'string', hint: '留空＝用默认的 GitHub Release 地址；填了就用你给的镜像，比如自己的对象存储。手机下载直连这里，不占你电脑带宽' },
   ],
 
   setup(api) {
@@ -701,7 +702,7 @@ export default {
       // 只读游标，不带事件体：app 启动时先问「现在到几号」，
       // 好把「历史接口已经画过」的那一段跳过去，否则历史 + 事件环会把同一条消息画两遍
       seq: () => ({ ok: true, seq }),
-      appApk: () => apkInfo(),
+      appApk: () => apkOffer(),
       history: (days) => ({ ok: true, list: readHistory(days) }),
       message: (text, image) => inject(text, image),
       voiceNote: (audio) => voiceNote(audio),
@@ -948,6 +949,15 @@ export default {
     const CF_BASE = `https://github.com/cloudflare/cloudflared/releases/download/${CF_VERSION}/${CF_ASSET}`
     const CF_MIRRORS = [CF_BASE, `https://ghfast.top/${CF_BASE}`, `https://gh-proxy.com/${CF_BASE}`]
 
+    // 官方安装包发布地址（GitHub Release）。默认让手机直连这里下载：不占机主上行、
+    // 机主电脑上不必放包；要换自己的镜像就在面板里填「备用下载地址」。
+    const APK_RELEASE = {
+      version: '1.0.5',
+      size: 410409,
+      sha256: '9f336449ead0362d558aea8149ad7746e75c88a3a8fe4316c3eec52d5af20181',
+      url: 'https://github.com/Ariz0324/dsh-aurabot-qq-mods/releases/download/pocket-app-v1.0.5/pocket-aurabot-1.0.5.apk',
+    }
+
     // 安卓 App 安装包：放数据目录 app/pocket.apk（可选同名 .json 写 {"version":"1.0.5"}）。
     // 新用户在手机浏览器里打开配对页就能直接下载，不用再走 QQ 传文件；换包只要覆盖文件，不用改代码。
     // apk/ 目录也认（总有人记成 apk/，实测包括机主本人）；两个目录都放时 app/ 优先。
@@ -987,6 +997,21 @@ export default {
       }
       apkCache = info
       return { ok: true, available: true, ...info }
+    }
+    /**
+     * 给前端 / 面板的统一「能不能下、从哪下」视图。
+     * 下载默认走外链（GitHub Release 或机主自填镜像）：新用户拿包不经过机主电脑，
+     * 机主上行带宽、开关机、隧道域名都不再影响别人装 App；本机那份只当兼底
+     * （/api/app-download 仍能拿，没网/没外链时用）。
+     */
+    function apkOffer() {
+      const local = apkInfo()
+      const cfg = String(s().appUrl || '').trim()
+      const url = cfg || APK_RELEASE.url
+      const meta = local.available
+        ? { version: local.version || '', size: local.size, updatedAt: local.updatedAt, sha256: local.sha256, path: local.path }
+        : { version: cfg ? '' : APK_RELEASE.version, size: cfg ? 0 : APK_RELEASE.size, updatedAt: '', sha256: cfg ? '' : APK_RELEASE.sha256 }
+      return { ok: true, available: Boolean(url || local.available), source: cfg ? 'custom' : 'release', url, local: local.available, ...meta }
     }
     /**
      * 下载 cloudflared（普通用户最卡的一步：让人去 GitHub 找 releases、选对文件、再放 PATH，
@@ -1330,7 +1355,7 @@ export default {
       // 隧道也顺手看一眼：不用等 60 秒的定时器，打开面板就能看到它被拉起来
       if (readWant().want === true) tunnelWatch().catch(() => {})
       // apk 也带上：面板常显「放的是哪一版」，用户问「我这是最新的吗」不用翻日志
-      return { ok: true, addresses: lanAddresses(), enabled: on(), port: port(), tone: tone(), tunnel: tunnelInfo(), service: svcInfo(), stale: staleInfo(), apk: apkInfo() }
+      return { ok: true, addresses: lanAddresses(), enabled: on(), port: port(), tone: tone(), tunnel: tunnelInfo(), service: svcInfo(), stale: staleInfo(), apk: apkOffer() }
     })
     api.route('/service', async (req) => {
       const b = await bodyOf(req).catch(() => ({}))
@@ -1514,14 +1539,18 @@ export default {
         if (route === 'events') return json(res, 200, ops.events(url.searchParams.get('after')))
         if (route === 'seq') return json(res, 200, ops.seq())
         // 安装包：信息给网页判断要不要亮下载条；下载用原始字节流（浏览器点链接直接存）
-        if (route === 'app-info') return json(res, 200, apkInfo())
+        // 安装包：信息给网页判断要不要亮下载条；下载优先外链（不占机主上行），本机有包走字节流
+        if (route === 'app-info') return json(res, 200, apkOffer())
         if (route === 'app-download') {
-          const info = apkInfo()
-          if (!info.available) return json(res, 404, { ok: false, message: '安装包还没放：把 APK 复制到 ' + apkFile() })
-          send(res, 200, readFileSync(info.path), 'application/vnd.android.package-archive', {
+          const offer = apkOffer()
+          const local = apkInfo()
+          // 外链存在且与本机文件不是同一份时就 302（本机那份只当兼底：带 ?local=1 强制）
+          const wantLocal = url.searchParams.get('local') === '1'
+          if (offer.url && !wantLocal) return send(res, 302, '', 'text/plain; charset=utf-8', { location: offer.url })
+          if (!local.available) return json(res, 404, { ok: false, message: '还没配安装包：放一份到 ' + apkFile() + '，或者在面板里填「备用下载地址」' })
+          return send(res, 200, readFileSync(local.path), 'application/vnd.android.package-archive', {
             'content-disposition': 'attachment; filename="pocket-aurabot.apk"',
           })
-          return undefined
         }
         if (route === 'history') return json(res, 200, ops.history(Number(url.searchParams.get('days') || 3) || 3))
         if (route === 'moments') return json(res, 200, await ops.moments())
@@ -1705,7 +1734,7 @@ export default {
       ...svcInfo(),
     })
 
-    hooks.__test = { inject, voiceNote, guard, petInteract, petState, pushEvent, ring: () => ring, readHistory, tokenOf, lanAddresses, urlOf, ops, handle, decodeImage, mediaBytesOf, sniffMime, installCloudflared, apkInfo, apkFile, cfPolicy: { version: CF_VERSION, size: CF_SIZE, sha256: CF_SHA256, base: CF_BASE, mirrors: CF_MIRRORS } }
+    hooks.__test = { inject, voiceNote, guard, petInteract, petState, pushEvent, ring: () => ring, readHistory, tokenOf, lanAddresses, urlOf, ops, handle, decodeImage, mediaBytesOf, sniffMime, installCloudflared, apkInfo, apkOffer, apkFile, cfPolicy: { version: CF_VERSION, size: CF_SIZE, sha256: CF_SHA256, base: CF_BASE, mirrors: CF_MIRRORS } }
   },
 }
 

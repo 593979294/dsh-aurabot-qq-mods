@@ -169,19 +169,26 @@ test('seq 游标：只给号不给事件体（app 启动时靠它跳过历史已
   assert.equal(after.seq, before.seq + 1)
 })
 
-test('app-info / app-download：数据目录放了 APK 才可下载，字节与 hash 必须对得上', async () => {
+test('app-info / app-download：默认走外链（不占机主上行），本机那份只在 ?local=1 时直接发字节', async () => {
   const token = T.tokenOf()
-  // 没放安装包：available=false
   rmSync(join(DATA_DIR, 'app'), { recursive: true, force: true })
-  const none = T.apkInfo()
+  rmSync(join(DATA_DIR, 'apk'), { recursive: true, force: true })
+  delete settingsState.appUrl
+  // 本机没放包也行：默认有 GitHub Release 兜着
+  const none = T.apkOffer()
   assert.equal(none.ok, true)
-  assert.equal(none.available, false)
-  // 没放包时下载给 404，带放置路径提示
-  const res404 = mockRes()
-  await T.handle(mockReq({ url: `/api/app-download?token=${token}` }), res404)
-  assert.equal(res404.code, 404)
+  assert.equal(none.available, true)
+  assert.equal(none.source, 'release')
+  assert.match(none.url, /^https:\/\/github\.com\/.+\/releases\/download\/.+\.apk$/)
+  assert.equal(none.local, false)
+  assert.equal(none.version, '1.0.5')
+  // 下载：302 去外链（浏览器自己跟过去，字节流不经过本机）
+  const res302 = mockRes()
+  await T.handle(mockReq({ url: `/api/app-download?token=${token}` }), res302)
+  assert.equal(res302.code, 302)
+  assert.equal(res302.headers.location, none.url)
 
-  // 放一个假 APK：信息要算对，下载字节要逐字节一致
+  // 本机放一份：版本/大小以本机为准，但默认下载仍然 302；加 ?local=1 才走本机字节
   mkdirSync(join(DATA_DIR, 'app'), { recursive: true })
   const fake = Buffer.concat([Buffer.from('PK\u0003\u0004'), Buffer.alloc(1024, 0x61)])
   writeFileSync(join(DATA_DIR, 'app', 'pocket.apk'), fake)
@@ -192,24 +199,43 @@ test('app-info / app-download：数据目录放了 APK 才可下载，字节与 
     assert.equal(info.available, true)
     assert.equal(info.size, fake.length)
     assert.equal(info.version, '1.0.5')
+    assert.equal(info.local, true)
     assert.equal(info.sha256, createHash('sha256').update(fake).digest('hex'))
 
-    // 下载：类型 + 附件头 + 字节一致
+    // 默认还是外链
+    const still302 = mockRes()
+    await T.handle(mockReq({ url: `/api/app-download?token=${token}` }), still302)
+    assert.equal(still302.code, 302)
+
+    // ?local=1：走本机，类型 + 附件头 + 字节一致
     const hres = mockRes()
-    await T.handle(mockReq({ url: `/api/app-download?token=${token}` }), hres)
+    await T.handle(mockReq({ url: `/api/app-download?token=${token}&local=1` }), hres)
     assert.equal(hres.code, 200)
     assert.equal(hres.type, 'application/vnd.android.package-archive')
     assert.equal(Buffer.concat(hres.chunks).equals(fake), true)
+
+    // 机主填了自己的镜像：优先用它
+    settingsState.appUrl = 'https://mirror.example.com/pocket.apk'
+    const custom = T.apkOffer()
+    assert.equal(custom.source, 'custom')
+    assert.equal(custom.url, 'https://mirror.example.com/pocket.apk')
+    const toMirror = mockRes()
+    await T.handle(mockReq({ url: `/api/app-download?token=${token}` }), toMirror)
+    assert.equal(toMirror.code, 302)
+    assert.equal(toMirror.headers.location, 'https://mirror.example.com/pocket.apk')
 
     // 没密钥拿不到
     const res401 = mockRes()
     await T.handle(mockReq({ url: '/api/app-download' }), res401)
     assert.equal(res401.code, 401)
   } finally {
+    delete settingsState.appUrl
     rmSync(join(DATA_DIR, 'app'), { recursive: true, force: true })
   }
-  // 删掉之后缓存必须失效：又变回不可用
+  // 本机删掉后缓存必须失效：local 回到 false，但外链还在，整体仍可用
   assert.equal(T.apkInfo().available, false)
+  assert.equal(T.apkOffer().available, true)
+  assert.equal(T.apkOffer().local, false)
 })
 
 test('apk 目录也认 + net-info 常显版本（面板不用翻日志就知道放了哪一版）', () => {
@@ -489,7 +515,7 @@ test('隧道：一键下载固定版本 + SHA-256 校验，内容不符必须拒
 })
 
 function mockRes() {
-  return { code: 0, type: '', chunks: [], writeHead(c, h) { this.code = c; this.type = h && h['content-type'] }, end(b) { if (b) this.chunks.push(b) } }
+  return { code: 0, type: '', headers: {}, chunks: [], writeHead(c, h) { this.code = c; this.headers = h || {}; this.type = this.headers['content-type'] }, end(b) { if (b) this.chunks.push(b) } }
 }
 function mockReq({ url = '/', headers = {}, method = 'GET' } = {}) {
   return { url, headers, method }
