@@ -1,7 +1,7 @@
 import { test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -236,6 +236,42 @@ test('app-info / app-download：默认走外链（不占机主上行），本机
   assert.equal(T.apkInfo().available, false)
   assert.equal(T.apkOffer().available, true)
   assert.equal(T.apkOffer().local, false)
+})
+
+test('未配对的手机也能问到安装包信息（/api/app-info 不校验密钥）', async () => {
+  // 新用户打开页面时手里还没有密钥，恰恰最需要下载包：这条信息必须公开。
+  // （以前它跟别的接口一样要 token，导致「没配对 → 拿不到 info → 整条下载提示收起」，新用户反而没入口）
+  rmSync(join(DATA_DIR, 'app'), { recursive: true, force: true })
+  rmSync(join(DATA_DIR, 'apk'), { recursive: true, force: true })
+  delete settingsState.appUrl
+  try {
+    const res = mockRes()
+    await T.handle(mockReq({ url: '/api/app-info' }), res) // 故意不带 token
+    assert.equal(res.code, 200)
+    const body = JSON.parse(res.chunks.join(''))
+    assert.equal(body.ok, true)
+    assert.equal(body.available, true)
+    assert.match(body.url, /^https:\/\/github\.com\/.+\/releases\/download\/.+\.apk$/)
+
+    // 真正发字节的下载仍然要密钥，别因为公开信息把包泄了
+    const dl = mockRes()
+    await T.handle(mockReq({ url: '/api/app-download' }), dl)
+    assert.equal(dl.code, 401)
+  } finally {
+    delete settingsState.appUrl
+  }
+})
+
+test('带 hidden 的元素必须真能藏住（否则下载条会变成点不动的僵尸）', () => {
+  const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8')
+  const css = read('assets/app/app.css')
+  // 回归现场：.appdl 自己有 display:flex，把浏览器默认的 [hidden]{display:none} 顶掉了，
+  // 于是「已经收起」的提示条一直显示，叉点了没反应、下载按钮 href 还没填。
+  assert.match(css, /\.appdl\s*\{[^}]*display:\s*flex/, '.appdl 仍是 flex 布局，正是需要全局兜底的场景')
+  assert.match(css, /\[hidden\]\s*\{[^}]*display:\s*none\s*!important/, 'app.css 缺全局 [hidden]{display:none !important} 兜底')
+  // HTML 里这条默认是收起的，靠 JS 判断后才亮
+  const html = read('assets/app/index.html')
+  assert.match(html, /<div id="appdl"[^>]*\bhidden\b/, '#appdl 应该默认 hidden')
 })
 
 test('apk 目录也认 + net-info 常显版本（面板不用翻日志就知道放了哪一版）', () => {

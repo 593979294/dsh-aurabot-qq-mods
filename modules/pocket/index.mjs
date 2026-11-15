@@ -17,7 +17,7 @@ import { spawn, execFileSync } from 'node:child_process'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
 const RING_MAX = 500
-const VERSION = '1.5.14'
+const VERSION = '1.5.15'
 const DEFAULT_PORT = 7788
 const MAX_MEDIA_BYTES = 12 * 1024 * 1024
 
@@ -1781,6 +1781,13 @@ export default {
       if (p === '/api/health') {
         if (!on()) return json(res, 503, { ok: false, message: '手机接口关着' })
         return json(res, 200, { ...ops.health(), port: listening || port() })
+      }
+      // 安装包信息同样不用密钥：还没配对的手机（正是最需要装 App 的人）打开页面时，
+      // 界面要能问出「有没有包、多大、去哪儿下」。这里只有版本号/大小/公开下载外链，
+      // 没有任何私密内容；真正发字节的 /api/app-download 仍然要密钥。
+      if (p === '/api/app-info') {
+        if (!on()) return json(res, 503, { ok: false, message: '手机接口关着' })
+        return json(res, 200, apkOffer())
       }
       if (!on()) return json(res, 403, { ok: false, message: '手机接口关着' })
       if (rateLimited(req)) return json(res, 429, { ok: false, message: '失败次数太多，请一分钟后再试' })

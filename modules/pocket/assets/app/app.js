@@ -1295,27 +1295,39 @@ async function maybeAppBanner() {
   $('#appdl-android').hidden = ios
   let info = null
   try {
-    info = await api('/api/app-info', { timeout: 5000 })
+    info = await api('/api/app-info', { timeout: 6000 })
   } catch {}
+  const link = $('#appdl-link')
+  const sizeEl = $('#appdl-size')
+  const localDownload = `${base()}/api/app-download${S.token ? '?token=' + encodeURIComponent(S.token) : ''}`
   if (info && info.ok && info.available) {
-    const link = $('#appdl-link')
     link.hidden = false
     // 默认直连发布地址（GitHub Release 或机主自填镜像）：不占机主上行，也不需要密钥；
     // 没外链时才回落到电脑上的那份（走 guard，链接里带 token）。
+    // 外链一律新开：手机浏览器里点完别把配对页顶掉。
     if (/^https?:\/\//i.test(info.url || '')) {
       link.href = info.url
+      link.target = '_blank'
+      link.rel = 'noopener'
       link.removeAttribute('download')
     } else {
-      link.href = `${base()}/api/app-download?token=${encodeURIComponent(S.token)}`
+      link.href = localDownload
+      link.removeAttribute('target')
     }
-    $('#appdl-size').textContent = (info.version ? 'v' + info.version + ' · ' : '') + Math.max(1, Math.round(info.size / 1024)) + ' KB'
+    sizeEl.textContent = (info.version ? 'v' + info.version + ' · ' : '') + Math.max(1, Math.round(info.size / 1024)) + ' KB'
     $('#appdl-note').hidden = true
-  } else {
-    // 没包：iPhone 还能告诉人家「直接用网页」；安卓用户就别摆一条点不动的提示了
-    $('#appdl-link').hidden = true
+  } else if (info && info.ok) {
+    // 明确「电脑上还没放包」：iPhone 还能告诉人家直接用网页；安卓用户就别摆一条点不动的按钮了
+    link.hidden = true
     const local = /^(localhost|127\.0\.0\.1|\[::1\]|::1)$/i.test(location.hostname)
     if (!ios && !local) return hide(false)
     $('#appdl-note').hidden = !local
+  } else {
+    // 没问到（接口关了 / 网断了）：这是新用户唯一的入口，宁可给个兜底链接也别收起来
+    link.hidden = false
+    link.href = localDownload
+    link.removeAttribute('target')
+    sizeEl.textContent = ''
   }
   bar.hidden = false
   // 等一下再看一眼：壳里（尤其老版本壳）注入标记晚于本轮，是壳就立刻撤掉，不记「已关闭」
