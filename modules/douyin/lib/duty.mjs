@@ -156,7 +156,7 @@ export function createDouyin({ getConfig, getSettings, setOwner, hub, memory, lo
       if (gap > 0) await sleep(gap + between(500, 3000))
     }
     const why = blocked(s, kind)
-    if (why) return { ok: false, message: why }
+    if (why) return { ok: false, message: why, blocked: true }
     if (getConfig().dryRun) {
       log.info(`试运行：本来要在抖音${NAME[kind]}`, meta.title || meta.awemeId, meta.text || '')
       record(s, { kind: 'dry:' + kind, ...meta })
@@ -262,7 +262,6 @@ export function createDouyin({ getConfig, getSettings, setOwner, hub, memory, lo
     if (!opts.commentReply) return { ok: false, message: '评论区接着聊没打开' }
     if (!o?.uid) return { ok: false, message: '还没核对主人的抖音号' }
     if (busy) return { ok: false, message: '正在刷抖音，等会儿再看评论回复' }
-    busy = true
     const s = load()
     s.lastCommentCheck = now() // 先记时间：即使这次没读到/没评论，也别每分钟重开浏览器
     const COMMENT_MAX_AGE_MS = 7 * 86400_000
@@ -270,10 +269,15 @@ export function createDouyin({ getConfig, getSettings, setOwner, hub, memory, lo
     let checked = 0
     let replied = 0
     const seen = new Set(s.commentSeen || [])
-    const threads = (s.myComments || []).filter((t) => t.awemeId && t.cid && now() - (t.at || 0) < COMMENT_MAX_AGE_MS).slice(0, 6)
-    // 没 @ 过主人就不用开浏览器
-    if (!threads.length) return { ok: true, checked: 0, replied: 0, message: '最近没有在评论区 @ 过主人' }
+    const persistSeen = () => {
+      s.commentSeen = [...seen].slice(-300)
+      save(s)
+    }
+    busy = true
     try {
+      const threads = (s.myComments || []).filter((t) => t.awemeId && t.cid && now() - (t.at || 0) < COMMENT_MAX_AGE_MS).slice(0, 6)
+      // 没 @ 过主人就不用开浏览器；早退也在 try 里，保证 busy 一定会复位
+      if (!threads.length) return { ok: true, checked: 0, replied: 0, message: '最近没有在评论区 @ 过主人' }
       const r = await ready(s, from)
       if (!r.ok) return r
       s.commentTries = s.commentTries || {}
@@ -284,16 +288,26 @@ export function createDouyin({ getConfig, getSettings, setOwner, hub, memory, lo
         catch (error) { log.debug(`看评论回复失败（${thread.awemeId}/${thread.cid}）：`, error.message); continue }
         const fresh = list.filter((m) => m.uid === String(o.uid) && !seen.has(m.id))
         for (const reply of fresh) {
-          const tries = (s.commentTries[reply.id] = (s.commentTries[reply.id] || 0) + 1)
-          if (tries > 3) { seen.add(reply.id); delete s.commentTries[reply.id]; continue }
-          if (now() - (reply.at || 0) > REPLY_FRESH_MS) { seen.add(reply.id); continue }
+          // 只有真正准备发送才计数：模型生成失败、读接口失败都不占重试次数。
+          const tries = Number(s.commentTries[reply.id] || 0)
+          if (tries >= 3) { seen.add(reply.id); delete s.commentTries[reply.id]; persistSeen(); continue }
+          if (now() - (reply.at || 0) > REPLY_FRESH_MS) { seen.add(reply.id); persistSeen(); continue }
           let text = ''
           try { text = await thinkCommentReply(thread, reply) }
           catch (error) { log.warn('评论区接话想不出来：', error.message); continue }
-          if (!text) { seen.add(reply.id); delete s.commentTries[reply.id]; save(s); continue }
+          if (!text) { seen.add(reply.id); delete s.commentTries[reply.id]; persistSeen(); continue }
           const at = await ownerMention()
+          // 发送前先落盘「已处理」：发送成功但进程马上退出也不会重复接；
+          // 发送失败再撤回标记，下次还能重试。
+          seen.add(reply.id)
+          s.commentTries[reply.id] = tries + 1
+          persistSeen()
           const w = await doWrite(s, 'comment', { awemeId: thread.awemeId, title: thread.title, text }, () => site.comment(thread.awemeId, text, at ? { at } : {}), { waitGap: true })
           if (!w.ok) {
+            seen.delete(reply.id)
+            // 额度 / 间隔拦下不是一次真正的发送尝试，不占重试次数
+            if (w.blocked) delete s.commentTries[reply.id]
+            persistSeen()
             log.warn('评论区接话没成功：', w.message)
             record(s, { kind: 'error', awemeId: thread.awemeId, title: thread.title, text: `评论区接话没成功：${w.message}` })
             save(s)
@@ -302,9 +316,8 @@ export function createDouyin({ getConfig, getSettings, setOwner, hub, memory, lo
           replied++
           if (!w.dryRun) memory?.addEvent?.({ text: `在抖音评论区接着回了${owner()}：${text.slice(0, 60)}`, tags: ['抖音'], importance: 0.4 })
           record(s, { kind: 'comment-reply', awemeId: thread.awemeId, title: thread.title, text: `回复${owner()}：${text}`, replyTo: reply.id })
-          seen.add(reply.id)
           delete s.commentTries[reply.id]
-          save(s)
+          persistSeen()
         }
       }
       log.info(`看过 ${checked} 条评论的回复，接了 ${replied} 句`)
@@ -313,8 +326,7 @@ export function createDouyin({ getConfig, getSettings, setOwner, hub, memory, lo
       log.warn('看评论回复出错：', error.message)
       return { ok: false, message: error.message }
     } finally {
-      s.commentSeen = [...seen].slice(-300)
-      save(s)
+      persistSeen()
       busy = false
     }
   }

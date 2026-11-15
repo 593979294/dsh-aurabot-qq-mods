@@ -123,7 +123,7 @@ test('配置：总开关默认关；只剩 4 项权限且默认仅主人；1.0.x
 
 /** 假的抖音网页：记下每次点赞 / 评论落在哪个视频上。 */
 function fakeSite({ feed = [], loggedIn = true, verify = '', likeError = null, commentError = null, liked = new Set(), mentionFails = false, shareFails = false, chat = [] } = {}) {
-  const calls = { ensure: 0, watch: [], like: [], comment: [], share: [], feed: 0, dms: 0, dm: [], dmUid: '', dmSecUid: '', dmFail: 0, dmUncertain: 0, replies: [], replyList: [] }
+  const calls = { ensure: 0, watch: [], like: [], comment: [], share: [], feed: 0, dms: 0, dm: [], dmUid: '', dmSecUid: '', dmFail: 0, dmUncertain: 0, replies: [], replyList: [], commentFail: 0 }
   return {
     calls,
     ensure: async () => { calls.ensure++; return { ok: true } },
@@ -136,6 +136,7 @@ function fakeSite({ feed = [], loggedIn = true, verify = '', likeError = null, c
     like: async (id) => { if (likeError) throw likeError; calls.like.push(id); return liked.has(id) ? { ok: true, already: true } : { ok: true } },
     comment: async (id, text, o = {}) => {
       if (commentError) throw commentError
+      if (calls.commentFail > 0) { calls.commentFail--; throw new Error('评论没发出去（模拟接口失败）') }
       if (o.at && mentionFails) throw Object.assign(new Error('@ 候选里没找到主人（可能互相没关注）'), { code: 'mention' })
       calls.comment.push(o.at ? [id, text, o.at] : [id, text])
       return { ok: true, atOwner: Boolean(o.at), cid: 'cid-' + id }
@@ -524,6 +525,43 @@ test('评论区接着聊：她 @ 过主人的评论会记下 cid；主人回复�
   // 同一条回复看过就记下，不重复接
   await dy.checkCommentReplies()
   assert.equal(fs.calls.comment.length, 2)
+})
+
+test('评论区接着聊：开关打开但没 @ 过评论时早退不会把 busy 卡死', async () => {
+  const { dy } = setup({ owner: OWNER, settingsOver: { commentReply: true } })
+  const r = await dy.checkCommentReplies()
+  assert.equal(r.ok, true)
+  assert.match(r.message, /最近没有在评论区 @ 过主人/)
+  assert.equal(dy.state().busy, false, '没有评论线程也不能把 busy 留在 true')
+  const next = await dy.run({ force: true })
+  assert.equal(next.ok, true, '之后其他抖音操作还能继续')
+})
+
+test('评论区接着聊：模型生成失败不占重试次数；发送失败回滚已处理标记，下次还能重试', async () => {
+  let modelFails = true
+  const run = setup({
+    owner: OWNER,
+    decisions: [{ i: 1, comment: '猫猫', at: true }],
+    douyinOver: { caps: { comment: 5 } },
+    settingsOver: { commentReply: true },
+    commentTurn: () => { if (modelFails) throw new Error('模型超时'); return '回你一句' },
+  })
+  await run.dy.run({ force: true })
+  run.fs.calls.replyList = [{ id: 'r1', uid: '4182', text: '主人回复', at: Date.now() }]
+  for (let i = 0; i < 3; i++) await run.dy.checkCommentReplies()
+  assert.equal(run.fs.calls.comment.length, 1, '模型失败不发送，也不占重试次数')
+  modelFails = false
+  await run.dy.checkCommentReplies()
+  assert.equal(run.fs.calls.comment.length, 2, '模型恢复后第一次真正接话')
+
+  // 发送失败：发送前写入的「已处理」要撤回，下一轮还能重试
+  run.fs.calls.replyList = [{ id: 'r2', uid: '4182', text: '再回一句', at: Date.now() }]
+  run.fs.calls.commentFail = 1
+  const fail = await run.dy.checkCommentReplies()
+  assert.equal(fail.ok, true)
+  assert.equal(run.fs.calls.comment.length, 2, '这次没发出去')
+  await run.dy.checkCommentReplies()
+  assert.equal(run.fs.calls.comment.length, 3, '下轮重试成功')
 })
 
 test('评论区接着聊：面板默认关；太旧的回复不接；别人的回复不接', async () => {
