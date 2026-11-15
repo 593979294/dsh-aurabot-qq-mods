@@ -1266,12 +1266,30 @@ function showPairErr(text, codes = []) {
   openCodes(codes)
 }
 
-// 在手机浏览器里打开（不在 app 壳里，没有 __pocketApp 标记）：给一条下载 App 的路，
-// 新用户拿到配对链接就能自己装，不用找群主要安装包。iPhone 则提示直接用网页。
+// 在手机浏览器里打开（不在 app 壳里）：给一条下载 App 的路，新用户拿到配对链接就能自己装。
+// 三类人三种待遇：app 壳里不显示；有安装包才显示下载按钮；没安装包只有机主自己（本机）需要看提示，
+// 外地用户看到「电脑上还没放安装包」既看不懂也没用 —— 直接收起。
+// 壳的 __pocketApp 是 onPageFinished 才注入的，可能晚于这里，所以还要再等一拍复检；
+// PocketMic 桥是 addJavascriptInterface 挂的，页面 JS 一跑就有，最可靠。
+const APP_BANNER_KEY = 'pocket.appdl.dismissed'
+const inAppShell = () => Boolean(window.__pocketApp || window.PocketMic || window.__pocketShell)
+
 async function maybeAppBanner() {
-  if (window.__pocketApp) return
   const bar = $('#appdl')
   if (!bar) return
+  const hide = (remember) => {
+    bar.hidden = true
+    if (remember) {
+      try { localStorage.setItem(APP_BANNER_KEY, '1') } catch {}
+    }
+  }
+  if (inAppShell()) return hide(false)
+  const close = $('#appdl-close')
+  if (close) close.onclick = () => hide(true)
+  // 用户自己关过就不再出现（这台设备上）
+  try {
+    if (localStorage.getItem(APP_BANNER_KEY) === '1') return hide(false)
+  } catch {}
   const ios = /iPhone|iPad|iPod/i.test(navigator.userAgent)
   $('#appdl-ios').hidden = !ios
   $('#appdl-android').hidden = ios
@@ -1287,10 +1305,15 @@ async function maybeAppBanner() {
     $('#appdl-size').textContent = (info.version ? 'v' + info.version + ' · ' : '') + Math.max(1, Math.round(info.size / 1024)) + ' KB'
     $('#appdl-note').hidden = true
   } else {
+    // 没包：iPhone 还能告诉人家「直接用网页」；安卓用户就别摆一条点不动的提示了
     $('#appdl-link').hidden = true
-    $('#appdl-note').hidden = ios
+    const local = /^(localhost|127\.0\.0\.1|\[::1\]|::1)$/i.test(location.hostname)
+    if (!ios && !local) return hide(false)
+    $('#appdl-note').hidden = !local
   }
   bar.hidden = false
+  // 等一下再看一眼：壳里（尤其老版本壳）注入标记晚于本轮，是壳就立刻撤掉，不记「已关闭」
+  setTimeout(() => { if (inAppShell()) hide(false) }, 1200)
 }
 
 function toPair(reason, codes) {
