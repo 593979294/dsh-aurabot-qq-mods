@@ -723,3 +723,21 @@ test('http 地址下录音按钮要说清原因，别拿「检查权限」把人
   // 按钮本身要有可见状态，不能装作能按
   assert.match(read('assets/app/app.css'), /\.mic-off\s*\{[\s\S]*?opacity/)
 })
+
+test('新用户第一次按话筒：先引导「点允许再按一次」，不能显示「拿不到麦克风」', () => {
+  const src = readFileSync(new URL('../assets/app/app.js', import.meta.url), 'utf8')
+  // 壳在没授权时返回「还没给麦克风权限，我再问一次」——权限框正在弹，不是失败。
+  // 旧代码把它当 error 直接显示「拿不到麦克风」，新用户第一反应就是功能坏了。
+  assert.match(src, /const needPerm = \/权限\|permission\/i\.test\(r\)/, '要把「要权限」和「真失败」分开')
+  assert.match(src, /h\.needPerm\s*\n?\s*\?/, 'startRec 里要按 needPerm 走引导分支')
+  assert.match(src, /第一次用要先允许麦克风/, '要有「点允许再按一次」的引导文案')
+  assert.ok(
+    src.indexOf('第一次用要先允许麦克风') > src.indexOf('h.needPerm'),
+    '引导分支必须在「拿不到麦克风」之前生效',
+  )
+  // 浏览器侧：被拒（含 QQ/微信内核拦截）与设备缺失要分开说
+  assert.match(src, /NotAllowedError/, '要单独处理 NotAllowedError（内核拦截最常见）')
+  assert.match(src, /NotFoundError/, '要单独处理 NotFoundError')
+  // 原生录音没回音时不能静默：界面已恢复，用户会以为「按了没反应」
+  assert.match(src, /这条语音没录上：麦克风可能被别的应用占着/)
+})

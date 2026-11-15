@@ -830,7 +830,11 @@ function nativeMicStart() {
   }
   if (r !== 'ok') {
     delete window.__pocketMicDone
-    return { error: r }
+    // 第一次按话筒时，壳会顺带弹系统权限框，返回「还没给麦克风权限，我再问一次」。
+    // 这不是失败（框正在弹），但以前网页把它当错误显示「拿不到麦克风」——
+    // 新用户看到这五个字就认定功能坏了，其实点一下「允许」再按一次就能用。
+    const needPerm = /权限|permission/i.test(r)
+    return { error: r, needPerm }
   }
   return {
     wait: (cb) => {
@@ -860,7 +864,11 @@ async function startRec() {
   if (NATIVE_MIC) {
     const h = nativeMicStart()
     if (h.error) {
-      addSysToast('拿不到麦克风：' + h.error)
+      addSysToast(
+        h.needPerm
+          ? '第一次用要先允许麦克风：点弹窗里的「允许」，然后按住话筒再说一次'
+          : '拿不到麦克风：' + h.error,
+      )
       return
     }
     rec = { native: true, onDone: h.wait }
@@ -889,8 +897,17 @@ async function startRec() {
     $('#rec-indicator').hidden = false
     $('#chat-mic').classList.add('recording')
     if (navigator.vibrate) navigator.vibrate(12)
-  } catch {
-    addSysToast('拿不到麦克风（检查权限）')
+  } catch (e) {
+    // 分开说：被拒（含 QQ/微信内核直接拦）和设备问题，处置方式完全不同，
+    // 以前一律提示「检查权限」，用户照着去系统设置里翻也翻不出东西。
+    const n = (e && e.name) || String(e || '')
+    addSysToast(
+      n === 'NotAllowedError'
+        ? '麦克风被拒绝了：这个浏览器不一定给权限（QQ/微信里点开的常见）。用系统浏览器打开，或装口袋 App'
+        : n === 'NotFoundError'
+          ? '手机里没找到可用的麦克风'
+          : '拿不到麦克风：' + n,
+    )
   }
 }
 
@@ -911,7 +928,11 @@ function stopRec() {
       addSysToast('按住话筒别松手，说完再松开')
       return
     }
+    // 界面已经恢复，但如果原生那边没回音（麦克风被别的应用占着、上次没正常收尾之类），
+    // 用户会以为「按了没反应」却又看不到任何提示 —— 兜一个人工超时，说清楚发生了什么。
+    let settled = false
     mr.onDone((b64) => {
+      settled = true
       if (!b64) {
         addSysToast('这条语音没录上，再试一次')
         return
@@ -919,6 +940,11 @@ function stopRec() {
       sendVoiceNote(b64ToBuf(b64), 'audio/mp4')
     })
     try { window.PocketMic.stop() } catch {}
+    setTimeout(() => {
+      if (settled) return
+      settled = true
+      addSysToast('这条语音没录上：麦克风可能被别的应用占着（比如正在通话），关掉那个再按住说一次')
+    }, 6000)
     return
   }
 
