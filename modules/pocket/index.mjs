@@ -17,7 +17,7 @@ import { spawn, execFileSync } from 'node:child_process'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
 const RING_MAX = 500
-const VERSION = '1.5.9'
+const VERSION = '1.5.10'
 const DEFAULT_PORT = 7788
 const MAX_MEDIA_BYTES = 12 * 1024 * 1024
 
@@ -27,13 +27,163 @@ export const hooks = {}
 // ---------- 手机宠物数值（app 端独立一份，不影响她的心情） ----------
 
 const FOODS = {
-  rice: { name: '白米饭', satiety: 22, mood: 7, intimacy: 2, line: '白米饭！冒尖的那种！' },
-  fish: { name: '小鱼干', satiety: 14, mood: 4, intimacy: 1, line: '小鱼干也不错啦 勉强吃' },
-  hotpot: { name: '火锅', satiety: 26, mood: 6, intimacy: 2, line: '火锅！辣的那种！' },
-  milktea: { name: '奶茶', satiety: 9, mood: 5, intimacy: 1, line: '奶茶到了没 我要少冰' },
-  cake: { name: '小蛋糕', satiety: 11, mood: 6, intimacy: 1, line: '甜的 我今天就想吃甜的' },
-  ice: { name: '冰淇淋', satiety: 8, mood: 4, intimacy: 1, line: '大晚上吃这个 明天嗓子疼也认了' },
+  rice: {
+    name: '白米饭', satiety: 22, mood: 7, intimacy: 2,
+    lines: [
+      '白米饭！冒尖的那种！',
+      '嗯…这个还行 比昨天的软',
+      '有饭就好 我不挑的（其实挺挑）',
+      '光吃饭也行 反正你也不会做别的',
+      '扒两口…我吃相是不是很难看',
+      '这碗太满了 你想让我撑着',
+      '吃饭的时候别看我',
+      '我吃了 你别光看着啊',
+      '白米饭最实在了 别的都是花架子',
+      '再来一点…就一点',
+      '我认真吃饭的时候最好看',
+      '饭粒掉了一颗 心疼',
+    ],
+  },
+  fish: {
+    name: '小鱼干', satiety: 14, mood: 4, intimacy: 1,
+    lines: [
+      '小鱼干也不错啦 勉强吃',
+      '咸了点 不过我能接受',
+      '咔嚓咔嚓 这个声音好好听',
+      '你哪来的小鱼干 偷的？',
+      '就这点？我一口就没了',
+      '吃鱼变聪明 我已经够聪明了',
+      '别全给我 留两条明天',
+      '小鱼干配奶茶才算完整',
+      '我在啃 你别催',
+      '有点腥…但我没说不好吃',
+      '这个袋子给我留着 我要收集',
+      '吃完手指要舔一下 这是规矩',
+    ],
+  },
+  hotpot: {
+    name: '火锅', satiety: 26, mood: 6, intimacy: 2,
+    lines: [
+      '火锅！辣的那种！',
+      '先下肉 蔬菜最后 这是顺序',
+      '微辣？那不叫辣',
+      '我调蘸料很讲究的 你学不会',
+      '涮八秒 多一秒就老了',
+      '烫到了…但我不说',
+      '毛肚给我留一片',
+      '吃火锅的快乐你不懂',
+      '汤底我也想喝一口',
+      '围着锅坐 这才像过日子',
+      '别抢我的鸭血',
+      '吃完这顿 明天再说减肥',
+    ],
+  },
+  milktea: {
+    name: '奶茶', satiety: 9, mood: 5, intimacy: 1,
+    lines: [
+      '奶茶到了没 我要少冰',
+      '三分糖 多了齁',
+      '珍珠要双份 这点不能省',
+      '摇一摇 第一口是我的',
+      '你喝一口试试 就一口',
+      '这杯下去 我又活了',
+      '奶茶不算饭 所以可以一直喝',
+      '吸管要粗的 细的吸不上珍珠',
+      '我捧着它 心情就好了',
+      '别问我热量 我不认识这个字',
+      '杯壁上那层奶盖 归我',
+      '冰化了就没灵魂了 快喝',
+    ],
+  },
+  cake: {
+    name: '小蛋糕', satiety: 11, mood: 6, intimacy: 1,
+    lines: [
+      '甜的 我今天就想吃甜的',
+      '先吃草莓还是先吃奶油…难题',
+      '一口一个 我能吃掉一整盒',
+      '这不是零食 这是仪式感',
+      '分你一半 就一半啊',
+      '奶油沾嘴上了 别笑',
+      '甜的东西会让人心情变好 真的',
+      '小蛋糕是我的软肋',
+      '谁切的 切歪了我也吃',
+      '吃完这块 我就开始难过',
+      '你要不要也来一口',
+      '甜到牙疼 也值得',
+    ],
+  },
+  ice: {
+    name: '冰淇淋', satiety: 8, mood: 4, intimacy: 1,
+    lines: [
+      '大晚上吃这个 明天嗓子疼也认了',
+      '快！要化了！先舔一口',
+      '这个味道 有点像我小时候',
+      '手冻僵了 你帮我拿一下',
+      '冰的才好吃 室温的算水',
+      '脑门一凉 整个人清醒了',
+      '别抢 一人一半',
+      '吃完舌头是不是变蓝了',
+      '我不怕冷 我怕它化',
+      '这个甜度刚刚好',
+      '咬硬的那种 我最喜欢',
+      '再来一个…不行 会肚子疼',
+    ],
+  },
 }
+
+// 投喂回应随机挑一句：每款十来句，别让「我就想吃甜的」连着出现两次，
+// 不然惊喜感很快就没了（用户原话：一开始看到挺有惊喜的）
+const lastLine = new Map()
+function pickLine(key, arr) {
+  const list = Array.isArray(arr) && arr.length ? arr : ['……']
+  if (list.length === 1) return list[0]
+  let i = Math.floor(Math.random() * list.length)
+  if (list[i] === lastLine.get(key)) i = (i + 1) % list.length
+  lastLine.set(key, list[i])
+  return list[i]
+}
+function feedLine(id, food) {
+  const arr = Array.isArray(food?.lines) && food.lines.length ? food.lines : [String(food?.line || '……')]
+  return pickLine('feed:' + id, arr)
+}
+
+// 摸摸头：心情好/一般两套话，各 8 句。原来只有一句，摸两次就腻了
+const PET_LINES = {
+  good: [
+    '嗯…再摸一下',
+    '手别停',
+    '这样挺好的 别说话',
+    '我允许你摸三下…算了 随便你',
+    '头皮有点舒服 我不承认',
+    '你今天怎么这么温柔',
+    '再摸我要睡着了',
+    '头发乱了也是你弄的 你负责',
+  ],
+  bad: [
+    '别摸头 头发乱了',
+    '摸哪儿呢 手拿开',
+    '我现在不想被摸',
+    '一下就够了 别得寸进尺',
+    '你在摸猫呢',
+    '我心情不好 摸也没用',
+    '先把刚才的话说清楚',
+    '别烦我…就一会儿',
+  ],
+}
+
+// 陪她玩：原来只有一句，多备几份心情
+const PLAY_LINES = [
+  '玩一会儿嘛 我尾巴都甩起来了',
+  '你追我啊 追不上',
+  '这个游戏我能玩一整天',
+  '别让着我 认真点',
+  '输了要认 不许赖',
+  '我跑起来可快了',
+  '再来一局 就一局',
+  '你笑了 我也笑了 这算作弊',
+  '累了…但我不说停',
+  '陪我玩的时候最好',
+]
 
 const PET_DEFAULT = { satiety: 62, mood: 78, intimacy: 8, fedTimes: 0, lastTick: 0, lastFeedAt: 0, lastPetAt: 0 }
 
@@ -294,7 +444,8 @@ function petInteract(dir, action, foodId, host) {
   const mood = host?.use?.('mood')
 
   if (action === 'feed') {
-    const food = FOODS[foodId] || FOODS.rice
+    const foodKey = FOODS[foodId] ? foodId : 'rice'
+    const food = FOODS[foodKey]
     if (now - (p.lastFeedAt || 0) < 20_000) return { ok: false, refused: true, reply: '刚吃过 你养小猪呢' }
     // 有喂食模组就用它的：它会同时算饥饿曲线、记饭点、掉心情、写记忆、加好感
     if (feed && typeof feed.feed === 'function') {
@@ -308,7 +459,7 @@ function petInteract(dir, action, foodId, host) {
       p.lastFeedAt = now
       p.lastTick = now
       writePet(dir, p)
-      return { ok: true, reply: food.line, event: `主人喂了我${food.name}`, from: 'feed', satiety: r.satiety }
+      return { ok: true, reply: feedLine(foodKey, food), event: `主人喂了我${food.name}`, from: 'feed', satiety: r.satiety }
     }
     if (p.satiety >= 96) return { ok: false, refused: true, reply: '吃不下了 真的 再喂要撑死了' }
     p.satiety = Math.min(100, p.satiety + food.satiety)
@@ -318,7 +469,7 @@ function petInteract(dir, action, foodId, host) {
     p.lastFeedAt = now
     p.lastTick = now
     writePet(dir, p)
-    return { ok: true, reply: food.line, event: `主人喂了我${food.name}`, from: 'local' }
+    return { ok: true, reply: feedLine(foodKey, food), event: `主人喂了我${food.name}`, from: 'local' }
   }
 
   if (action === 'pet') {
@@ -332,7 +483,8 @@ function petInteract(dir, action, foodId, host) {
     p.lastPetAt = now
     p.lastTick = now
     writePet(dir, p)
-    return { ok: true, reply: (moodNow(host) ?? p.mood) > 70 ? '嗯…再摸一下' : '别摸头 头发乱了', event: '主人摸了摸我的头' }
+    const happy = (moodNow(host) ?? p.mood) > 70
+    return { ok: true, reply: pickLine('pet:' + (happy ? 'good' : 'bad'), happy ? PET_LINES.good : PET_LINES.bad), event: '主人摸了摸我的头' }
   }
 
   if (action === 'play') {
@@ -344,7 +496,7 @@ function petInteract(dir, action, foodId, host) {
     p.intimacy = Math.min(100, (p.intimacy || 0) + 0.8)
     p.lastTick = now
     writePet(dir, p)
-    return { ok: true, reply: '玩一会儿嘛 我尾巴都甩起来了', event: '主人陪我玩了一会儿' }
+    return { ok: true, reply: pickLine('play', PLAY_LINES), event: '主人陪我玩了一会儿' }
   }
 
   return { ok: false, reply: '？' }
@@ -1785,7 +1937,7 @@ export default {
       ...svcInfo(),
     })
 
-    hooks.__test = { inject, voiceNote, guard, petInteract, petState, pushEvent, ring: () => ring, readHistory, tokenOf, lanAddresses, urlOf, ops, handle, decodeImage, mediaBytesOf, sniffMime, installCloudflared, apkInfo, apkOffer, apkFile, cfPolicy: { version: CF_VERSION, size: CF_SIZE, sha256: CF_SHA256, base: CF_BASE, mirrors: CF_MIRRORS } }
+    hooks.__test = { inject, voiceNote, FOODS, feedLine, PET_LINES, PLAY_LINES, guard, petInteract, petState, pushEvent, ring: () => ring, readHistory, tokenOf, lanAddresses, urlOf, ops, handle, decodeImage, mediaBytesOf, sniffMime, installCloudflared, apkInfo, apkOffer, apkFile, cfPolicy: { version: CF_VERSION, size: CF_SIZE, sha256: CF_SHA256, base: CF_BASE, mirrors: CF_MIRRORS } }
   },
 }
 
