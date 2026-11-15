@@ -5,7 +5,7 @@
   "description": "每天写一篇 md 私人日记到本地文件夹，写给她自己看；随插件备份一起搬家",
   "category": "tool",
   "tags": ["日记", "本地", "记忆"],
-  "author": "大肥鱼",
+  "author": "KonaLz",
   "license": "MIT",
   "api": 1,
   "minPluginVersion": "1.2.0",
