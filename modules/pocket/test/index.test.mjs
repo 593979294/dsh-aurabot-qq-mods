@@ -324,6 +324,50 @@ test('投喂：数值上升、写入她的记忆、冷却与上限生效', async
   assert.match(r3.reply, /撑死/)
 })
 
+test('投喂回应：每款 10~15 句，随机挑且不会连着重复同一句', () => {
+  const { FOODS, feedLine } = T
+  for (const [id, f] of Object.entries(FOODS)) {
+    assert.ok(Array.isArray(f.lines), `${id} 要有 lines 数组`)
+    assert.ok(f.lines.length >= 10 && f.lines.length <= 15, `${id} 只有 ${f.lines.length} 句，要求 10~15`)
+    assert.equal(new Set(f.lines).size, f.lines.length, `${id} 的句子里有重复`)
+    assert.ok(f.lines.every((s) => typeof s === 'string' && s.trim().length >= 2), `${id} 有空句`)
+  }
+  // 随机性 + 不连续重复：同一款连抽 30 次
+  const seen = new Set()
+  let prev = ''
+  for (let i = 0; i < 30; i++) {
+    const line = feedLine('cake', FOODS.cake)
+    assert.ok(FOODS.cake.lines.includes(line), '抽到了不属于该款的句子')
+    assert.notEqual(line, prev, `第 ${i} 次和上一次是同一句`)
+    prev = line
+    seen.add(line)
+  }
+  assert.ok(seen.size >= 4, `30 次只出现 ${seen.size} 种，随机性不够`)
+  // 各款互不串味
+  const all = Object.values(FOODS).flatMap((f) => f.lines)
+  assert.equal(new Set(all).size, all.length, '不同食物之间有重复句子')
+
+  // 摸摸头（心情两套）与陪玩：也不能只有一句，否则点两下就腻
+  for (const [k, list] of Object.entries(T.PET_LINES)) {
+    assert.ok(list.length >= 6, `摸摸头 ${k} 只有 ${list.length} 句`)
+    assert.equal(new Set(list).size, list.length, `摸摸头 ${k} 有重复`)
+  }
+  assert.ok(T.PLAY_LINES.length >= 8, `陪玩只有 ${T.PLAY_LINES.length} 句`)
+  assert.equal(new Set(T.PLAY_LINES).size, T.PLAY_LINES.length, '陪玩有重复')
+})
+
+test('摸摸头 / 陪玩真的会换着说', async () => {
+  const token = T.tokenOf()
+  const seen = new Set()
+  for (let i = 0; i < 12; i++) {
+    const r = await routes['/pet'](req(token, { body: { action: 'play' }, url: '/pet' }), {})
+    assert.equal(r.ok, true)
+    assert.ok(T.PLAY_LINES.includes(r.reply), '回复不在陪玩句库里：' + r.reply)
+    seen.add(r.reply)
+  }
+  assert.ok(seen.size >= 3, `12 次陪玩只出现 ${seen.size} 种句子`)
+})
+
 test('state 返回人格、心情和宠物数值', () => {
   const token = T.tokenOf()
   const r = routes['/state'](req(token, { url: '/state' }), {})
