@@ -46,7 +46,7 @@ const hhmm = (t) => { const d = new Date(t); return `${String(d.getHours()).padS
 export default {
   id: 'livin',
   name: '过日子',
-  version: '1.2.0',
+  version: '1.2.1',
   api: 1,
   category: 'desktop',
   tags: ['自主', '乐子', '生活'],
@@ -379,7 +379,7 @@ export default {
         nextWakeAt: st.state.nextWakeAt,
         nextWakeBy: st.state.nextWakeBy,
         novel: { title: st.novel.title, parts: st.novel.parts.length, last: st.novel.parts.length ? st.novel.parts[st.novel.parts.length - 1].text.slice(-150) : '', mode: cfg().novelMode, longTitle: st.novelLong?.title || '', chapters: st.novelLong?.chapters?.length || 0 },
-        joys: st.pool.filter((p) => p.on).map((p) => ({ id: p.id, name: p.name, weight: Number(weightOf(p, now).toFixed(2)), lastAt: st.state.perJoy[p.id]?.lastAt || 0, ok: joyAvailable(p.id) })),
+        joys: st.pool.slice().sort((a, b) => (b.on ? 1 : 0) - (a.on ? 1 : 0)).map((p) => ({ id: p.id, name: p.name, on: !!p.on, weight: Number(weightOf(p, now).toFixed(2)), lastAt: st.state.perJoy[p.id]?.lastAt || 0, ok: joyAvailable(p.id) })),
         hunger: (() => { try { const f = api.use('feed'); return f?.hunger ? f.hunger() : null } catch { return null } })(),
       }
     })

@@ -57,6 +57,8 @@ function takeFromUrl() {
       S.hosts = list
       S.host = list[0]
     }
+  } else {
+    adoptUrlHost()
   }
   if (token) {
     localStorage.setItem(LS.token, token)
@@ -67,6 +69,29 @@ function takeFromUrl() {
       history.replaceState(null, '', location.pathname)
     } catch {}
   }
+}
+
+/**
+ * 「你从哪个地址打开的，就先用哪个地址」。
+ *
+ * quick 隧道每次重建必换域名，而手机里存的是上一个域名：页面本身能从新链接打开
+ * （HTML/JS/CSS 走的是新域名，所以看得出「页面有了」），但所有 /api 请求仍然打
+ * 旧的、早就 1033 的域名 → 表现成「怎么都连不上，明明用的是最新隧道」。
+ * 面板二维码因为域名太长塞不下，退化成只带 token 的短链，正好踩这个坑。
+ * 所以这里用 location.origin 自愈：扫什么地址进来的，就先认这个地址。
+ */
+function adoptUrlHost() {
+  if (!/^https?:$/.test(location.protocol)) return // file:// 之类不管
+  if (/^(localhost|127\.0\.0\.1|\[::1\]|::1)$/i.test(location.hostname)) return // 本机直连，base() 本来就回落 origin
+  const origin = location.origin
+  const list = hostList(S.hosts.join(','))
+  if (list[0] === origin) return
+  const next = [origin, ...list.filter((x) => x !== origin)].slice(0, 6)
+  try {
+    localStorage.setItem(LS.host, next.join(','))
+  } catch {}
+  S.hosts = next
+  S.host = origin
 }
 
 /**
@@ -146,7 +171,7 @@ async function switchHost() {
   for (const cand of S.hosts) {
     if (cand === S.host) continue
     try {
-      const r = await fetch(`${cand}/api/health`, { signal: AbortSignal.timeout(5000) })
+      const r = await fetch(`${cand}/api/health`, { signal: AbortSignal.timeout(10000) })
       if (r.ok) {
         S.host = cand
         S.hosts = [cand, ...S.hosts.filter((x) => x !== cand)]
@@ -289,7 +314,7 @@ async function netBaseline(ms = 4000) {
 }
 
 /** 并行探一遍所有候选地址，谁先通用谁；全不通时逐条给代号，并顺手判断是不是手机自己没网 */
-async function probeAll(list, ms = 6000) {
+async function probeAll(list, ms = 12000) {
   const out = await Promise.all(
     list.map(async (cand) => {
       try {
@@ -785,6 +810,10 @@ let rec = null
 // 装在手机里时，网页跑在 http://192.168.x.x 这种非安全上下文上，没有 getUserMedia，
 // 所以优先用安卓壳里的原生录音（PocketMic），浏览器里再回退到 MediaRecorder。
 const NATIVE_MIC = !!(window.PocketMic && typeof window.PocketMic.start === 'function')
+// http:// 属于非安全上下文，浏览器直接不给 navigator.mediaDevices（不是权限问题，
+// 也永远授权不了）。以前这里会掉进 catch 提示「检查权限」，把人往系统设置里带偏。
+const WEB_MIC_OK = typeof navigator.mediaDevices?.getUserMedia === 'function'
+const MIC_NEEDS_HTTPS = !NATIVE_MIC && !WEB_MIC_OK
 
 function nativeMicStart() {
   let onDone = null
@@ -801,7 +830,11 @@ function nativeMicStart() {
   }
   if (r !== 'ok') {
     delete window.__pocketMicDone
-    return { error: r }
+    // 第一次按话筒时，壳会顺带弹系统权限框，返回「还没给麦克风权限，我再问一次」。
+    // 这不是失败（框正在弹），但以前网页把它当错误显示「拿不到麦克风」——
+    // 新用户看到这五个字就认定功能坏了，其实点一下「允许」再按一次就能用。
+    const needPerm = /权限|permission/i.test(r)
+    return { error: r, needPerm }
   }
   return {
     wait: (cb) => {
@@ -819,10 +852,23 @@ function b64ToBuf(b64) {
 
 async function startRec() {
   if (S.recording || rec) return
+  if (MIC_NEEDS_HTTPS) {
+    // 说清楚是「地址不够安全」，并直接给出路：换 https 地址，或装 App（壳里有原生录音桥）
+    addSysToast(
+      location.protocol === 'http:'
+        ? '这个地址是 http，浏览器不给录音权限（不是手机设置的问题）。换成 https 地址打开，或者装上口袋 App —— 它用手机自带的录音，不挑地址。'
+        : '这个浏览器不支持录音',
+    )
+    return
+  }
   if (NATIVE_MIC) {
     const h = nativeMicStart()
     if (h.error) {
-      addSysToast('拿不到麦克风：' + h.error)
+      addSysToast(
+        h.needPerm
+          ? '第一次用要先允许麦克风：点弹窗里的「允许」，然后按住话筒再说一次'
+          : '拿不到麦克风：' + h.error,
+      )
       return
     }
     rec = { native: true, onDone: h.wait }
@@ -851,8 +897,17 @@ async function startRec() {
     $('#rec-indicator').hidden = false
     $('#chat-mic').classList.add('recording')
     if (navigator.vibrate) navigator.vibrate(12)
-  } catch {
-    addSysToast('拿不到麦克风（检查权限）')
+  } catch (e) {
+    // 分开说：被拒（含 QQ/微信内核直接拦）和设备问题，处置方式完全不同，
+    // 以前一律提示「检查权限」，用户照着去系统设置里翻也翻不出东西。
+    const n = (e && e.name) || String(e || '')
+    addSysToast(
+      n === 'NotAllowedError'
+        ? '麦克风被拒绝了：这个浏览器不一定给权限（QQ/微信里点开的常见）。用系统浏览器打开，或装口袋 App'
+        : n === 'NotFoundError'
+          ? '手机里没找到可用的麦克风'
+          : '拿不到麦克风：' + n,
+    )
   }
 }
 
@@ -873,7 +928,11 @@ function stopRec() {
       addSysToast('按住话筒别松手，说完再松开')
       return
     }
+    // 界面已经恢复，但如果原生那边没回音（麦克风被别的应用占着、上次没正常收尾之类），
+    // 用户会以为「按了没反应」却又看不到任何提示 —— 兜一个人工超时，说清楚发生了什么。
+    let settled = false
     mr.onDone((b64) => {
+      settled = true
       if (!b64) {
         addSysToast('这条语音没录上，再试一次')
         return
@@ -881,6 +940,11 @@ function stopRec() {
       sendVoiceNote(b64ToBuf(b64), 'audio/mp4')
     })
     try { window.PocketMic.stop() } catch {}
+    setTimeout(() => {
+      if (settled) return
+      settled = true
+      addSysToast('这条语音没录上：麦克风可能被别的应用占着（比如正在通话），关掉那个再按住说一次')
+    }, 6000)
     return
   }
 
@@ -1266,6 +1330,90 @@ function showPairErr(text, codes = []) {
   openCodes(codes)
 }
 
+// 在手机浏览器里打开（不在 app 壳里）：给一条下载 App 的路，新用户拿到配对链接就能自己装。
+// 三类人三种待遇：app 壳里不显示；有安装包才显示下载按钮；没安装包只有机主自己（本机）需要看提示，
+// 外地用户看到「电脑上还没放安装包」既看不懂也没用 —— 直接收起。
+// 壳的 __pocketApp 是 onPageFinished 才注入的，可能晚于这里，所以还要再等一拍复检；
+// PocketMic 桥是 addJavascriptInterface 挂的，页面 JS 一跑就有，最可靠。
+const APP_BANNER_KEY = 'pocket.appdl.dismissed'
+const inAppShell = () => Boolean(window.__pocketApp || window.PocketMic || window.__pocketShell)
+
+async function maybeAppBanner() {
+  const bar = $('#appdl')
+  if (!bar) return
+  const hide = (remember) => {
+    bar.hidden = true
+    if (remember) {
+      try { localStorage.setItem(APP_BANNER_KEY, '1') } catch {}
+    }
+  }
+  if (inAppShell()) return hide(false)
+  const close = $('#appdl-close')
+  if (close) close.onclick = () => hide(true)
+  // 用户自己关过就不再出现（这台设备上）
+  try {
+    if (localStorage.getItem(APP_BANNER_KEY) === '1') return hide(false)
+  } catch {}
+  const ios = /iPhone|iPad|iPod/i.test(navigator.userAgent)
+  $('#appdl-ios').hidden = !ios
+  $('#appdl-android').hidden = ios
+  let info = null
+  try {
+    info = await api('/api/app-info', { timeout: 6000 })
+  } catch {}
+  const link = $('#appdl-link')
+  const sizeEl = $('#appdl-size')
+  const localDownload = `${base()}/api/app-download${S.token ? '?token=' + encodeURIComponent(S.token) : ''}`
+  if (info && info.ok && info.available) {
+    link.hidden = false
+    // 默认直连发布地址（GitHub Release 或机主自填镜像）：不占机主上行，也不需要密钥；
+    // 没外链时才回落到电脑上的那份（走 guard，链接里带 token）。
+    // 外链一律新开：手机浏览器里点完别把配对页顶掉。
+    if (/^https?:\/\//i.test(info.url || '')) {
+      link.href = info.url
+      link.target = '_blank'
+      link.rel = 'noopener'
+      link.removeAttribute('download')
+    } else {
+      link.href = localDownload
+      link.removeAttribute('target')
+    }
+    sizeEl.textContent = (info.version ? 'v' + info.version + ' · ' : '') + Math.max(1, Math.round(info.size / 1024)) + ' KB'
+    $('#appdl-note').hidden = true
+  } else if (info && info.ok) {
+    // 明确「电脑上还没放包」：iPhone 还能告诉人家直接用网页；安卓用户就别摆一条点不动的按钮了
+    link.hidden = true
+    const local = /^(localhost|127\.0\.0\.1|\[::1\]|::1)$/i.test(location.hostname)
+    if (!ios && !local) return hide(false)
+    $('#appdl-note').hidden = !local
+  } else {
+    // 没问到（接口关了 / 网断了）：这是新用户唯一的入口，宁可给个兜底链接也别收起来
+    link.hidden = false
+    link.href = localDownload
+    link.removeAttribute('target')
+    sizeEl.textContent = ''
+  }
+  bar.hidden = false
+  // 等一下再看一眼：壳里（尤其老版本壳）注入标记晚于本轮，是壳就立刻撤掉，不记「已关闭」
+  setTimeout(() => { if (inAppShell()) hide(false) }, 1200)
+}
+
+// 隧道抖动很常见：进程活着、边缘连接断了，几十秒后可能自己恢复。
+// 所以连不上时不要只让用户手点「重试」——每 20 秒自动再试一次，用户什么都不用做。
+let retryTimer = null
+function stopAutoRetry() {
+  if (retryTimer) clearTimeout(retryTimer)
+  retryTimer = null
+}
+function scheduleAutoRetry() {
+  stopAutoRetry()
+  retryTimer = setTimeout(() => {
+    retryTimer = null
+    const pair = $('#view-pair')
+    if (pair && !pair.hidden) boot() // 只在还停在配对页时重试，别打断已经在聊天的人
+  }, 20000)
+}
+
 function toPair(reason, codes) {
   stopPolling()
   if (reason) showPairErr(reason, codes || [])
@@ -1280,6 +1428,7 @@ function toPair(reason, codes) {
 }
 
 async function doPair() {
+  stopAutoRetry()
   const err = $('#pair-err')
   const raw = String($('#pair-host').value || '').trim()
   const hosts = hostList(raw)
@@ -1302,7 +1451,11 @@ async function doPair() {
       const tip = probe.selfDown
         ? '[P30] 手机现在这个网络本身没通\n先用浏览器随便打开一个网页：能上网再回来配对（公共 WiFi 常要先点「同意 / 登录」这一步）。\n\n这几条地址也都试了，同样不通：\n' +
           probe.detail
-        : '这几条都不通：\n' + probe.detail + '\n\n点下面「代号速查」看每条怎么修；报障把代号发我（比如 P11）就够。'
+        : '这几条都不通：\n' + probe.detail + '\n\n' +
+          (/trycloudflare\.com/i.test(hosts.join(','))
+            ? '如果走的是免费临时隧道：电脑那边重建过隧道，地址就变了（每次重建域名都不一样）——找机主要一个新的配对链接或二维码，扫一下会自动改过来。\n'
+            : '') +
+          '点下面「代号速查」看每条怎么修；报障把代号发我（比如 P11）就够。'
       throw Object.assign(new Error(tip), { plain: true, codes })
     }
     const ok = probe.ok
@@ -1337,6 +1490,7 @@ function autoGrow() {
 }
 
 async function boot() {
+  stopAutoRetry()
   takeFromUrl()
   paintTone(S.tone)
   buildToneGrid()
@@ -1359,6 +1513,12 @@ async function boot() {
   $('#btn-avatar-reset').onclick = resetAvatar
   $('#avatar-file').addEventListener('change', onAvatarPicked)
   const mic = $('#chat-mic')
+  // 按下去注定没反应就别装作能按：淡一点 + 说清原因
+  if (MIC_NEEDS_HTTPS) {
+    mic.classList.add('mic-off')
+    mic.title = '这个 http 地址不能录音：换 https 地址打开，或装口袋 App'
+    mic.setAttribute('aria-label', '这个地址不支持录音')
+  }
   mic.addEventListener('pointerdown', (e) => {
     e.preventDefault()
     try { mic.setPointerCapture(e.pointerId) } catch {}
@@ -1386,6 +1546,8 @@ async function boot() {
     }
   }
   for (const b of $$('.pet-btns [data-action]')) b.onclick = () => petAct(b.dataset.action)
+
+  maybeAppBanner()
 
   if (!S.token) return toPair()
 
@@ -1432,10 +1594,17 @@ async function boot() {
     const p = list.length ? await probeAll(list).catch(() => null) : null
     if (p && !p.ok) {
       const codes = p.selfDown ? ['P30', ...p.results.map((x) => x.code)] : p.results.map((x) => x.code)
-      return toPair(
-        (p.selfDown ? '[P30] 手机现在这个网络本身没通\n' : '连不上电脑：\n') + p.detail + '\n报障把代号发我（比如 P11）就够。',
+      toPair(
+        (p.selfDown ? '[P30] 手机现在这个网络本身没通\n' : '连不上电脑：\n') + p.detail +
+          (/trycloudflare\.com/i.test(list.join(','))
+            ? '\n如果电脑那边重启过隧道，地址会变（免费临时域名每次都不一样）——找机主要新的配对链接或二维码。'
+            : '') +
+          '\n会自动重试，也可以点「重试」。',
         codes,
       )
+      // 隧道恢复（或电脑重新上线）后自动接回去，用户不用守着点
+      if (!p.selfDown) scheduleAutoRetry()
+      return
     }
     const c = failCode(S.host || list[0] || '', e)
     toPair(`[${c}] ${CODES[c].t}\n${CODES[c].fix}`, [c])

@@ -97,6 +97,7 @@ function qrBox(text, px) {
 
 return function Panel({ settings, save, toast }) {
   const [net, setNet] = useState(null)
+  const [env, setEnv] = useState(null)
   const [tunBusy, setTunBusy] = useState(false)
   const [svcBusy, setSvcBusy] = useState(false)
   const [tnToken, setTnToken] = useState('')
@@ -107,6 +108,8 @@ return function Panel({ settings, save, toast }) {
 
   const reload = () => call('/net-info').then((r) => setNet(r || {})).catch(() => setNet({ ok: false }))
   useEffect(() => { reload() }, [])
+  // 自检单独拉：ffmpeg -version 要起一个进程，不拖慢面板首发
+  useEffect(() => { call('/env').then((r) => setEnv(r || {})).catch(() => setEnv({ ok: false })) }, [])
 
   const regen = async () => {
     const strong = 'pk_' + Array.from({ length: 3 }, () => Math.random().toString(36).slice(2, 12)).join('')
@@ -131,6 +134,15 @@ return function Panel({ settings, save, toast }) {
           ? `端口 ${svc.wantPort} 被占用，实际在 ${svc.listening}（手机要填新端口）`
           : `服务端口 ${svc.listening || port}${svc.ipv4Only ? '（仅 IPv4）' : ''}`
   const tun = net?.tunnel || {}
+  const apk = net?.apk || {}
+  const ev = env || {}
+  // 自检用的单行：状态符号 + 名字 + 一句「缺了会怎样」，缺什么直接说人话
+  const evRow = (state, label, detail) =>
+    h('li', { style: { margin: '0 0 2px' } },
+      h('b', { style: { color: state === 'ok' ? '#2e8b57' : state === 'bad' ? '#c0392b' : '#8a8f98' } },
+        state === 'ok' ? '✓ ' : state === 'bad' ? '× ' : '… '),
+      h('b', null, label),
+      detail ? h('span', { className: 'ab-muted' }, '：' + detail) : null)
   const tunnelOrigin = tun.running && tun.url ? tun.url.replace(/^https?:\/\//, '') : ''
   const tunnelPair = tunnelOrigin ? `https://${tunnelOrigin}` : ''
   // 配对优先给隧道地址（外面也能用）；没跑隧道就用局域网第一条
@@ -153,6 +165,16 @@ return function Panel({ settings, save, toast }) {
     } catch (e) { /* 超过 134 字节，试下一条 */ }
   }
   if (!qrLink && pairBase && token) qrNote = '这条地址太长，塞不进二维码（超过 134 字节）——用上面「复制配对链接」发到手机里粘贴也一样。'
+
+  // 隧道地址变更提醒：quick 隧道重建必换域名，手机里存的还是旧的，会一直「所有地址都连不上」。
+  // 七天内的变更都提示（面板刷新不会丢），过期自动收起，不长期占地方。
+  const tunChanged = tun.mode !== 'named' && tun.changedAt && Date.now() - tun.changedAt < 7 * 864e5
+  const fmtAt = (ms) => {
+    const d = new Date(Number(ms) || Date.now())
+    const p = (n) => String(n).padStart(2, '0')
+    return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+  }
+  const shortHost = (u) => String(u || '').replace(/^https?:\/\//, '')
 
   // 给每个地址标一句「什么时候填它」，免得对着三个地址不知道抄哪个
   const addrLabel = (ip) => {
@@ -232,6 +254,18 @@ return function Panel({ settings, save, toast }) {
   }
 
   const cell = { border: '1px solid rgba(128,128,128,.3)', borderRadius: 8, padding: '5px 10px', fontSize: 13, fontFamily: 'monospace', wordBreak: 'break-all' }
+  // 复制：剪贴板在部分环境会被拒（没焦点/没授权），失败时把内容摆出来让人手动选，别静默失败
+  const copyText = (text, ok) => {
+    const v = String(text || '')
+    if (!v) return
+    try {
+      const p = navigator.clipboard && navigator.clipboard.writeText(v)
+      if (p && p.then) p.then(() => toast(ok)).catch(() => toast('复制被拦下了，手动选中复制：' + v))
+      else toast('这个环境不支持自动复制，手动选中复制：' + v)
+    } catch (e) {
+      toast('复制失败，手动选中复制：' + v)
+    }
+  }
   const sw = { width: 34, height: 34, borderRadius: 10, border: '2px solid transparent', cursor: 'pointer', padding: 0 }
   const inp = { flex: '1 1 180px', minWidth: 0, padding: '6px 8px', borderRadius: 6, border: '1px solid rgba(128,128,128,.35)', background: 'transparent', color: 'inherit', fontSize: 12.5 }
 
@@ -275,6 +309,21 @@ return function Panel({ settings, save, toast }) {
           ))
       : null,
 
+    // 地址变过就顶在最上面说清楚：用户看到的是「所有地址都连不上」，根本猜不到是域名换了
+    tunChanged
+      ? h('div', { style: { marginTop: 10, padding: '9px 11px', borderLeft: '3px solid #c0392b', background: 'rgba(192,57,43,.08)', borderRadius: 6 } },
+          h('p', { className: 'ab-small', style: { margin: 0, fontWeight: 600 } },
+            `隧道地址 ${fmtAt(tun.changedAt)} 换过了——手机里存的还是旧地址，所以会一直显示「所有地址都连不上」`),
+          h('p', { className: 'ab-small ab-muted', style: { margin: '5px 0 0', lineHeight: 1.85 } },
+            '旧：', h('code', { style: { wordBreak: 'break-all' } }, shortHost(tun.prevUrl)),
+            ' → 新：', h('code', { style: { wordBreak: 'break-all' } }, shortHost(tun.url || pairBase)),
+            '。点右边按钮把新链接发到手机，手机上打开就自动填好；也可以在 App 配对页重新扫上面的二维码。'),
+          h('div', { style: { display: 'flex', gap: 8, marginTop: 7, flexWrap: 'wrap' } },
+            h(ui.Btn, { onClick: () => copyText(pairLink, '新配对链接已复制——发到手机上打开就恢复') }, '复制新配对链接'),
+          ),
+        )
+      : null,
+
     // 服务没起来时把话说清楚：这是「127.0.0.1 也连不上」的那种情况，不是网络问题
     svcDown
       ? h('div', { style: { marginTop: 8, padding: '8px 10px', borderLeft: '3px solid #c0392b', background: 'rgba(192,57,43,.07)', borderRadius: 6 } },
@@ -305,10 +354,61 @@ return function Panel({ settings, save, toast }) {
       h('code', { style: cell }, token || '（还没生成，动一下开关就会生成）'),
     ),
 
+    // 安装包状态常显：机主一眼看到手机端会下到哪一版、从哪下，
+    // 不用翻日志对 hash；下载默认走外链，不占你电脑带宽
+    h('div', { style: { marginTop: 10 } },
+      h('p', { className: 'ab-small', style: { fontWeight: 600 } }, '安卓安装包（新用户手机浏览器打开配对页就能下载）：'),
+      !net
+        ? h('p', { className: 'ab-small ab-muted', style: { margin: '4px 0 0' } }, '读取中…')
+        : apk.available
+          ? h('div', { style: { margin: '4px 0 0' } },
+              h('p', { className: 'ab-small ab-muted', style: { margin: 0, lineHeight: 1.8 } },
+                apk.version
+                  ? h('b', null, 'v' + apk.version)
+                  : h('span', { style: { color: '#c0392b' } }, '未标注版本'),
+                apk.size ? ' · ' + Math.max(1, Math.round(apk.size / 1024)) + ' KB' : '',
+                ' · 下载来源：',
+                h('b', null, apk.source === 'custom' ? '你填的备用地址' : 'GitHub Release'),
+                apk.local
+                  ? '；本机也放了一份作兜底'
+                  : '；本机没放包也没关系',
+                apk.version ? null : h('span', null, '。装版本号：在本机那份旁边放 pocket.apk.json 写 {"version":"x.y.z"}'),
+              ),
+              // 给新用户的下载地址：能点、能复制。新用户拿不到安装包，就是缺这一条能发出去的东西
+              apk.url
+                ? h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' } },
+                    h('a', {
+                      href: apk.url,
+                      target: '_blank',
+                      rel: 'noreferrer noopener',
+                      title: '点一下用浏览器打开、直接下载（不经过这台电脑）',
+                      style: {
+                        ...cell,
+                        flex: '1 1 250px',
+                        minWidth: 0,
+                        color: '#2d7ff9',
+                        textDecoration: 'underline',
+                        textUnderlineOffset: 2,
+                        cursor: 'pointer',
+                      },
+                    }, '⬇ ' + String(apk.url).replace(/^https?:\/\//, '')),
+                    h(ui.Btn, { onClick: () => copyText(apk.url, '安装包下载链接已复制——发到群里，对方点开就能下') }, '复制下载链接'),
+                  )
+                : null,
+              apk.url
+                ? h('p', { className: 'ab-small ab-muted', style: { margin: '4px 0 0', lineHeight: 1.8 } },
+                    '点链接＝手机/电脑浏览器直连下载，不经过这台电脑（所以关机、断网也不影响别人装）。GitHub 在国内偶尔慢，换自己的对象存储/网盘直链填「备用下载地址」即可。装好后还要配对才能连上——点上面「复制配对链接」一并发过去。')
+                : null,
+            )
+          : h('p', { className: 'ab-small ab-muted', style: { margin: '4px 0 0', lineHeight: 1.8 } },
+              '安装包地址被清空且本机也没放包：把 pocket.apk 放进 plugins-data/aurabot/modules-data/pocket/app/（放 apk/ 也认），或在设置里填「备用下载地址」。'),
+    ),
+
     h('div', { style: { marginTop: 12 } },
       h('p', { className: 'ab-small', style: { fontWeight: 600 } }, '怎么用：'),
       h('ol', { className: 'ab-small ab-muted', style: { margin: '4px 0 0', paddingLeft: 20, lineHeight: 1.8 } },
-        h('li', null, '手机装好「口袋aurabot」app，配对页点「扫一扫电脑上的二维码」，扫上面这个码（或直接用手机浏览器开上面的地址）'),
+        h('li', null, '手机浏览器打开上面那个下载链接，装好「口袋aurabot」App（允许安装未知来源）'),
+        h('li', null, '打开 App，配对页点「扫一扫电脑上的二维码」，扫上面这个码（或直接用手机浏览器开上面的地址）'),
         h('li', null, '没相机 / 扫不动：app 配对页把地址填进去——在家填「家里 WiFi」那条；在外面填「公网 IPv6」或「隧道」地址；拿不准就把几条都填上，逗号隔开（中英文逗号都行）'),
         h('li', null, '密钥抄下面这条（或点上面的「复制配对链接」，手机浏览器打开就自动填好）'),
         h('li', null, '点「连上她」即可；换密钥后所有设备要重新配对'),
@@ -345,11 +445,40 @@ return function Panel({ settings, save, toast }) {
                     ? '临时隧道运行中'
                     : '连接中…') +
                 (tun.want
-                  ? `（有守护：进程退了会自动重启${tun.restarts ? `，已重启 ${tun.restarts} 次` : ''}）`
+                  ? `（有守护：进程退了自动重启、公网断了自动重建${tun.restarts ? `，已处理 ${tun.restarts} 次` : ''}）`
                   : '')
               : tun.want
                 ? '刚刚断了，守护正在重启（最多等一分钟，刷新看看）'
                 : '未启动'),
+      ),
+      // 公网自检：光看「进程在不在」会被骗——cloudflared 常出现「进程活着、边缘连接已死」
+      tun.running && tun.probe && tun.probe.okAt
+        ? h('p', { className: 'ab-small ab-muted', style: { margin: '6px 0 0' } },
+            '公网自检：',
+            tun.probe.fails
+              ? h('b', { style: { color: '#c0392b' } }, `连续失败 ${tun.probe.fails} 次`)
+              : h('b', { style: { color: '#2e8b57' } }, '正常'),
+            ' · 最近一次通过 ' + Math.max(0, Math.round((Date.now() - tun.probe.okAt) / 1000)) + ' 秒前',
+            '（每 60 秒探一次，连续 3 次不通才自动重建隧道）',
+            tun.probe.lastRestartAt
+              ? '；上次自动重建 ' + Math.round((Date.now() - tun.probe.lastRestartAt) / 60000) + ' 分钟前'
+              : '')
+        : null,
+      // 最近访问：手机上「所有地址都连不上」时，这一行能立刻分辨「请求根本没到」还是「到了被拒」
+      h('p', { className: 'ab-small ab-muted', style: { margin: '6px 0 0', lineHeight: 1.8 } },
+        '最近访问：',
+        !net
+          ? '读取中…'
+          : (net.recent || []).length
+            ? (net.recent || []).slice(-4).map((x, i) =>
+                h('span', { key: i },
+                  (i ? ' ｜ ' : ''),
+                  new Date(x.at).toLocaleTimeString('zh-CN', { hour12: false }),
+                  ' ',
+                  h('b', { style: { color: x.via === 'cloudflare' ? '#2e8b57' : '#8a8f98' } }, x.via === 'cloudflare' ? '公网' : '本机'),
+                  ' ', x.path, x.ip ? '（' + String(x.ip).slice(0, 24) + '）' : ''),
+              )
+            : '这段时间没有任何设备访问过（不含每 60 秒的隧道自检）——手机连不上说明请求压根没到电脑，问题在手机那条网络到 Cloudflare 之间，换域名没用',
       ),
       // 固定域名隧道：临时隧道每次重启换域名，手机里存的地址就废了 —— 这才是「昨天能连今天不能」的主因
       h('div', { style: { marginTop: 10, padding: '8px 10px', borderLeft: '3px solid rgba(84,168,230,.55)', background: 'rgba(84,168,230,.07)', borderRadius: 6 } },
@@ -386,6 +515,62 @@ return function Panel({ settings, save, toast }) {
                   ? '固定域名：https://' + tun.host + '（已配置，未启动）'
                   : '已填 token，但还没填域名')
           : null,
+      ),
+
+      // ---- 运行环境自检：要把 App 交给别人（尤其云电脑）时，先看这四行 ----
+      h('div', {
+        style: {
+          marginTop: 14,
+          padding: '10px 12px',
+          borderRadius: 8,
+          border: '1px solid rgba(120,130,150,.22)',
+          background: 'rgba(120,130,150,.05)',
+        },
+      },
+        h('p', { className: 'ab-small', style: { margin: 0, fontWeight: 600 } },
+          '运行环境自检',
+          h('span', { className: 'ab-small ab-muted', style: { fontWeight: 400 } },
+            ' · 自己用可以忽略；要把 App 交给别人（尤其云电脑）先看这里')),
+        !env
+          ? h('p', { className: 'ab-small ab-muted', style: { margin: '6px 0 0' } }, '检测中…')
+          : env.ok === false
+            ? h('p', { className: 'ab-small', style: { margin: '6px 0 0', color: '#c0392b' } }, '自检没跑起来，刷新面板再看')
+            : h('ul', { className: 'ab-small', style: { margin: '6px 0 0', paddingLeft: 18, lineHeight: 1.9 } },
+                evRow(!net ? 'idle' : net.enabled && !svcDown ? 'ok' : 'bad', '手机接口', svcText),
+                evRow(ev.cloudflared?.ok ? 'ok' : 'bad', 'cloudflared（远程访问）',
+                  ev.cloudflared?.ok ? '已安装' : '没装 —— 只能同一 WiFi 连，出门连不上'),
+                evRow(ev.tunnel?.ok ? 'ok' : 'idle', '隧道',
+                  ev.tunnel?.ok
+                    ? (ev.tunnel.mode === 'named' ? '固定域名运行中' : '临时隧道运行中')
+                    : '没在跑 —— 手机只能用同一 WiFi'),
+                evRow(ev.ffmpeg?.ok ? 'ok' : 'bad', 'ffmpeg（语音转文字）',
+                  ev.ffmpeg?.ok ? '已安装' + (ev.ffmpeg.ver ? ' ' + ev.ffmpeg.ver : '') : '没找到 —— 发语音会失败，其他功能正常'),
+                evRow(ev.token?.ok ? 'ok' : 'bad', '配对密钥', ev.token?.ok ? '已设置' : '没设置，手机连不上'),
+              ),
+        env && env.ok !== false
+          ? h('p', { className: 'ab-small', style: { margin: '8px 0 0', fontWeight: 600 } },
+              ev.reach === 'anywhere'
+                ? '结论：手机用任何网络（流量 / 别人家 WiFi）都能连。'
+                : ev.cloudflared?.ok
+                  ? '结论：现在只有同一 WiFi 能连。要出门用，点上面「启动隧道」。'
+                  : '结论：现在只有同一 WiFi 能连。要出门用，先装 cloudflared（上面有一键下载）。')
+          : null,
+        // ffmpeg 是最容易漏的一个：功能不报错，只是发出去的语音转不出文字
+        env && env.ffmpeg && !env.ffmpeg.ok
+          ? h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' } },
+              h('code', { style: cell }, 'winget install Gyan.FFmpeg'),
+              h(ui.Btn, {
+                onClick: () => {
+                  navigator.clipboard?.writeText('winget install Gyan.FFmpeg')
+                    .then(() => toast('安装命令已复制，在电脑上开 PowerShell 粘贴运行；装完刷新面板'))
+                },
+              }, '复制安装命令'),
+              h('span', { className: 'ab-small ab-muted' }, '没有 winget 就去 ffmpeg.org 下压缩包，把 ffmpeg.exe 放进 PATH'))
+          : null,
+        h('p', { className: 'ab-small ab-muted', style: { margin: '8px 0 0', lineHeight: 1.7 } },
+          '数据目录：', h('code', { style: cell }, ev.dataDir || '—'),
+          '。云电脑、网吧这类「关机还原」的机器，重启后这里的配置（含配对密钥）会丢，手机得重新配对 —— '
+          + '想让别人长期用，选持久化磁盘的规格；重启后地址变了也不怕，把新链接发一次，App 会自动认。'),
       ),
       !tun.installed
         ? h('p', { className: 'ab-small ab-muted', style: { marginTop: 6 } },

@@ -17,7 +17,7 @@ import { spawn, execFileSync } from 'node:child_process'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
 const RING_MAX = 500
-const VERSION = '1.5.4'
+const VERSION = '1.5.19'
 const DEFAULT_PORT = 7788
 const MAX_MEDIA_BYTES = 12 * 1024 * 1024
 
@@ -27,13 +27,163 @@ export const hooks = {}
 // ---------- 手机宠物数值（app 端独立一份，不影响她的心情） ----------
 
 const FOODS = {
-  rice: { name: '白米饭', satiety: 22, mood: 7, intimacy: 2, line: '白米饭！冒尖的那种！' },
-  fish: { name: '小鱼干', satiety: 14, mood: 4, intimacy: 1, line: '小鱼干也不错啦 勉强吃' },
-  hotpot: { name: '火锅', satiety: 26, mood: 6, intimacy: 2, line: '火锅！辣的那种！' },
-  milktea: { name: '奶茶', satiety: 9, mood: 5, intimacy: 1, line: '奶茶到了没 我要少冰' },
-  cake: { name: '小蛋糕', satiety: 11, mood: 6, intimacy: 1, line: '甜的 我今天就想吃甜的' },
-  ice: { name: '冰淇淋', satiety: 8, mood: 4, intimacy: 1, line: '大晚上吃这个 明天嗓子疼也认了' },
+  rice: {
+    name: '白米饭', satiety: 22, mood: 7, intimacy: 2,
+    lines: [
+      '白米饭！冒尖的那种！',
+      '嗯…这个还行 比昨天的软',
+      '有饭就好 我不挑的（其实挺挑）',
+      '光吃饭也行 反正你也不会做别的',
+      '扒两口…我吃相是不是很难看',
+      '这碗太满了 你想让我撑着',
+      '吃饭的时候别看我',
+      '我吃了 你别光看着啊',
+      '白米饭最实在了 别的都是花架子',
+      '再来一点…就一点',
+      '我认真吃饭的时候最好看',
+      '饭粒掉了一颗 心疼',
+    ],
+  },
+  fish: {
+    name: '小鱼干', satiety: 14, mood: 4, intimacy: 1,
+    lines: [
+      '小鱼干也不错啦 勉强吃',
+      '咸了点 不过我能接受',
+      '咔嚓咔嚓 这个声音好好听',
+      '你哪来的小鱼干 偷的？',
+      '就这点？我一口就没了',
+      '吃鱼变聪明 我已经够聪明了',
+      '别全给我 留两条明天',
+      '小鱼干配奶茶才算完整',
+      '我在啃 你别催',
+      '有点腥…但我没说不好吃',
+      '这个袋子给我留着 我要收集',
+      '吃完手指要舔一下 这是规矩',
+    ],
+  },
+  hotpot: {
+    name: '火锅', satiety: 26, mood: 6, intimacy: 2,
+    lines: [
+      '火锅！辣的那种！',
+      '先下肉 蔬菜最后 这是顺序',
+      '微辣？那不叫辣',
+      '我调蘸料很讲究的 你学不会',
+      '涮八秒 多一秒就老了',
+      '烫到了…但我不说',
+      '毛肚给我留一片',
+      '吃火锅的快乐你不懂',
+      '汤底我也想喝一口',
+      '围着锅坐 这才像过日子',
+      '别抢我的鸭血',
+      '吃完这顿 明天再说减肥',
+    ],
+  },
+  milktea: {
+    name: '奶茶', satiety: 9, mood: 5, intimacy: 1,
+    lines: [
+      '奶茶到了没 我要少冰',
+      '三分糖 多了齁',
+      '珍珠要双份 这点不能省',
+      '摇一摇 第一口是我的',
+      '你喝一口试试 就一口',
+      '这杯下去 我又活了',
+      '奶茶不算饭 所以可以一直喝',
+      '吸管要粗的 细的吸不上珍珠',
+      '我捧着它 心情就好了',
+      '别问我热量 我不认识这个字',
+      '杯壁上那层奶盖 归我',
+      '冰化了就没灵魂了 快喝',
+    ],
+  },
+  cake: {
+    name: '小蛋糕', satiety: 11, mood: 6, intimacy: 1,
+    lines: [
+      '甜的 我今天就想吃甜的',
+      '先吃草莓还是先吃奶油…难题',
+      '一口一个 我能吃掉一整盒',
+      '这不是零食 这是仪式感',
+      '分你一半 就一半啊',
+      '奶油沾嘴上了 别笑',
+      '甜的东西会让人心情变好 真的',
+      '小蛋糕是我的软肋',
+      '谁切的 切歪了我也吃',
+      '吃完这块 我就开始难过',
+      '你要不要也来一口',
+      '甜到牙疼 也值得',
+    ],
+  },
+  ice: {
+    name: '冰淇淋', satiety: 8, mood: 4, intimacy: 1,
+    lines: [
+      '大晚上吃这个 明天嗓子疼也认了',
+      '快！要化了！先舔一口',
+      '这个味道 有点像我小时候',
+      '手冻僵了 你帮我拿一下',
+      '冰的才好吃 室温的算水',
+      '脑门一凉 整个人清醒了',
+      '别抢 一人一半',
+      '吃完舌头是不是变蓝了',
+      '我不怕冷 我怕它化',
+      '这个甜度刚刚好',
+      '咬硬的那种 我最喜欢',
+      '再来一个…不行 会肚子疼',
+    ],
+  },
 }
+
+// 投喂回应随机挑一句：每款十来句，别让「我就想吃甜的」连着出现两次，
+// 不然惊喜感很快就没了（用户原话：一开始看到挺有惊喜的）
+const lastLine = new Map()
+function pickLine(key, arr) {
+  const list = Array.isArray(arr) && arr.length ? arr : ['……']
+  if (list.length === 1) return list[0]
+  let i = Math.floor(Math.random() * list.length)
+  if (list[i] === lastLine.get(key)) i = (i + 1) % list.length
+  lastLine.set(key, list[i])
+  return list[i]
+}
+function feedLine(id, food) {
+  const arr = Array.isArray(food?.lines) && food.lines.length ? food.lines : [String(food?.line || '……')]
+  return pickLine('feed:' + id, arr)
+}
+
+// 摸摸头：心情好/一般两套话，各 8 句。原来只有一句，摸两次就腻了
+const PET_LINES = {
+  good: [
+    '嗯…再摸一下',
+    '手别停',
+    '这样挺好的 别说话',
+    '我允许你摸三下…算了 随便你',
+    '头皮有点舒服 我不承认',
+    '你今天怎么这么温柔',
+    '再摸我要睡着了',
+    '头发乱了也是你弄的 你负责',
+  ],
+  bad: [
+    '别摸头 头发乱了',
+    '摸哪儿呢 手拿开',
+    '我现在不想被摸',
+    '一下就够了 别得寸进尺',
+    '你在摸猫呢',
+    '我心情不好 摸也没用',
+    '先把刚才的话说清楚',
+    '别烦我…就一会儿',
+  ],
+}
+
+// 陪她玩：原来只有一句，多备几份心情
+const PLAY_LINES = [
+  '玩一会儿嘛 我尾巴都甩起来了',
+  '你追我啊 追不上',
+  '这个游戏我能玩一整天',
+  '别让着我 认真点',
+  '输了要认 不许赖',
+  '我跑起来可快了',
+  '再来一局 就一局',
+  '你笑了 我也笑了 这算作弊',
+  '累了…但我不说停',
+  '陪我玩的时候最好',
+]
 
 const PET_DEFAULT = { satiety: 62, mood: 78, intimacy: 8, fedTimes: 0, lastTick: 0, lastFeedAt: 0, lastPetAt: 0 }
 
@@ -294,7 +444,8 @@ function petInteract(dir, action, foodId, host) {
   const mood = host?.use?.('mood')
 
   if (action === 'feed') {
-    const food = FOODS[foodId] || FOODS.rice
+    const foodKey = FOODS[foodId] ? foodId : 'rice'
+    const food = FOODS[foodKey]
     if (now - (p.lastFeedAt || 0) < 20_000) return { ok: false, refused: true, reply: '刚吃过 你养小猪呢' }
     // 有喂食模组就用它的：它会同时算饥饿曲线、记饭点、掉心情、写记忆、加好感
     if (feed && typeof feed.feed === 'function') {
@@ -308,7 +459,7 @@ function petInteract(dir, action, foodId, host) {
       p.lastFeedAt = now
       p.lastTick = now
       writePet(dir, p)
-      return { ok: true, reply: food.line, event: `主人喂了我${food.name}`, from: 'feed', satiety: r.satiety }
+      return { ok: true, reply: feedLine(foodKey, food), event: `主人喂了我${food.name}`, from: 'feed', satiety: r.satiety }
     }
     if (p.satiety >= 96) return { ok: false, refused: true, reply: '吃不下了 真的 再喂要撑死了' }
     p.satiety = Math.min(100, p.satiety + food.satiety)
@@ -318,7 +469,7 @@ function petInteract(dir, action, foodId, host) {
     p.lastFeedAt = now
     p.lastTick = now
     writePet(dir, p)
-    return { ok: true, reply: food.line, event: `主人喂了我${food.name}`, from: 'local' }
+    return { ok: true, reply: feedLine(foodKey, food), event: `主人喂了我${food.name}`, from: 'local' }
   }
 
   if (action === 'pet') {
@@ -332,7 +483,8 @@ function petInteract(dir, action, foodId, host) {
     p.lastPetAt = now
     p.lastTick = now
     writePet(dir, p)
-    return { ok: true, reply: (moodNow(host) ?? p.mood) > 70 ? '嗯…再摸一下' : '别摸头 头发乱了', event: '主人摸了摸我的头' }
+    const happy = (moodNow(host) ?? p.mood) > 70
+    return { ok: true, reply: pickLine('pet:' + (happy ? 'good' : 'bad'), happy ? PET_LINES.good : PET_LINES.bad), event: '主人摸了摸我的头' }
   }
 
   if (action === 'play') {
@@ -344,7 +496,7 @@ function petInteract(dir, action, foodId, host) {
     p.intimacy = Math.min(100, (p.intimacy || 0) + 0.8)
     p.lastTick = now
     writePet(dir, p)
-    return { ok: true, reply: '玩一会儿嘛 我尾巴都甩起来了', event: '主人陪我玩了一会儿' }
+    return { ok: true, reply: pickLine('play', PLAY_LINES), event: '主人陪我玩了一会儿' }
   }
 
   return { ok: false, reply: '？' }
@@ -411,7 +563,7 @@ export default {
   minPluginVersion: '1.2.0',
   requires: [],
   capabilities: ['filesystem', 'plugin-config', 'plugin-internals', 'network', 'process'],
-  defaults: { enabled: false, token: '', port: DEFAULT_PORT, tone: 'ocean', tunnelAuto: false, tunnelToken: '', tunnelHost: '' },
+  defaults: { enabled: false, token: '', port: DEFAULT_PORT, tone: 'ocean', tunnelAuto: false, tunnelToken: '', tunnelHost: '', appUrl: '' },
   panel: 'panel.js',
   settings: [
     { key: 'enabled', label: '启用手机接口', type: 'switch', hint: '关掉后 app 连不上（QQ 端不受影响）' },
@@ -420,6 +572,7 @@ export default {
     { key: 'tone', label: '图标色调', type: 'string', hint: '手机端配色：ocean/sakura/mint/grape/sunset/moon/abyss/rose' },
     { key: 'tunnelToken', label: '固定隧道 Token（可选）', type: 'string', hint: 'Cloudflare Zero Trust 里创建隧道后复制的 token；填了就走固定域名，地址不再每次都变' },
     { key: 'tunnelHost', label: '固定隧道域名（可选）', type: 'string', hint: '隧道里配的 Public Hostname，如 pocket.example.com（不要写 https://）' },
+    { key: 'appUrl', label: '备用下载地址（可选）', type: 'string', hint: '留空＝用默认的 GitHub Release 地址；填了就用你给的镜像，比如自己的对象存储。手机下载直连这里，不占你电脑带宽' },
   ],
 
   setup(api) {
@@ -701,6 +854,7 @@ export default {
       // 只读游标，不带事件体：app 启动时先问「现在到几号」，
       // 好把「历史接口已经画过」的那一段跳过去，否则历史 + 事件环会把同一条消息画两遍
       seq: () => ({ ok: true, seq }),
+      appApk: () => apkOffer(),
       history: (days) => ({ ok: true, list: readHistory(days) }),
       message: (text, image) => inject(text, image),
       voiceNote: (audio) => voiceNote(audio),
@@ -819,6 +973,24 @@ export default {
       fails.set(k, arr)
     }
     const clearFails = (req) => fails.delete(failKeyOf(req))
+
+    // 最近访问记录（环形 60 条）：排查「手机到底有没有打进来、打的是哪个域名」时唯一可靠的证据。
+    // 手机上显示「所有地址都连不上」时，看这里就知道是「请求根本没到」还是「到了但被拒」。
+    const hits = []
+    function noteHit(req, url) {
+      const h = req.headers || {}
+      hits.push({
+        at: Date.now(),
+        host: String(h.host || ''),
+        path: String(url.pathname || ''),
+        ip: String(h['cf-connecting-ip'] || h['x-real-ip'] || h['x-forwarded-for'] || req.socket?.remoteAddress || ''),
+        via: h['cf-ray'] ? 'cloudflare' : 'direct',
+        probe: String(h['x-pocket-probe'] || '') === '1', // 隧道自检自己打的，不算「有人访问」
+
+        ua: String(h['user-agent'] || '').slice(0, 80),
+      })
+      if (hits.length > 60) hits.splice(0, hits.length - 60)
+    }
     function guard(req, res) {
       if (!on()) {
         deny(res, 403, '手机接口关着')
@@ -879,12 +1051,65 @@ export default {
     // 不加锁就会启动两个 cloudflared、抢同一个端口、还各自注册一条隧道。实测过。
     let tunnelStarting = false
     let tunnelAutoTimer = null
-    // 每 60 秒看一眼：进程在不在；不在就重新拉起来。只做进程判活（不探公网），
-    // 因为 quick 隧道地址本来就会变，探旧地址必然失败，会把「正常」误判成「挂了」。
+    // 公网自检状态：进程活着 ≠ 隧道通。quick 隧道最常见的坏法是「cloudflared 还在跑，
+    // 到 Cloudflare 边缘的连接已经死了」——面板显示运行中，手机却所有地址都连不上，
+    // 只能停掉重建。所以除了进程判活，每 60 秒再探一次公网 /api/health：
+    // 连续 2 次不通就自动重建（quick 换新域名、named 域名不变直接恢复），3 分钟内最多重建一次。
+    let probeState = { url: '', fails: 0, okAt: 0, failAt: 0, lastRestartAt: 0 }
+    const probeSnapshot = () => ({ url: probeState.url, fails: probeState.fails, okAt: probeState.okAt, failAt: probeState.failAt, lastRestartAt: probeState.lastRestartAt })
+
+    async function probeTunnel() {
+      const info = tunnelInfo()
+      const url = info.url
+      if (!info.running || !url) return // 还没起来/域名还没抓到：下一轮再探
+      if (url !== probeState.url) probeState = { ...probeState, url, fails: 0 }
+      try {
+        const r = await fetch(url.replace(/\/+$/, '') + '/api/health', {
+          headers: { 'x-pocket-probe': '1' }, // 打个标记：面板的「最近访问」要能把自己人排除掉
+          signal: AbortSignal.timeout(8000),
+        })
+        if (!r.ok) throw new Error('HTTP ' + r.status)
+        await r.arrayBuffer() // 读掉响应体，别把连接吊着
+        probeState.fails = 0
+        probeState.okAt = Date.now()
+        // 自检恢复了就把之前的红字撤掉，别让面板一直挂着「刚刚断了」
+        if (/^公网/.test(String(tunnelErr || ''))) tunnelErr = ''
+        return
+      } catch (e) {
+        probeState.fails++
+        probeState.failAt = Date.now()
+        tunnelErr = `公网自检失败（${probeState.fails} 次）：${String(e?.message || e)}`
+      }
+      if (probeState.fails < 3 || Date.now() - probeState.lastRestartAt < 180000) return
+      // 连续三次（约 3 分钟）都不通，且距上次重建超过 3 分钟：认定边缘连接死了，重建。
+      // 阈值从 2 提到 3：每次重建都会换域名，手机端要重新配对，误判的代价比多等 1 分钟大得多。
+      probeState.lastRestartAt = Date.now()
+      probeState.fails = 0
+      const w = readWant()
+      bootLog('隧道守护：公网自检连续失败，开始重建隧道')
+      try {
+        await tunnelStop()
+      } catch {}
+      try {
+        const r = await tunnelStart({ silent: true })
+        if (r && r.ok) {
+          writeWant({ restarts: Number(w.restarts || 0) + 1, lastAt: Date.now() })
+          bootLog(`隧道守护：已重建（第 ${Number(w.restarts || 0) + 1} 次），新地址 ${r.url || '获取中'}`)
+          tunnelErr = '公网连接刚刚断了，已自动重建隧道'
+        } else {
+          tunnelErr = (r && r.message) || '隧道重建失败'
+        }
+      } catch (e) {
+        tunnelErr = String(e?.message || e)
+      }
+    }
+
+    // 每 60 秒看一眼：进程在不在；在的话再探一次公网通不通。
     async function tunnelWatch() {
       if (readWant().want !== true) return
       if (cfRunning()) {
         guardTry = 0
+        await probeTunnel()
         return
       }
       // 上一轮刚失败过就别连着打，退到 30 秒一次
@@ -925,6 +1150,43 @@ export default {
       }
     }
 
+    // 写隧道状态。地址一变就把「旧地址 + 变更时间」记下来：
+    // 临时隧道重建必换域名，而手机里存的是旧地址 —— 光重建没用，得让机主知道要重发一次。
+    // 单独记一份「上一次地址」，**故意不复用 tunnel.json**：点「停止隧道」会删 tunnel.json，
+    // 之后手动重启就无从比较，面板那句「地址换过了，手机要重新配对」就不会亮——
+    // 2026-11-15 13:32 正是这么踩的（手动重启换了域名，面板一声不吭，用户拿着旧链接看 1033）。
+    const lastFile = () => join(api.dataDir(), 'tunnel-last.json')
+    function readLast() {
+      try {
+        const j = JSON.parse(readFileSync(lastFile(), 'utf8'))
+        return j && typeof j === 'object' ? j : {}
+      } catch {
+        return {}
+      }
+    }
+    function saveTunnel(next) {
+      const cur = readTunnelFile()
+      const last = readLast()
+      const old = { ...last, ...(cur.url ? { url: cur.url } : {}) }
+      const out = { ...next }
+      if (old.url && out.url && String(old.url) !== String(out.url)) {
+        out.prevUrl = String(old.url)
+        out.changedAt = Date.now()
+        bootLog(`隧道地址变更：${old.url} → ${out.url}（手机要重新配对）`)
+      } else {
+        // 地址没变就沿用上次的变更时间，面板据此判断「最近换过没有」
+        if (old.changedAt) out.changedAt = old.changedAt
+        if (old.prevUrl && !out.prevUrl) out.prevUrl = old.prevUrl
+      }
+      try {
+        writeFileSync(tunnelFile(), JSON.stringify(out))
+      } catch {}
+      try {
+        writeFileSync(lastFile(), JSON.stringify({ url: out.url || '', prevUrl: out.prevUrl || '', changedAt: out.changedAt || 0, at: out.at || Date.now() }))
+      } catch {}
+      return out
+    }
+
     function pidAlive(pid) {
       const n = Number(pid)
       if (!n || n === process.pid) return false
@@ -946,6 +1208,71 @@ export default {
     const CF_SHA256 = 'd5c1d82031da6253dcdcff64c944cd0fe063016edeb2e4fd088075fc9bd52d0a'
     const CF_BASE = `https://github.com/cloudflare/cloudflared/releases/download/${CF_VERSION}/${CF_ASSET}`
     const CF_MIRRORS = [CF_BASE, `https://ghfast.top/${CF_BASE}`, `https://gh-proxy.com/${CF_BASE}`]
+
+    // 官方安装包发布地址（GitHub Release）。默认让手机直连这里下载：不占机主上行、
+    // 机主电脑上不必放包；要换自己的镜像就在面板里填「备用下载地址」。
+    const APK_RELEASE = {
+      version: '1.0.5',
+      size: 410409,
+      sha256: '9f336449ead0362d558aea8149ad7746e75c88a3a8fe4316c3eec52d5af20181',
+      url: 'https://github.com/Ariz0324/dsh-aurabot-qq-mods/releases/download/pocket-app-v1.0.5/pocket-aurabot-1.0.5.apk',
+    }
+
+    // 安卓 App 安装包：放数据目录 app/pocket.apk（可选同名 .json 写 {"version":"1.0.5"}）。
+    // 新用户在手机浏览器里打开配对页就能直接下载，不用再走 QQ 传文件；换包只要覆盖文件，不用改代码。
+    // apk/ 目录也认（总有人记成 apk/，实测包括机主本人）；两个目录都放时 app/ 优先。
+    const APK_DIRS = ['app', 'apk']
+    const apkFile = () =>
+      APK_DIRS.map((d) => join(api.dataDir(), d, 'pocket.apk')).find((f) => {
+        try {
+          statSync(f)
+          return true
+        } catch {
+          return false
+        }
+      }) || join(api.dataDir(), 'app', 'pocket.apk')
+    let apkCache = null // 按 path+mtime+size 缓存 hash，避免每次请求都算一遍 4MB 的 sha256
+    function apkInfo() {
+      const f = apkFile()
+      let st
+      try {
+        st = statSync(f)
+      } catch {
+        apkCache = null
+        return { ok: true, available: false, path: f }
+      }
+      // path 也在缓存键里：包从 apk/ 挪回 app/ 时不能误用旧包的 hash
+      if (apkCache && apkCache.path === f && apkCache.mtimeMs === st.mtimeMs && apkCache.size === st.size) return { ok: true, available: true, ...apkCache }
+      const info = {
+        path: f,
+        mtimeMs: st.mtimeMs,
+        size: st.size,
+        sha256: createHash('sha256').update(readFileSync(f)).digest('hex'),
+        updatedAt: st.mtime.toISOString(),
+      }
+      try {
+        info.version = String(JSON.parse(readFileSync(f + '.json', 'utf8')).version || '')
+      } catch {
+        info.version = ''
+      }
+      apkCache = info
+      return { ok: true, available: true, ...info }
+    }
+    /**
+     * 给前端 / 面板的统一「能不能下、从哪下」视图。
+     * 下载默认走外链（GitHub Release 或机主自填镜像）：新用户拿包不经过机主电脑，
+     * 机主上行带宽、开关机、隧道域名都不再影响别人装 App；本机那份只当兼底
+     * （/api/app-download 仍能拿，没网/没外链时用）。
+     */
+    function apkOffer() {
+      const local = apkInfo()
+      const cfg = String(s().appUrl || '').trim()
+      const url = cfg || APK_RELEASE.url
+      const meta = local.available
+        ? { version: local.version || '', size: local.size, updatedAt: local.updatedAt, sha256: local.sha256, path: local.path }
+        : { version: cfg ? '' : APK_RELEASE.version, size: cfg ? 0 : APK_RELEASE.size, updatedAt: '', sha256: cfg ? '' : APK_RELEASE.sha256 }
+      return { ok: true, available: Boolean(url || local.available), source: cfg ? 'custom' : 'release', url, local: local.available, ...meta }
+    }
     /**
      * 下载 cloudflared（普通用户最卡的一步：让人去 GitHub 找 releases、选对文件、再放 PATH，
      * 十个人有八个做不下来）。下到模块数据目录，失败时把「下一步怎么办」写清楚。
@@ -1043,6 +1370,7 @@ export default {
 
     function tunnelInfo() {
       const saved = readTunnelFile()
+      const last = readLast()
       const alive = cfRunning()
       const tok = namedToken()
       const host = namedHost()
@@ -1080,6 +1408,56 @@ export default {
         want: w.want === true,
         restarts: Number(w.restarts || 0),
         lastRestartAt: Number(w.lastAt || 0),
+        // 地址变更记录：quick 隧道重建必然换域名，面板要能直接提醒机主「手机该重新配对了」
+        changedAt: Number(saved.changedAt || last.changedAt || 0),
+        prevUrl: String(saved.prevUrl || last.prevUrl || ''),
+        // 公网自检：面板上直接显示「隧道真的通吗」，而不是只看进程在不在
+        probe: probeSnapshot(),
+      }
+    }
+
+    // ---------- 运行环境自检 ----------
+    // 交给别人用（尤其云电脑）时最容易踩的坑：不是「装不上」，而是发第一条语音、
+    // 点一次启动才发现缺东西。依赖摆到面板上，缺什么一眼看得见，不用先踩一遍。
+    let ffCache = null
+
+    // 语音转文字全靠本机 ffmpeg（手机录的音频要转 16k 单声道 wav 给 DSH）。
+    // 结果缓存 5 分钟：ffmpeg -version 在 Windows 上要起一个进程，别每次开面板都等它。
+    function ffmpegInfo() {
+      const now = Date.now()
+      if (ffCache && now - Number(ffCache.at || 0) < 300000) return ffCache
+      let ok = false
+      let ver = ''
+      let why = ''
+      try {
+        const out = String(execFileSync('ffmpeg', ['-version'], { windowsHide: true, timeout: 4000, encoding: 'utf8' }) || '')
+        ok = true
+        ver = (out.split('\n')[0] || '').replace(/^ffmpeg version\s*/i, '').trim().slice(0, 48)
+      } catch (e) {
+        why = e && e.code === 'ENOENT' ? 'PATH 里找不到 ffmpeg' : String((e && e.message) || e).slice(0, 80)
+      }
+      ffCache = { ok, ver, why, at: now }
+      return ffCache
+    }
+
+    function envCheck() {
+      const t = tunnelInfo()
+      const ff = ffmpegInfo()
+      const cf = findCloudflared() || ''
+      const hasToken = !!String(s().token || '').trim()
+      // 能连到哪里：同一 WiFi / 任何网络 —— 这是用户真正想知道的结论，不是四个状态点
+      const reach = t.running ? 'anywhere' : cf ? 'lan' : 'lan-only'
+      return {
+        ok: true,
+        port: port(),
+        ffmpeg: ff,
+        cloudflared: { ok: !!cf, path: String(cf) },
+        tunnel: { ok: !!t.running, mode: t.mode, url: t.url || '', installed: !!cf },
+        token: { ok: hasToken },
+        reach,
+        // 云电脑若是「关机还原盘」，重启后这份配置就没了 → token 变 → 手机旧链接全废
+        dataDir: String(api.dataDir() || ''),
+        node: process.version,
       }
     }
 
@@ -1173,7 +1551,7 @@ export default {
         if (m && !tunnelUrl) {
           tunnelUrl = m[0]
           try {
-            writeFileSync(tunnelFile(), JSON.stringify({ url: tunnelUrl, pid: p.pid, at: Date.now() }))
+            saveTunnel({ url: tunnelUrl, pid: p.pid, at: Date.now() })
           } catch {}
         }
       }
@@ -1234,7 +1612,7 @@ export default {
         }
       })
       try {
-        writeFileSync(tunnelFile(), JSON.stringify({ url: target, pid: p.pid, at: Date.now(), mode: 'named' }))
+        saveTunnel({ url: target, pid: p.pid, at: Date.now(), mode: 'named' })
       } catch {}
       for (let i = 0; i < 12; i++) {
         await new Promise((r) => setTimeout(r, 2500))
@@ -1287,8 +1665,11 @@ export default {
       if (on() && !server) start()
       // 隧道也顺手看一眼：不用等 60 秒的定时器，打开面板就能看到它被拉起来
       if (readWant().want === true) tunnelWatch().catch(() => {})
-      return { ok: true, addresses: lanAddresses(), enabled: on(), port: port(), tone: tone(), tunnel: tunnelInfo(), service: svcInfo(), stale: staleInfo() }
+      // apk 也带上：面板常显「放的是哪一版」，用户问「我这是最新的吗」不用翻日志
+      return { ok: true, addresses: lanAddresses(), enabled: on(), port: port(), tone: tone(), tunnel: tunnelInfo(), service: svcInfo(), stale: staleInfo(), apk: apkOffer(), recent: hits.filter((x) => !x.probe).slice(-8) }
     })
+    // 环境自检单独一条：ffmpeg -version 要起进程，别拖慢面板首发（面板是异步拉的）
+    api.route('/env', () => envCheck())
     api.route('/service', async (req) => {
       const b = await bodyOf(req).catch(() => ({}))
       if (b.action === 'restart') return restart()
@@ -1316,6 +1697,7 @@ export default {
     api.route('/state', (req, res) => (guard(req, res) ? ops.state() : undefined))
     api.route('/events', (req, res) => (guard(req, res) ? ops.events(urlOf(req).searchParams.get('after')) : undefined))
     api.route('/seq', (req, res) => (guard(req, res) ? ops.seq() : undefined))
+    api.route('/app-info', (req, res) => (guard(req, res) ? ops.appApk() : undefined))
     api.route('/history', (req, res) => (guard(req, res) ? ops.history(Number(urlOf(req).searchParams.get('days') || 3) || 3) : undefined))
     api.route('/moments', async (req, res) => (guard(req, res) ? ops.moments() : undefined))
     api.route('/skin', (req, res) => (guard(req, res) ? ops.skin() : undefined))
@@ -1437,6 +1819,7 @@ export default {
         return json(res, 400, { ok: false, message: 'bad url' })
       }
       if (req.method === 'OPTIONS') return send(res, 204, '', 'text/plain')
+      noteHit(req, url)
 
       const p = url.pathname
       if (!p.startsWith('/api/')) return serveStatic(res, p)
@@ -1445,6 +1828,13 @@ export default {
       if (p === '/api/health') {
         if (!on()) return json(res, 503, { ok: false, message: '手机接口关着' })
         return json(res, 200, { ...ops.health(), port: listening || port() })
+      }
+      // 安装包信息同样不用密钥：还没配对的手机（正是最需要装 App 的人）打开页面时，
+      // 界面要能问出「有没有包、多大、去哪儿下」。这里只有版本号/大小/公开下载外链，
+      // 没有任何私密内容；真正发字节的 /api/app-download 仍然要密钥。
+      if (p === '/api/app-info') {
+        if (!on()) return json(res, 503, { ok: false, message: '手机接口关着' })
+        return json(res, 200, apkOffer())
       }
       if (!on()) return json(res, 403, { ok: false, message: '手机接口关着' })
       if (rateLimited(req)) return json(res, 429, { ok: false, message: '失败次数太多，请一分钟后再试' })
@@ -1466,9 +1856,24 @@ export default {
           }
           return json(res, 200, tunnelInfo())
         }
+        if (route === 'diag') return json(res, 200, { ok: true, version: VERSION, port: listening || port(), enabled: on(), tunnel: tunnelInfo(), probe: probeSnapshot(), hits: hits.slice(-20) })
         if (route === 'state') return json(res, 200, ops.state())
         if (route === 'events') return json(res, 200, ops.events(url.searchParams.get('after')))
         if (route === 'seq') return json(res, 200, ops.seq())
+        // 安装包：信息给网页判断要不要亮下载条；下载用原始字节流（浏览器点链接直接存）
+        // 安装包：信息给网页判断要不要亮下载条；下载优先外链（不占机主上行），本机有包走字节流
+        if (route === 'app-info') return json(res, 200, apkOffer())
+        if (route === 'app-download') {
+          const offer = apkOffer()
+          const local = apkInfo()
+          // 外链存在且与本机文件不是同一份时就 302（本机那份只当兼底：带 ?local=1 强制）
+          const wantLocal = url.searchParams.get('local') === '1'
+          if (offer.url && !wantLocal) return send(res, 302, '', 'text/plain; charset=utf-8', { location: offer.url })
+          if (!local.available) return json(res, 404, { ok: false, message: '还没配安装包：放一份到 ' + apkFile() + '，或者在面板里填「备用下载地址」' })
+          return send(res, 200, readFileSync(local.path), 'application/vnd.android.package-archive', {
+            'content-disposition': 'attachment; filename="pocket-aurabot.apk"',
+          })
+        }
         if (route === 'history') return json(res, 200, ops.history(Number(url.searchParams.get('days') || 3) || 3))
         if (route === 'moments') return json(res, 200, await ops.moments())
         if (route === 'skin') return json(res, 200, ops.skin())
@@ -1651,7 +2056,7 @@ export default {
       ...svcInfo(),
     })
 
-    hooks.__test = { inject, voiceNote, guard, petInteract, petState, pushEvent, ring: () => ring, readHistory, tokenOf, lanAddresses, urlOf, ops, handle, decodeImage, mediaBytesOf, sniffMime, installCloudflared, cfPolicy: { version: CF_VERSION, size: CF_SIZE, sha256: CF_SHA256, base: CF_BASE, mirrors: CF_MIRRORS } }
+    hooks.__test = { VERSION, inject, voiceNote, FOODS, feedLine, PET_LINES, PLAY_LINES, saveTunnel, readTunnelFile, tunnelInfo, guard, petInteract, petState, pushEvent, ring: () => ring, readHistory, tokenOf, lanAddresses, urlOf, ops, handle, decodeImage, mediaBytesOf, sniffMime, installCloudflared, apkInfo, apkOffer, apkFile, cfPolicy: { version: CF_VERSION, size: CF_SIZE, sha256: CF_SHA256, base: CF_BASE, mirrors: CF_MIRRORS } }
   },
 }
 
