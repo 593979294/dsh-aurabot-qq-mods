@@ -108,7 +108,7 @@ test('配置：总开关默认关；只剩 4 项权限且默认仅主人；1.0.x
 
 /** 假的抖音网页：记下每次点赞 / 评论落在哪个视频上。 */
 function fakeSite({ feed = [], loggedIn = true, verify = '', likeError = null, commentError = null, liked = new Set(), mentionFails = false, shareFails = false, chat = [] } = {}) {
-  const calls = { ensure: 0, watch: [], like: [], comment: [], share: [], feed: 0, dms: 0, dm: [] }
+  const calls = { ensure: 0, watch: [], like: [], comment: [], share: [], feed: 0, dms: 0, dm: [], dmUid: '', dmSecUid: '', dmFail: 0, dmUncertain: 0 }
   return {
     calls,
     ensure: async () => { calls.ensure++; return { ok: true } },
@@ -136,6 +136,12 @@ function fakeSite({ feed = [], loggedIn = true, verify = '', likeError = null, c
     },
     dms: async (uid) => { calls.dms++; calls.dmUid = uid; return chat.slice() },
     sendDm: async (text) => { if (calls.dmFail > 0) { calls.dmFail--; throw new Error('私信输入框点不进去') } calls.dm.push(text); return { ok: true } },
+    dm: async (uid, text, opts = {}) => {
+      calls.dmUid = uid; calls.dmSecUid = opts.secUid || ''
+      if (calls.dmUncertain > 0) { calls.dmUncertain--; throw Object.assign(new Error('私信发送状态不确定'), { code: 'dm_uncertain' }) }
+      calls.dm.push(text)
+      return { ok: true }
+    },
     loginStart: async () => ({ ok: true, loggedIn: false, shot: 'data:image/png;base64,QR' }),
     loginPoll: async () => ({ ok: true, loggedIn: true, me: { secUid: 'MS4wSELF', nickname: '她的小号' } }),
     show: async () => {},
@@ -144,7 +150,7 @@ function fakeSite({ feed = [], loggedIn = true, verify = '', likeError = null, c
 }
 
 let n = 0
-function setup({ decisions = [], cfgOver = {}, douyinOver = {}, siteOpts = {}, now, onWait = () => {}, owner, turn, proactive } = {}) {
+function setup({ decisions = [], cfgOver = {}, douyinOver = {}, siteOpts = {}, settingsOver = {}, now, onWait = () => {}, owner, turn, proactive } = {}) {
   process.env.AURABOT_DATA_DIR = mkdtempSync(join(tmpdir(), 'aurabot-douyin-' + n++ + '-'))
   const sent = []
   const events = []
@@ -163,7 +169,8 @@ function setup({ decisions = [], cfgOver = {}, douyinOver = {}, siteOpts = {}, n
   const submitted = []
   // 传了 proactive 就装一个假治理面（旧主仓没有这一层时不传，走降级路径）
   const face = proactive ? { submit: async (args) => { submitted.push(args); return proactive(args) } } : undefined
-  const dy = duty.createDouyin({ getConfig: () => cfg, setOwner: (o) => { owners.push(o); cfg.douyin.owner = o }, hub, memory, log: { info() {}, warn() {}, debug() {} }, site: fs, wait: async (ms) => { waits.push(ms); onWait(ms) }, ...(face ? { proactive: face } : {}), ...(now ? { now } : {}) })
+  const settings = { ...settingsOver }
+  const dy = duty.createDouyin({ getConfig: () => cfg, getSettings: () => settings, setOwner: (o) => { owners.push(o); cfg.douyin.owner = o }, hub, memory, log: { info() {}, warn() {}, debug() {} }, site: fs, wait: async (ms) => { waits.push(ms); onWait(ms) }, ...(face ? { proactive: face } : {}), ...(now ? { now } : {}) })
   return { dy, fs, hub, memory, sent, events, prompts, cfg, waits, owners, pushed, submitted }
 }
 
@@ -375,6 +382,7 @@ test('分享给主人：默认在抖音里私信分享（按 sec_uid 认人）�
   const dy = setup({ owner: OWNER, decisions })
   await dy.dy.run({ force: true })
   assert.deepEqual(dy.fs.calls.share, [['7000000000000000001', 'MS4wOWNER', '主人的新昵称']])
+  assert.deepEqual(dy.fs.calls.dm, [], '默认只发卡片，不带话（老用户行为不变）')
   assert.deepEqual(dy.sent, [], '抖音发成了就不再发 QQ')
   assert.deepEqual(dy.dy.state().history.find((x) => x.kind === 'share').via, ['douyin'])
   assert.equal(dy.dy.state().share, 1)
@@ -403,6 +411,67 @@ test('分享给主人：默认在抖音里私信分享（按 sec_uid 认人）�
   const dry = setup({ owner: OWNER, decisions, cfgOver: { dryRun: true } })
   await dry.dy.run({ force: true })
   assert.equal(dry.fs.calls.share.length, 0, '试运行不真分享')
+})
+
+test('分享到抖音私信：面板打开「卡片后补一句」后，按核对的 uid 再发一句她的话', async () => {
+  const { dy, fs } = setup({
+    owner: OWNER,
+    decisions: [{ i: 1, share: '这个颜色我服' }],
+    settingsOver: { shareDmText: true, shareDmTextChance: 1 },
+  })
+  await dy.run({ force: true })
+  assert.deepEqual(fs.calls.share, [['7000000000000000001', 'MS4wOWNER', '主人的新昵称']])
+  assert.deepEqual(fs.calls.dm, ['这个颜色我服'], '卡片发成功后补一句')
+  assert.equal(fs.calls.dmUid, '4182', '按核对过的主人 uid 打开会话，不发给当前碰巧打开的人')
+  assert.equal(fs.calls.dmSecUid, 'MS4wOWNER')
+  const item = dy.state().history.find((x) => x.kind === 'share-text')
+  assert.equal(item.text, '这个颜色我服')
+})
+
+test('分享到抖音私信：带话概率 0 时只发卡片；面板没开时也不发', async () => {
+  const zero = setup({ owner: OWNER, decisions: [{ i: 1, share: '这句不发' }], settingsOver: { shareDmText: true, shareDmTextChance: 0 } })
+  await zero.dy.run({ force: true })
+  assert.equal(zero.fs.calls.share.length, 1)
+  assert.deepEqual(zero.fs.calls.dm, [])
+
+  const off = setup({ owner: OWNER, decisions: [{ i: 1, share: '这句也不发' }] })
+  await off.dy.run({ force: true })
+  assert.equal(off.fs.calls.share.length, 1)
+  assert.deepEqual(off.fs.calls.dm, [])
+})
+
+test('分享到抖音私信：补的话发送状态不确定时默认不重试（避免重复）', async () => {
+  const { dy, fs } = setup({
+    owner: OWNER,
+    decisions: [{ i: 1, share: '在吗' }],
+    settingsOver: { shareDmText: true, shareDmTextChance: 1 },
+  })
+  fs.calls.dmUncertain = 5
+  const r = await dy.run({ force: true })
+  assert.equal(r.ok, true, '卡片已经分享成功，补话失败不影响整次分享')
+  assert.equal(fs.calls.dm.length, 0)
+  assert.equal(fs.calls.dmUncertain, 4, '默认只尝试一次，不重试')
+  const error = dy.state().history.find((x) => x.kind === 'error' && /补的话/.test(x.text))
+  assert.match(error.text, /不确定.*不重试/)
+})
+
+test('分享到抖音私信：面板明确打开「不确定时重试」才重试一次', async () => {
+  const { dy, fs } = setup({
+    owner: OWNER,
+    decisions: [{ i: 1, share: '在吗' }],
+    settingsOver: { shareDmText: true, shareDmTextChance: 1, shareDmTextRetry: true },
+  })
+  fs.calls.dmUncertain = 1
+  await dy.run({ force: true })
+  assert.deepEqual(fs.calls.dm, ['在吗'], '第一次不确定，重试后成功')
+  const item = dy.state().history.find((x) => x.kind === 'share-text')
+  assert.equal(item.retried, true)
+})
+
+test('site.dm：没 uid 或空内容在开浏览器之前就拒绝', async () => {
+  const s = site.createSite({ browser: {}, log: { info() {}, warn() {}, debug() {} } })
+  await assert.rejects(() => s.dm('', '你好'), /没有核对过|要发给谁/)
+  await assert.rejects(() => s.dm('4182', '   '), /空的/)
 })
 
 const until = async (fn, ms = 2000) => { const end = Date.now() + ms; while (!fn() && Date.now() < end) await new Promise((r) => setTimeout(r, 10)); return fn() }

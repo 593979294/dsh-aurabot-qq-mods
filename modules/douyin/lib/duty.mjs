@@ -9,6 +9,7 @@ const { permOf } = __lib('chat/access.js')
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createBrowser } from './browser.mjs'
 import { createSite, findAwemeId, resolveShort, digestOf, videoLink } from './site.mjs'
+import { normalizeShareTextOptions } from './share-settings.mjs'
 
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 const between = (lo, hi) => Math.floor(lo + Math.random() * (Math.max(lo, hi) - lo + 1))
@@ -37,8 +38,10 @@ const emptyState = () => ({
   dmSeen: [], dmInit: false, lastDmCheck: 0, // 主人抖音私信：看过的消息 id；第一次看时旧消息只记下不回
 })
 
-export function createDouyin({ getConfig, setOwner, hub, memory, log, site: injected, browser: injectedBrowser, proactive, now = Date.now, wait } = {}) {
+export function createDouyin({ getConfig, getSettings, setOwner, hub, memory, log, site: injected, browser: injectedBrowser, proactive, now = Date.now, wait } = {}) {
   const cfg = () => getConfig().douyin
+  // 模块自己的设置（config.ext.douyin）：面板自动表单存的就是这里。旧宿主没有 api.settings 时返回默认值。
+  const shareTextOptions = () => normalizeShareTextOptions(getSettings?.() || {})
   const sleep = wait || ((ms) => new Promise((r) => setTimeout(r, ms)))
   const source = new AsyncLocalStorage()
   const browser = injectedBrowser || (injected ? null : createBrowser({ profileDir: dataDir('douyin', 'edge-profile'), browserPath: () => cfg().browserPath, log, now, useEgo: () => getConfig().browser?.useDshSidebar === true }))
@@ -213,6 +216,49 @@ export function createDouyin({ getConfig, setOwner, hub, memory, log, site: inje
   }
 
   /**
+   * 卡片分享成功后，按面板设置决定要不要再跟一句她自己的话。
+   * 单独抽出来：这句话发不出去只记一笔，不影响「视频卡片已经分享成功」；
+   * 状态不确定（dm_uncertain）默认不重试，因为消息可能已经发出去了，重试会重复。
+   */
+  async function sendShareText(s, v, text, who) {
+    const o = shareTextOptions()
+    if (!o.shareDmText) return { ok: false, skipped: 'off' }
+    const say = clip(text, 300)
+    if (!say || isSilence(say)) return { ok: false, skipped: 'empty' }
+    if (!who?.uid) {
+      log.warn('分享卡片后想补一句话，但没有核对过的主人 uid，跳过')
+      return { ok: false, skipped: 'no-uid' }
+    }
+    if (Math.random() >= o.shareDmTextChance) return { ok: false, skipped: 'chance' }
+    if (getConfig().dryRun) {
+      log.info(`试运行：本来要在抖音私信里补一句：${say}`)
+      return { ok: true, dryRun: true }
+    }
+    const send = () => site.dm(who.uid, say, { secUid: who.secUid })
+    try {
+      await send()
+      record(s, { kind: 'share-text', awemeId: v.awemeId, title: v.title, author: v.author, text: say })
+      return { ok: true }
+    } catch (error) {
+      let last = error
+      if (last.code === 'dm_uncertain' && o.shareDmTextRetry) {
+        log.warn('分享卡片后的那句话发送状态不确定，按面板设置再试一次：', last.message)
+        try {
+          await send()
+          record(s, { kind: 'share-text', awemeId: v.awemeId, title: v.title, author: v.author, text: say, retried: true })
+          return { ok: true, retried: true }
+        } catch (second) {
+          last = second
+        }
+      }
+      const why = last.code === 'dm_uncertain' && !o.shareDmTextRetry ? '发送状态不确定，按设置不重试（避免重复）' : last.message
+      log.warn('分享卡片后补的那句话没发出去：', why)
+      record(s, { kind: 'error', awemeId: v.awemeId, title: v.title, author: v.author, text: `卡片已分享，但补的话没发出去：${why}` })
+      return { ok: false, message: why, uncertain: last.code === 'dm_uncertain' }
+    }
+  }
+
+  /**
    * 把视频分享给主人：按面板设置在抖音里私信分享（视频卡片）、在 QQ 私聊发（她的话 + 链接），或两边都发。
    * 抖音那边没核对主人 / 发不出去时改发 QQ，免得白看。返回 { ok, via: ['douyin', 'qq'] }。
    */
@@ -233,10 +279,12 @@ export function createDouyin({ getConfig, setOwner, hub, memory, log, site: inje
         try {
           const who = await ownerMention()
           // 抖音站内私信是浏览器页面里的站内动作（不是 QQ 出站消息），不在出站治理范围，行为保持原样。
-          await site.share(v.awemeId, { secUid: who.secUid, nickname: who.nickname })
+          const card = await site.share(v.awemeId, { secUid: who.secUid, nickname: who.nickname })
           s.lastWriteAt = now()
           s.sharedDy = [...s.sharedDy, v.awemeId].slice(-300)
           via.push('douyin')
+          // 卡片真的发出去了才补话；already = 这个视频之前就分享过，不再重复补。
+          if (!card?.already) await sendShareText(s, v, text, who)
         } catch (error) {
           log.warn('抖音里分享给主人失败：', error.message)
           record(s, { kind: 'error', awemeId: v.awemeId, title: v.title, author: v.author, text: `抖音里分享没成功：${error.message}${g.ownerQQ ? '，改发 QQ' : ''}` })
