@@ -132,6 +132,8 @@ body.dark .glass { background: color-mix(in srgb, var(--surface) 78%, transparen
   display: grid; place-items: center;
 }
 .icon-btn:active { transform: scale(.94); }
+/* http 地址下浏览器不给录音：按钮淡下去，别装作能按（点它会说明原因和出路） */
+.icon-btn.mic-off { opacity: .4; }
 
 /* ---------- 聊天 ---------- */
 .chat-list {

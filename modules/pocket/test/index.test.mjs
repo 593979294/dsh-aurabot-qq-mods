@@ -712,3 +712,14 @@ test('换了隧道域名：从新链接打开就自动认新地址（不再死�
   // 显式带 host 的链接（面板「复制配对链接」）优先级更高，不能被覆盖
   assert.ok(src.indexOf('if (host) {') < src.indexOf('adoptUrlHost()'), '显式 host 必须先处理')
 })
+
+test('http 地址下录音按钮要说清原因，别拿「检查权限」把人带偏', () => {
+  const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8')
+  const src = read('assets/app/app.js')
+  // 非安全上下文里 navigator.mediaDevices 直接不存在 —— 不是权限问题，授权也永远拿不到
+  assert.match(src, /const WEB_MIC_OK = typeof navigator\.mediaDevices\?\.getUserMedia === 'function'/)
+  assert.match(src, /const MIC_NEEDS_HTTPS = !NATIVE_MIC && !WEB_MIC_OK/)
+  assert.match(src, /这个地址是 http，浏览器不给录音权限/)
+  // 按钮本身要有可见状态，不能装作能按
+  assert.match(read('assets/app/app.css'), /\.mic-off\s*\{[\s\S]*?opacity/)
+})

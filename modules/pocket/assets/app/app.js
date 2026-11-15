@@ -810,6 +810,10 @@ let rec = null
 // 装在手机里时，网页跑在 http://192.168.x.x 这种非安全上下文上，没有 getUserMedia，
 // 所以优先用安卓壳里的原生录音（PocketMic），浏览器里再回退到 MediaRecorder。
 const NATIVE_MIC = !!(window.PocketMic && typeof window.PocketMic.start === 'function')
+// http:// 属于非安全上下文，浏览器直接不给 navigator.mediaDevices（不是权限问题，
+// 也永远授权不了）。以前这里会掉进 catch 提示「检查权限」，把人往系统设置里带偏。
+const WEB_MIC_OK = typeof navigator.mediaDevices?.getUserMedia === 'function'
+const MIC_NEEDS_HTTPS = !NATIVE_MIC && !WEB_MIC_OK
 
 function nativeMicStart() {
   let onDone = null
@@ -844,6 +848,15 @@ function b64ToBuf(b64) {
 
 async function startRec() {
   if (S.recording || rec) return
+  if (MIC_NEEDS_HTTPS) {
+    // 说清楚是「地址不够安全」，并直接给出路：换 https 地址，或装 App（壳里有原生录音桥）
+    addSysToast(
+      location.protocol === 'http:'
+        ? '这个地址是 http，浏览器不给录音权限（不是手机设置的问题）。换成 https 地址打开，或者装上口袋 App —— 它用手机自带的录音，不挑地址。'
+        : '这个浏览器不支持录音',
+    )
+    return
+  }
   if (NATIVE_MIC) {
     const h = nativeMicStart()
     if (h.error) {
@@ -1474,6 +1487,12 @@ async function boot() {
   $('#btn-avatar-reset').onclick = resetAvatar
   $('#avatar-file').addEventListener('change', onAvatarPicked)
   const mic = $('#chat-mic')
+  // 按下去注定没反应就别装作能按：淡一点 + 说清原因
+  if (MIC_NEEDS_HTTPS) {
+    mic.classList.add('mic-off')
+    mic.title = '这个 http 地址不能录音：换 https 地址打开，或装口袋 App'
+    mic.setAttribute('aria-label', '这个地址不支持录音')
+  }
   mic.addEventListener('pointerdown', (e) => {
     e.preventDefault()
     try { mic.setPointerCapture(e.pointerId) } catch {}
