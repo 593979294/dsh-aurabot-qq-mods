@@ -9,12 +9,13 @@ import { makeApi, PNG_1PX } from './helpers.mjs'
 
 test('元信息：id / 版本 / 面板 / 设置项很少', () => {
   assert.equal(plugin.id, 'wardrobe')
-  assert.equal(plugin.version, '1.1.0')
+  assert.equal(plugin.version, '1.2.0')
   assert.equal(plugin.api, 1)
   assert.equal(plugin.panel, 'panel.js')
   const keys = plugin.settings.map((s) => s.key)
   assert.ok(keys.includes('enabled'))
   assert.ok(keys.includes('autoDress'), '自动换装开关')
+  assert.ok(keys.includes('autoTag'), '新衣服自动打标开关')
   assert.ok(keys.includes('visionModel'))
   assert.ok(!keys.includes('base'), '基础外观描述在面板里改，不该占设置项')
   assert.ok(!keys.includes('style'))
@@ -326,4 +327,89 @@ test('persona 注入：自动换装后带场景背景句（标注不进画稿）
   const manual = await env.runHook('persona', '【人格】')
   assert.ok(manual.includes('穿着：主人的选择'))
   assert.ok(!manual.includes('已经换上睡衣'))
+})
+
+// ---------- 场景打标：她自己标 + 一键标（v1.2.0） ----------
+
+// 打标请求的假模型：按 desc 关键词给场景，顺便记下请求次数
+const tagger = (map) => (o) => {
+  if (!String(o.system || '').includes('场景标签')) return '深藏青毛衣配深灰阔腿裤'
+  const lines = String(o.text || '').split('\n').filter(Boolean)
+  const out = lines.map((l) => {
+    const [id, name = '', desc = ''] = l.split('｜')
+    const key = Object.keys(map).find((k) => (name + desc).includes(k))
+    return { id, scenes: key ? map[key] : [] }
+  })
+  return '```json\n' + JSON.stringify(out) + '\n```'
+}
+
+test('一键标场景：只标没标过的，非法场景过滤，已标的不覆盖', async (t) => {
+  // 先关掉加衣服时自动打标，保证进批量时都是「没标过」的
+  const env = makeApi({
+    settings: { autoTag: false },
+    ask: tagger({ 睡裙: ['sleep'], 卫衣: ['home', 'lazy'], 风衣: ['out', 'bogus'] }),
+  })
+  t.after(env.cleanup)
+  const a = await env.call('/add', { name: '蓝色睡裙', desc: '棉质睡裙', scenes: ['sleep'] }) // 手动标过
+  const b = await env.call('/add', { name: '灰色卫衣', desc: '宽松卫衣', scenes: [] })
+  const c = await env.call('/add', { name: '米色风衣', desc: '长款风衣', scenes: [] })
+  const r = await env.call('/scenes/auto', {})
+  assert.equal(r.ok, true)
+  assert.ok(r.total >= 2, '只处理没标过的（池子里还有种子那件女仆装）')
+  const list = await env.call('/list')
+  const of = (id) => list.items.find((x) => x.id === id)
+  assert.deepEqual(of(a.item.id).scenes, ['sleep'], '手动标过的不动')
+  assert.deepEqual(of(b.item.id).scenes, ['home', 'lazy'])
+  assert.deepEqual(of(c.item.id).scenes, ['out'], 'bogus 被过滤')
+})
+
+test('一键标场景：模型没给出结果就报失败、不改数据', async (t) => {
+  const env = makeApi({ settings: { autoTag: false }, ask: () => '我判断不了' })
+  t.after(env.cleanup)
+  await env.call('/add', { name: '某件', desc: '不知道什么衣服', scenes: [] })
+  const r = await env.call('/scenes/auto', {})
+  assert.equal(r.ok, false)
+  assert.match(r.message, /再试/)
+})
+
+test('新衣服自动打标：加进来就带场景；关掉开关就不问模型', async (t) => {
+  const env = makeApi({ ask: tagger({ 睡裙: ['sleep'] }) })
+  t.after(env.cleanup)
+  const r = await env.call('/add', { name: '睡裙', desc: '白色棉质睡裙', scenes: [] })
+  assert.deepEqual(r.item.scenes, ['sleep'])
+
+  const env2 = makeApi({ settings: { autoTag: false }, ask: tagger({ 睡裙: ['sleep'] }) })
+  t.after(env2.cleanup)
+  const r2 = await env2.call('/add', { name: '睡裙2', desc: '白色棉质睡裙', scenes: [] })
+  assert.deepEqual(r2.item.scenes, [])
+  const tagCalls = env2.asked.filter((o) => String(o.system || '').includes('场景标签'))
+  assert.equal(tagCalls.length, 0, '关掉自动打标就不该问模型')
+})
+
+test('她自己用的工具 wardrobe_tag：auto 批量 / one 按名字标', async (t) => {
+  const env = makeApi({ settings: { autoTag: false }, ask: tagger({ 睡裙: ['sleep'], 卫衣: ['home'] }) })
+  t.after(env.cleanup)
+  const a = await env.call('/add', { name: '睡裙', desc: '棉质睡裙', scenes: [] })
+  const b = await env.call('/add', { name: '卫衣', desc: '灰色卫衣', scenes: [] })
+  const tg = env.tool('wardrobe_tag')
+  assert.ok(tg && tg.name === 'wardrobe_tag', '工具挂上了')
+
+  // one：按名字（几个字就行）标一件，中文场景名
+  const r1 = await tg.execute({ action: 'one', name: '睡裙', scenes: '睡衣,日常居家' })
+  assert.equal(r1.ok, true)
+  assert.match(r1.message, /睡裙/)
+  let list = await env.call('/list')
+  assert.deepEqual(list.items.find((x) => x.id === a.item.id).scenes, ['sleep', 'home'])
+
+  // one：场景写错要拒绝并给出可选范围
+  const bad = await tg.execute({ action: 'one', name: '睡裙', scenes: '随便穿' })
+  assert.equal(bad.ok, false)
+  assert.match(bad.message, /上学上班/)
+
+  // auto：把剩下没标的都标一遍
+  const r2 = await tg.execute({ action: 'auto' })
+  assert.equal(r2.ok, true)
+  list = await env.call('/list')
+  assert.deepEqual(list.items.find((x) => x.id === b.item.id).scenes, ['home'], '批量把她加的那件标上了')
+  assert.deepEqual(list.items.find((x) => x.id === a.item.id).scenes, ['sleep', 'home'], '已标的不被批量覆盖')
 })

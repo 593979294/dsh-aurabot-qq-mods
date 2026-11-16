@@ -219,6 +219,15 @@ return function WardrobePage({ toast }) {
     toast && toast('已更新')
   }
   const delItem = async (id) => { await post('/del', { id }); await load() }
+  const tagAll = async () => {
+    setBusy(true)
+    try {
+      const r = await post('/scenes/auto', {})
+      if (r.ok === false) { toast && toast(r.message || '没标成'); return }
+      await load()
+      toast && toast(r.message || ('标好了 ' + r.tagged + ' 件'))
+    } finally { setBusy(false) }
+  }
   const clearAll = async () => {
     if (!window.confirm('删掉衣柜里的所有衣服？图片也会一起删。')) return
     await post('/clear', {})
@@ -361,6 +370,7 @@ return function WardrobePage({ toast }) {
       right: h('div', { style: { display: 'flex', gap: 14, alignItems: 'center' } },
         h('span', { className: 'ab-muted', style: { fontSize: 11 } }, '图大小'),
         h('input', { type: 'range', min: 80, max: 220, step: 10, value: thumbW, onChange: (e) => setThumbW(Number(e.target.value)) }),
+        h(ui.Btn, { small: true, kind: 'ghost', disabled: busy, onClick: tagAll }, busy ? '标着…' : '一键标场景'),
         h(ui.Btn, { small: true, kind: 'ghost', onClick: clearAll }, '清空衣柜')),
     },
     data.items.length

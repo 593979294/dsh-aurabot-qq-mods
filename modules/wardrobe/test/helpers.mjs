@@ -14,6 +14,8 @@ export function makeApi (opts = {}) {
   const routes = new Map()
   const hooks = new Map()
   const timers = []
+  const tools = []
+  const asked = []
   const settings = { ...(opts.settings || {}) }
   const drawn = []
   const config = {
@@ -43,7 +45,13 @@ export function makeApi (opts = {}) {
     route: (p, fn) => { routes.set(p, fn); return () => {} },
     every: (ms, fn, name) => { timers.push({ ms, fn, name: name || '' }); return () => {} },
     later: (ms, fn) => { timers.push({ ms, fn, name: '' }); return () => {} },
-    ask: async () => opts.caption || '深藏青毛衣配深灰阔腿裤',
+    tool: (fn) => { for (const t of fn() || []) if (t) tools.push(t); return () => {} },
+    defineTool: (def) => def,
+    ask: async (o) => {
+      asked.push(o)
+      if (typeof opts.ask === 'function') return await opts.ask(o)
+      return opts.caption || '深藏青毛衣配深灰阔腿裤'
+    },
     core: { http: { body: async (req) => req.__body || {}, query: (req) => req.__query || {} } },
   }
 
@@ -63,9 +71,10 @@ export function makeApi (opts = {}) {
     if (!fn) throw new Error('没有这个路由：' + path)
     return await fn({ __body: body, __query: query || {} }, res)
   }
+  const tool = (name) => tools.find((t) => t.name === name)
 
   return {
-    api, mod, hooks, routes, settings, config, drawn, dir, call, runHook, res, timers,
+    api, mod, hooks, routes, settings, config, drawn, dir, call, runHook, res, timers, tools, asked, tool,
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
   }
 }

@@ -59,18 +59,19 @@ const extOf = (mime) => (mime === 'image/jpeg' ? 'jpg' : mime === 'image/webp' ?
 export default {
   id: 'wardrobe',
   name: '衣柜',
-  version: '1.1.0',
+  version: '1.2.0',
   api: 1,
   description: '她的衣服：参考图 + 文字描述；手动挑或跟作息自动换装（场景标签），按姿势生成预览图',
   panel: 'panel.js',
   settings: [
     { key: 'enabled', label: '启用', type: 'switch' },
     { key: 'autoDress', label: '跟作息自动换装', type: 'switch' },
+    { key: 'autoTag', label: '新衣服自动打场景标', type: 'switch' },
     { key: 'visionModel', label: '看图模型', type: 'text', hint: '留空 = 用当前聊天模型（能看图就行）；也可以填 provider/model 强制指定，比如 deepseek-official/deepseek-flash' },
   ],
 
   setup(api) {
-    const cfg = () => ({ enabled: true, autoDress: true, visionModel: '', ...(api.settings() || {}) })
+    const cfg = () => ({ enabled: true, autoDress: true, autoTag: true, visionModel: '', ...(api.settings() || {}) })
     const dir = () => api.dataDir()
     const file = () => join(dir(), 'wardrobe.json')
     const imgDir = () => join(dir(), 'images')
@@ -217,18 +218,29 @@ export default {
         try { text = await caption(b64, mediaType) } catch (error) { text = '' }
       }
       const s = load()
+      const given = Array.isArray(scenes) ? scenes.map(String).filter((x) => SCENES.includes(x)) : []
       s.items.push({
         id,
         name: String(name || '').trim() || (KIND_NAME[kind] || '整套'),
         kind: 'set',
         desc: text.slice(0, 500),
-        scenes: Array.isArray(scenes) ? scenes.map(String).filter((x) => SCENES.includes(x)) : [],
+        scenes: given,
         image: fname,
         mediaType,
         createdAt: Date.now(),
       })
       save(s)
-      return { ok: true, item: s.items[s.items.length - 1], captioned: Boolean(text) }
+      const item = s.items[s.items.length - 1]
+      // 没手动指定场景：她自己顺手标一下（失败/关掉就当没标，绝不影响存衣服）
+      if (!given.length) {
+        const auto = await autoTagOne(item)
+        if (auto.length) {
+          const s2 = load()
+          const it2 = itemOf(item.id, s2)
+          if (it2) { it2.scenes = auto; item.scenes = auto; save(s2) }
+        }
+      }
+      return { ok: true, item, captioned: Boolean(text) }
     }
 
     async function replaceImage({ id, image }) {
@@ -344,6 +356,75 @@ export default {
       return { ok: true, scene, name: SCENE_NAME[scene], item: { id: it.id, name: it.name } }
     }
 
+    // ---------- 场景打标：她自己标 + 一键批量标 ----------
+    // 把一批衣服交给模型判场景。分批（15 件一请求）省 token，也让单次失败只影响一批。
+    const TAG_BATCH = 15
+    const TAG_SYSTEM = `你在整理衣柜，给每件衣服打「什么时候穿」的场景标签。可选场景（只能用这些 key）：
+- out：上学/上班、通勤时穿的，能见人的日常外出装
+- fun：出门玩、逛街、约会、聚会穿的
+- home：下班/放学回到家之后日常穿的家居服
+- lazy：休息日宅在家，宽松随意的那种
+- sleep：睡衣、睡裙、睡觉穿的
+每件挑 1-2 个最贴切的；实在判断不了就给空数组。只输出 JSON 数组，不要解释、不要代码块：
+[{"id":"w_abc","scenes":["home"]}]`
+
+    async function classifyScenes(list) {
+      const out = new Map()
+      for (let i = 0; i < list.length; i += TAG_BATCH) {
+        const chunk = list.slice(i, i + TAG_BATCH)
+        const text = chunk.map((it) => `${it.id}｜${it.name || '未命名'}｜${String(it.desc || '').slice(0, 120)}`).join('\n')
+        let raw = ''
+        try {
+          raw = String(await api.ask({ system: TAG_SYSTEM, text, maxTokens: 60 * chunk.length + 200, temperature: 0 })).trim()
+        } catch (error) {
+          api.log.warn?.(`[wardrobe] 打标请求失败（第 ${i / TAG_BATCH + 1} 批）：${error.message}`)
+          continue
+        }
+        // 模型偶尔会包代码块或带前后废话：把 [ ... ] 抠出来
+        const m = raw.match(/\[[\s\S]*\]/)
+        if (!m) continue
+        let arr
+        try { arr = JSON.parse(m[0]) } catch (error) { continue }
+        for (const row of Array.isArray(arr) ? arr : []) {
+          const id = String((row && row.id) || '')
+          if (!chunk.some((it) => it.id === id)) continue
+          const scenes = (Array.isArray(row.scenes) ? row.scenes : []).map(String).filter((x) => SCENES.includes(x)).slice(0, 2)
+          out.set(id, scenes)
+        }
+      }
+      return out
+    }
+
+    // 一键标：默认只标「还没标过」的（不覆盖你手动标过的）。ids 指定就只标这些。
+    async function autoTag({ ids, force } = {}) {
+      const s = load()
+      const pick = (it) => (Array.isArray(ids) && ids.length ? ids.includes(it.id) : true)
+      const has = (it) => Array.isArray(it.scenes) && it.scenes.length
+      const pool = (s.items || []).filter((it) => pick(it) && (force || !has(it)))
+      if (!pool.length) return { ok: true, tagged: 0, total: 0, message: '没有需要标的衣服' }
+      const got = await classifyScenes(pool)
+      if (!got.size) return { ok: false, tagged: 0, total: pool.length, message: '模型这批没给出结果，稍后再试一次' }
+      // 重新读一遍再写，避免打标过程中面板又改了衣柜
+      const s2 = load()
+      let n = 0
+      for (const it of s2.items || []) {
+        if (!got.has(it.id)) continue
+        it.scenes = got.get(it.id)
+        if (it.scenes.length) n++
+      }
+      save(s2)
+      return { ok: true, tagged: n, total: pool.length, message: `标好了 ${n} 件（共看 ${pool.length} 件）` }
+    }
+
+    // 单件自动标：新衣服没有手动指定场景时顺手判一下（失败就当没标，不影响存衣服）
+    async function autoTagOne(item) {
+      if (cfg().autoTag === false) return []
+      try {
+        const got = await classifyScenes([item])
+        return got.get(item.id) || []
+      } catch (error) { return [] }
+    }
+
     // 定时对表：从作息模块拉当前处境，状态/场景变了就换。routine 没在跑就安静跳过。
     function syncDress() {
       if (!cfg().enabled || cfg().autoDress === false) return
@@ -396,6 +477,48 @@ export default {
       if (!block) return text
       return String(text || '') + '\n\n' + block
     })
+
+    // 给她的工具：自己给衣服打场景标签（聊天里说着话就能标，不用开面板）
+    const sceneKeyOf = (s) => {
+      const q = String(s || '').trim()
+      if (!q) return ''
+      if (SCENES.includes(q)) return q
+      const byName = SCENES.find((k) => SCENE_NAME[k] === q || SCENE_NAME[k].includes(q))
+      if (byName) return byName
+      if (/睡|pajama/i.test(q)) return 'sleep'
+      if (/宅|休|闲|懒/.test(q)) return 'lazy'
+      if (/居家|在家|家/.test(q)) return 'home'
+      if (/玩|逛|约|聚|出门/.test(q)) return 'fun'
+      if (/上班|上学|通勤|外出|公司|学校/.test(q)) return 'out'
+      return ''
+    }
+    api.tool(() => [
+      api.defineTool({
+        name: 'wardrobe_tag',
+        description: '给衣柜里的衣服打「什么时候穿」的场景标签，可选：上学上班、出门玩、日常居家、休息宅家、睡衣。主人让你整理衣柜、标一下衣服，或者聊到某件衣服适合什么场合时用。',
+        properties: {
+          action: { type: 'string', description: 'one = 按名字标一件（默认）；auto = 把还没标过的全部自动标一遍' },
+          name: { type: 'string', description: 'one 时必填：衣服的名字，几个字就行' },
+          scenes: { type: 'string', description: 'one 时填：场景名，多个用逗号分隔，比如「睡衣」或「日常居家,休息宅家」' },
+        },
+        execute: async ({ action = 'one', name, scenes } = {}) => {
+          if (String(action) === 'auto') {
+            const r = await autoTag({})
+            return r.ok ? { ok: true, message: r.message } : { ok: false, message: r.message }
+          }
+          const q = String(name || '').trim()
+          if (!q) return { ok: false, message: '要标哪件？说个名字。' }
+          const keys = String(scenes || '').split(/[,，、\s]+/).map(sceneKeyOf).filter(Boolean)
+          if (!keys.length) return { ok: false, message: `场景得是这几个之一：${SCENES.map((k) => SCENE_NAME[k]).join('、')}` }
+          const s = load()
+          const it = (s.items || []).find((x) => x.id === q) || (s.items || []).find((x) => String(x.name || '').includes(q))
+          if (!it) return { ok: false, message: `衣柜里没找到「${q}」。` }
+          it.scenes = [...new Set(keys)].slice(0, 3)
+          save(s)
+          return { ok: true, message: `标好了：${it.name} → ${it.scenes.map((k) => SCENE_NAME[k]).join('、')}` }
+        },
+      }),
+    ])
     const sendImage = (res, buf, type) => {
       res.statusCode = 200
       res.setHeader?.('content-type', type || 'image/png')
@@ -534,6 +657,10 @@ export default {
       const b = await api.core.http.body(req)
       return addItem(b)
     })
+    api.route('/scenes/auto', async (req) => {
+      const b = await api.core.http.body(req)
+      return autoTag({ ids: Array.isArray(b.ids) ? b.ids.map(String) : null, force: Boolean(b.force) })
+    })
     api.route('/image/replace', async (req) => {
       const b = await api.core.http.body(req)
       return replaceImage(b || {})
@@ -598,6 +725,6 @@ export default {
     api.every(5 * 60 * 1000, () => { try { syncDress() } catch (error) { api.log.warn?.('[wardrobe] 自动换装出错：' + error.message) } }, 'auto-dress')
 
     // 给别的模块 / 测试用
-    return { autoDress: (scene) => autoDress(scene), sceneOf: (rt, now) => sceneOf(rt, now), syncDress }
+    return { autoDress: (scene) => autoDress(scene), sceneOf: (rt, now) => sceneOf(rt, now), autoTag, syncDress }
   },
 }
