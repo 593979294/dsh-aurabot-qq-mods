@@ -12,6 +12,19 @@ import { join } from 'node:path'
 const KINDS = ['set']
 const KIND_NAME = { set: '整套' }
 
+// 场景：给衣服打标签，作息模块（routine）的状态沿触发自动换装。一件衣服可标多个场景；
+// 没标任何场景的衣服永远不会被自动穿上（只能手动挑）。
+const SCENES = ['out', 'fun', 'home', 'lazy', 'sleep']
+const SCENE_NAME = { out: '上学上班', fun: '出门玩', home: '日常居家', lazy: '休息宅家', sleep: '睡衣' }
+// 自动换装后，persona 注入里补一句场景感描述（明确标注只作背景、不进画稿——教训来自开衫叠画）
+const SCENE_FLAVOR = {
+  out: '现在是上学/上班时段，这是出门在外的穿着',
+  fun: '现在出门在外玩，这是出门玩的穿着',
+  home: '现在是放学/下班在家的时段，这是居家穿着',
+  lazy: '现在是休息日，宅在家穿得随意',
+  sleep: '现在是睡觉时段，已经换上睡衣',
+}
+
 const POSES = {
   stand: { name: '站姿', text: '全身站姿，正面，双手自然垂下，看着镜头' },
   sit: { name: '坐姿', text: '坐在床边，双腿并拢，手放在膝盖上，看着镜头' },
@@ -46,17 +59,18 @@ const extOf = (mime) => (mime === 'image/jpeg' ? 'jpg' : mime === 'image/webp' ?
 export default {
   id: 'wardrobe',
   name: '衣柜',
-  version: '1.0.1',
+  version: '1.1.0',
   api: 1,
-  description: '她的衣服：参考图 + 文字描述；手动挑今天穿什么，按姿势生成预览图',
+  description: '她的衣服：参考图 + 文字描述；手动挑或跟作息自动换装（场景标签），按姿势生成预览图',
   panel: 'panel.js',
   settings: [
     { key: 'enabled', label: '启用', type: 'switch' },
+    { key: 'autoDress', label: '跟作息自动换装', type: 'switch' },
     { key: 'visionModel', label: '看图模型', type: 'text', hint: '留空 = 用当前聊天模型（能看图就行）；也可以填 provider/model 强制指定，比如 deepseek-official/deepseek-flash' },
   ],
 
   setup(api) {
-    const cfg = () => ({ enabled: true, visionModel: '', ...(api.settings() || {}) })
+    const cfg = () => ({ enabled: true, autoDress: true, visionModel: '', ...(api.settings() || {}) })
     const dir = () => api.dataDir()
     const file = () => join(dir(), 'wardrobe.json')
     const imgDir = () => join(dir(), 'images')
@@ -70,8 +84,13 @@ export default {
           today.set = today.top || today.bottom || today.outer || today.shoes || today.accessory
           delete today.top; delete today.bottom; delete today.outer; delete today.shoes; delete today.accessory
         }
-        return { items: Array.isArray(s.items) ? s.items : [], today, history: Array.isArray(s.history) ? s.history : [], base: String(s.base || ''), style: String(s.style || ''), makeups: Array.isArray(s.makeups) && s.makeups.length ? s.makeups : MAKEUP_PRESETS.map((m) => ({ ...m })), makeupId: String(s.makeupId || 'm_bare'), hairdos: Array.isArray(s.hairdos) && s.hairdos.length ? s.hairdos : HAIR_PRESETS.map((h) => ({ ...h })), hairdoId: String(s.hairdoId || 'h_long') }
-      } catch (error) { return { items: [], today: {}, history: [], base: '', style: '', makeups: MAKEUP_PRESETS.map((m) => ({ ...m })), makeupId: 'm_bare', hairdos: HAIR_PRESETS.map((h) => ({ ...h })), hairdoId: 'h_long' } }
+        // 旧版分件穿的 wear 数组：迁移成整套（取第一件）
+        if (!today.set && Array.isArray(today.wear) && today.wear.length) {
+          today.set = today.wear[0]
+        }
+        delete today.wear
+        return { items: Array.isArray(s.items) ? s.items : [], today, history: Array.isArray(s.history) ? s.history : [], base: String(s.base || ''), style: String(s.style || ''), manualDate: String(s.manualDate || ''), makeups: Array.isArray(s.makeups) && s.makeups.length ? s.makeups : MAKEUP_PRESETS.map((m) => ({ ...m })), makeupId: String(s.makeupId || 'm_bare'), hairdos: Array.isArray(s.hairdos) && s.hairdos.length ? s.hairdos : HAIR_PRESETS.map((h) => ({ ...h })), hairdoId: String(s.hairdoId || 'h_long') }
+      } catch (error) { return { items: [], today: {}, history: [], base: '', style: '', manualDate: '', makeups: MAKEUP_PRESETS.map((m) => ({ ...m })), makeupId: 'm_bare', hairdos: HAIR_PRESETS.map((h) => ({ ...h })), hairdoId: 'h_long' } }
     }
     const save = (s) => { mkdirSync(dir(), { recursive: true }); writeFileSync(file(), JSON.stringify(s, null, 2)) }
 
@@ -130,7 +149,10 @@ export default {
       const outfit = outfitText(s)
       if (outfit) look.push('穿着：' + outfit)
       if (!look.length) return ''
-      return '【当前的装扮】\n' + look.join('\n').replace(/。。/g, '。') + '\n画自己的时候，这段原样写进画面描述，别改写、别漏配饰。'
+      let flavor = ''
+      const scene = s.today && s.today.autoScene
+      if (SCENE_FLAVOR[scene]) flavor = `（背景补充：${SCENE_FLAVOR[scene]}。这句只是聊天背景，不要写进画面描述。）`
+      return '【当前的装扮】\n' + look.join('\n').replace(/。。/g, '。') + '\n画自己的时候，这段原样写进画面描述，别改写、别漏配饰。' + flavor
     }
     // 基础描述里如果还写着头发，会和发型维度打架：这里把它摘掉，头发交给发型管
     function baseOf(s = load()) {
@@ -177,7 +199,7 @@ export default {
       return String(await ask(null)).trim()
     }
 
-    async function addItem({ name, kind, image, desc }) {
+    async function addItem({ name, kind, image, desc, scenes }) {
       const b64 = String(image || '').replace(/^data:[^,]+,/, '')
       const typed = String(desc || '').trim()
       if (!b64 && !typed) return { ok: false, message: '给一张图，或者写一段描述' }
@@ -200,6 +222,7 @@ export default {
         name: String(name || '').trim() || (KIND_NAME[kind] || '整套'),
         kind: 'set',
         desc: text.slice(0, 500),
+        scenes: Array.isArray(scenes) ? scenes.map(String).filter((x) => SCENES.includes(x)) : [],
         image: fname,
         mediaType,
         createdAt: Date.now(),
@@ -225,12 +248,13 @@ export default {
       save(s)
       return { ok: true, item: it, outfit: outfitText(s) }
     }
-    function updateItem({ id, name, desc }) {
+    function updateItem({ id, name, desc, scenes }) {
       const s = load()
       const it = itemOf(String(id || ''), s)
       if (!it) return { ok: false, message: '没这件' }
       if (typeof name === 'string' && name.trim()) it.name = name.trim().slice(0, 20)
       if (typeof desc === 'string') it.desc = desc.trim().slice(0, 500)
+      if (Array.isArray(scenes)) it.scenes = scenes.map(String).filter((x) => SCENES.includes(x))
       save(s)
       return { ok: true, item: it, outfit: outfitText(s) }
     }
@@ -264,8 +288,69 @@ export default {
         if (!v) delete s.today[k]
         else if (itemOf(v, s)) s.today[k] = v
       }
+      // 手动挑的算主人意愿：标记今天，自动换装让路
+      delete s.today.autoScene
+      delete s.today.autoDate
+      s.manualDate = dayKeyLocal(Date.now())
       save(s)
       return { ok: true, today: s.today, outfit: outfitText(s) }
+    }
+
+    // ---------- 跟作息自动换装 ----------
+    function dayKeyLocal(t) {
+      const d = new Date(t)
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    }
+
+    // 作息状态 → 场景。rt 是 routine 模块的导出（stateAt）；没有就返回 null 不动。
+    // home 里分三种：休息/请假 → lazy；下班/放学到家 → home；还没出门、班间空档、下夜班补觉 → null（不折腾）
+    function sceneOf(rt, now = new Date()) {
+      if (!rt || typeof rt.stateAt !== 'function') return null
+      let res
+      try { res = rt.stateAt(now.getTime()) } catch (error) { return null }
+      if (!res) return null
+      if (res.state === 'sleep') return 'sleep'
+      if (res.state === 'work' || res.state === 'commute') {
+        // 她自己记的日程（src='self'）多半是出门玩，不是上学上班
+        return res.day && res.day.src === 'self' ? 'fun' : 'out'
+      }
+      if (res.state !== 'home') return null
+      const d = res.day
+      if (!d) return null
+      if (d.type === 'rest' || d.type === 'leave') return 'lazy'
+      const segs = Array.isArray(d.segments) ? d.segments : []
+      if (d.type === 'work' && segs.length) {
+        const mins = now.getHours() * 60 + now.getMinutes()
+        const last = segs[segs.length - 1]
+        const end = last[0] > last[1] ? 24 * 60 : last[1] // 跨午夜夜班段：早上的补觉时间不算「到家」
+        if (mins >= end) return 'home'
+      }
+      return null
+    }
+
+    // 换上某场景的衣服：手动优先 → 场景里随机挑一件（每次状态沿都随机，可能连着穿同一件）。
+    // 没标这个场景的衣服永远不会被自动穿上；挑中后写 today.set + 场景/日期。
+    function autoDress(scene) {
+      if (!SCENES.includes(scene)) return { ok: false, message: '没这个场景' }
+      const today = dayKeyLocal(Date.now())
+      const s = load()
+      if (s.manualDate === today) return { ok: false, skipped: 'manual', message: '今天主人手动挑过，自动换装让路' }
+      if (s.today && s.today.autoScene === scene && s.today.autoDate === today) return { ok: true, unchanged: true, scene }
+      const pool = (s.items || []).filter((it) => Array.isArray(it.scenes) && it.scenes.includes(scene))
+      if (!pool.length) return { ok: false, skipped: 'empty', message: `衣柜里没有标「${SCENE_NAME[scene]}」的衣服` }
+      const it = pool[Math.floor(Math.random() * pool.length)]
+      s.today = { set: it.id, autoScene: scene, autoDate: today }
+      save(s)
+      return { ok: true, scene, name: SCENE_NAME[scene], item: { id: it.id, name: it.name } }
+    }
+
+    // 定时对表：从作息模块拉当前处境，状态/场景变了就换。routine 没在跑就安静跳过。
+    function syncDress() {
+      if (!cfg().enabled || cfg().autoDress === false) return
+      const scene = sceneOf(api.use('routine'))
+      if (!scene) return
+      const r = autoDress(scene)
+      if (r.ok && !r.unchanged) api.log.info(`[wardrobe] 作息联动换装：${r.name} → ${r.item.name}`)
     }
 
     async function preview(poseKey) {
@@ -336,6 +421,8 @@ export default {
         makeupId: s.makeupId || 'm_bare',
         hairdos: (s.hairdos || HAIR_PRESETS).map((h) => ({ id: h.id, name: h.name, desc: cleanText(h.desc) })),
         hairdoId: s.hairdoId || 'h_long',
+        scenes: SCENES.map((k) => ({ key: k, name: SCENE_NAME[k] })),
+        autoDressOn: Boolean(s.today && s.today.autoScene),
         poses: Object.entries(POSES).map(([k, v]) => ({ key: k, name: v.name })),
       }
     })
@@ -505,5 +592,12 @@ export default {
       if (!it) return { ok: false, message: '没这件' }
       try { return sendImage(res, readFileSync(join(imgDir(), it.image)), it.mediaType) } catch (error) { return { ok: false, message: '图没了' } }
     })
+
+    // 作息联动：启动后先对一次表（routine 可能比衣柜晚加载），之后每 5 分钟一次
+    api.later(20 * 1000, () => { try { syncDress() } catch (error) { /* 启动期对方可能还没起来，下次对表再说 */ } })
+    api.every(5 * 60 * 1000, () => { try { syncDress() } catch (error) { api.log.warn?.('[wardrobe] 自动换装出错：' + error.message) } }, 'auto-dress')
+
+    // 给别的模块 / 测试用
+    return { autoDress: (scene) => autoDress(scene), sceneOf: (rt, now) => sceneOf(rt, now), syncDress }
   },
 }
