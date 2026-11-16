@@ -62,7 +62,7 @@ const LIVIN_ON = new Set(['rest', 'leave', 'home'])
 export default {
   id: 'routine',
   name: '作息',
-  version: '1.1.0',
+  version: '1.1.1',
   api: 1,
   category: 'desktop',
   tags: ['作息', '上下班', '生活', '职业'],
