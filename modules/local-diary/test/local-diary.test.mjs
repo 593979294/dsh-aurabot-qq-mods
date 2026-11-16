@@ -10,13 +10,8 @@ import { join } from 'node:path'
 
 import mod from '../index.mjs'
 
-const pad2 = (n) => String(n).padStart(2, '0')
-/** 跟模块里的 dayKey 一致（本地时区），别写死日期，否则过一天就跑挂。 */
-const todayKey = () => {
-  const d = new Date()
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
-}
-const DAY = todayKey()
+const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+const DAY = dayKey()
 const BODY = '今天在公园看锦鲤，红的一片挤过来。'
 
 /** 建一个临时根目录，用例结束自动删。 */
@@ -90,7 +85,7 @@ test('第一次写落一份 md，同一天再写往后编号，旧的不覆盖',
   assert.equal(existsSync(day1), true)
 
   const text = readFileSync(day1, 'utf8')
-  assert.match(text, new RegExp(`^---\\ndate: ${DAY}\\n`))
+  assert.match(text, new RegExp(`^---\ndate: ${DAY}\n`))
   assert.match(text, /mood: "心情不错"/)
   assert.match(text, /chats: 3/)
   assert.ok(text.includes(BODY), '正文应该原样落进文件')

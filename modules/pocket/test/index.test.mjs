@@ -1,7 +1,7 @@
 import { test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -236,6 +236,42 @@ test('app-info / app-download：默认走外链（不占机主上行），本机
   assert.equal(T.apkInfo().available, false)
   assert.equal(T.apkOffer().available, true)
   assert.equal(T.apkOffer().local, false)
+})
+
+test('未配对的手机也能问到安装包信息（/api/app-info 不校验密钥）', async () => {
+  // 新用户打开页面时手里还没有密钥，恰恰最需要下载包：这条信息必须公开。
+  // （以前它跟别的接口一样要 token，导致「没配对 → 拿不到 info → 整条下载提示收起」，新用户反而没入口）
+  rmSync(join(DATA_DIR, 'app'), { recursive: true, force: true })
+  rmSync(join(DATA_DIR, 'apk'), { recursive: true, force: true })
+  delete settingsState.appUrl
+  try {
+    const res = mockRes()
+    await T.handle(mockReq({ url: '/api/app-info' }), res) // 故意不带 token
+    assert.equal(res.code, 200)
+    const body = JSON.parse(res.chunks.join(''))
+    assert.equal(body.ok, true)
+    assert.equal(body.available, true)
+    assert.match(body.url, /^https:\/\/github\.com\/.+\/releases\/download\/.+\.apk$/)
+
+    // 真正发字节的下载仍然要密钥，别因为公开信息把包泄了
+    const dl = mockRes()
+    await T.handle(mockReq({ url: '/api/app-download' }), dl)
+    assert.equal(dl.code, 401)
+  } finally {
+    delete settingsState.appUrl
+  }
+})
+
+test('带 hidden 的元素必须真能藏住（否则下载条会变成点不动的僵尸）', () => {
+  const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8')
+  const css = read('assets/app/app.css')
+  // 回归现场：.appdl 自己有 display:flex，把浏览器默认的 [hidden]{display:none} 顶掉了，
+  // 于是「已经收起」的提示条一直显示，叉点了没反应、下载按钮 href 还没填。
+  assert.match(css, /\.appdl\s*\{[^}]*display:\s*flex/, '.appdl 仍是 flex 布局，正是需要全局兜底的场景')
+  assert.match(css, /\[hidden\]\s*\{[^}]*display:\s*none\s*!important/, 'app.css 缺全局 [hidden]{display:none !important} 兜底')
+  // HTML 里这条默认是收起的，靠 JS 判断后才亮
+  const html = read('assets/app/index.html')
+  assert.match(html, /<div id="appdl"[^>]*\bhidden\b/, '#appdl 应该默认 hidden')
 })
 
 test('apk 目录也认 + net-info 常显版本（面板不用翻日志就知道放了哪一版）', () => {
@@ -665,3 +701,61 @@ function mockRes() {
 function mockReq({ url = '/', headers = {}, method = 'GET' } = {}) {
   return { url, headers, method }
 }
+
+test('换了隧道域名：从新链接打开就自动认新地址（不再死磕手机里存的旧域名）', () => {
+  const src = readFileSync(new URL('../assets/app/app.js', import.meta.url), 'utf8')
+  // quick 隧道重建必换域名，而二维码退回的短链只带 token、不带 host：
+  // 不做这个自愈，页面能从新链接打开，但所有 /api 还在打早就 1033 的旧域名。
+  assert.match(src, /function adoptUrlHost\(/, '缺 adoptUrlHost：从新地址打开时不会自愈')
+  assert.match(src, /else\s*\{\s*adoptUrlHost\(\)\s*\}/, 'takeFromUrl 在没有显式 host 参数时必须调用 adoptUrlHost')
+  assert.match(src, /const origin = location\.origin/, '要用「页面是从哪个地址打开的」作为首选地址')
+  // 显式带 host 的链接（面板「复制配对链接」）优先级更高，不能被覆盖
+  assert.ok(src.indexOf('if (host) {') < src.indexOf('adoptUrlHost()'), '显式 host 必须先处理')
+})
+
+test('http 地址下录音按钮要说清原因，别拿「检查权限」把人带偏', () => {
+  const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8')
+  const src = read('assets/app/app.js')
+  // 非安全上下文里 navigator.mediaDevices 直接不存在 —— 不是权限问题，授权也永远拿不到
+  assert.match(src, /const WEB_MIC_OK = typeof navigator\.mediaDevices\?\.getUserMedia === 'function'/)
+  assert.match(src, /const MIC_NEEDS_HTTPS = !NATIVE_MIC && !WEB_MIC_OK/)
+  assert.match(src, /这个地址是 http，浏览器不给录音权限/)
+  // 按钮本身要有可见状态，不能装作能按
+  assert.match(read('assets/app/app.css'), /\.mic-off\s*\{[\s\S]*?opacity/)
+})
+
+test('新用户第一次按话筒：先引导「点允许再按一次」，不能显示「拿不到麦克风」', () => {
+  const src = readFileSync(new URL('../assets/app/app.js', import.meta.url), 'utf8')
+  // 壳在没授权时返回「还没给麦克风权限，我再问一次」——权限框正在弹，不是失败。
+  // 旧代码把它当 error 直接显示「拿不到麦克风」，新用户第一反应就是功能坏了。
+  assert.match(src, /const needPerm = \/权限\|permission\/i\.test\(r\)/, '要把「要权限」和「真失败」分开')
+  assert.match(src, /h\.needPerm\s*\n?\s*\?/, 'startRec 里要按 needPerm 走引导分支')
+  assert.match(src, /第一次用要先允许麦克风/, '要有「点允许再按一次」的引导文案')
+  assert.ok(
+    src.indexOf('第一次用要先允许麦克风') > src.indexOf('h.needPerm'),
+    '引导分支必须在「拿不到麦克风」之前生效',
+  )
+  // 浏览器侧：被拒（含 QQ/微信内核拦截）与设备缺失要分开说
+  assert.match(src, /NotAllowedError/, '要单独处理 NotAllowedError（内核拦截最常见）')
+  assert.match(src, /NotFoundError/, '要单独处理 NotFoundError')
+  // 原生录音没回音时不能静默：界面已恢复，用户会以为「按了没反应」
+  assert.match(src, /这条语音没录上：麦克风可能被别的应用占着/)
+})
+
+test('环境自检：四项状态 + 一句「能连到哪里」的结论（云电脑最容易缺 ffmpeg）', () => {
+  const e = routes['/env']()
+  assert.equal(e.ok, true)
+  assert.equal(typeof e.ffmpeg.ok, 'boolean', 'ffmpeg 要有明确状态')
+  assert.ok(e.ffmpeg.ok || e.ffmpeg.why, '缺 ffmpeg 要说清缺在哪')
+  assert.equal(typeof e.cloudflared.ok, 'boolean')
+  assert.equal(typeof e.tunnel.ok, 'boolean')
+  assert.equal(typeof e.token.ok, 'boolean')
+  assert.ok(['anywhere', 'lan', 'lan-only'].includes(e.reach), '给结论：任何网络 / 只同一 WiFi')
+  assert.match(e.dataDir, /modules-data/i, '暴露数据目录——云电脑还原盘据此提醒会丢配置')
+
+  const p = readFileSync(new URL('../panel.js', import.meta.url), 'utf8')
+  assert.match(p, /运行环境自检/, '面板要有这张卡片')
+  assert.match(p, /winget install Gyan\.FFmpeg/, '缺 ffmpeg 时给出装法')
+  assert.match(p, /关机还原/, '云电脑还原盘要提醒')
+  assert.ok(p.indexOf("call('/env')") > 0, '面板要单独异步拉自检，别拖慢首发')
+})

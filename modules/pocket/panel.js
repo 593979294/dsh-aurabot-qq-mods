@@ -97,6 +97,7 @@ function qrBox(text, px) {
 
 return function Panel({ settings, save, toast }) {
   const [net, setNet] = useState(null)
+  const [env, setEnv] = useState(null)
   const [tunBusy, setTunBusy] = useState(false)
   const [svcBusy, setSvcBusy] = useState(false)
   const [tnToken, setTnToken] = useState('')
@@ -107,6 +108,8 @@ return function Panel({ settings, save, toast }) {
 
   const reload = () => call('/net-info').then((r) => setNet(r || {})).catch(() => setNet({ ok: false }))
   useEffect(() => { reload() }, [])
+  // 自检单独拉：ffmpeg -version 要起一个进程，不拖慢面板首发
+  useEffect(() => { call('/env').then((r) => setEnv(r || {})).catch(() => setEnv({ ok: false })) }, [])
 
   const regen = async () => {
     const strong = 'pk_' + Array.from({ length: 3 }, () => Math.random().toString(36).slice(2, 12)).join('')
@@ -132,6 +135,14 @@ return function Panel({ settings, save, toast }) {
           : `服务端口 ${svc.listening || port}${svc.ipv4Only ? '（仅 IPv4）' : ''}`
   const tun = net?.tunnel || {}
   const apk = net?.apk || {}
+  const ev = env || {}
+  // 自检用的单行：状态符号 + 名字 + 一句「缺了会怎样」，缺什么直接说人话
+  const evRow = (state, label, detail) =>
+    h('li', { style: { margin: '0 0 2px' } },
+      h('b', { style: { color: state === 'ok' ? '#2e8b57' : state === 'bad' ? '#c0392b' : '#8a8f98' } },
+        state === 'ok' ? '✓ ' : state === 'bad' ? '× ' : '… '),
+      h('b', null, label),
+      detail ? h('span', { className: 'ab-muted' }, '：' + detail) : null)
   const tunnelOrigin = tun.running && tun.url ? tun.url.replace(/^https?:\/\//, '') : ''
   const tunnelPair = tunnelOrigin ? `https://${tunnelOrigin}` : ''
   // 配对优先给隧道地址（外面也能用）；没跑隧道就用局域网第一条
@@ -504,6 +515,62 @@ return function Panel({ settings, save, toast }) {
                   ? '固定域名：https://' + tun.host + '（已配置，未启动）'
                   : '已填 token，但还没填域名')
           : null,
+      ),
+
+      // ---- 运行环境自检：要把 App 交给别人（尤其云电脑）时，先看这四行 ----
+      h('div', {
+        style: {
+          marginTop: 14,
+          padding: '10px 12px',
+          borderRadius: 8,
+          border: '1px solid rgba(120,130,150,.22)',
+          background: 'rgba(120,130,150,.05)',
+        },
+      },
+        h('p', { className: 'ab-small', style: { margin: 0, fontWeight: 600 } },
+          '运行环境自检',
+          h('span', { className: 'ab-small ab-muted', style: { fontWeight: 400 } },
+            ' · 自己用可以忽略；要把 App 交给别人（尤其云电脑）先看这里')),
+        !env
+          ? h('p', { className: 'ab-small ab-muted', style: { margin: '6px 0 0' } }, '检测中…')
+          : env.ok === false
+            ? h('p', { className: 'ab-small', style: { margin: '6px 0 0', color: '#c0392b' } }, '自检没跑起来，刷新面板再看')
+            : h('ul', { className: 'ab-small', style: { margin: '6px 0 0', paddingLeft: 18, lineHeight: 1.9 } },
+                evRow(!net ? 'idle' : net.enabled && !svcDown ? 'ok' : 'bad', '手机接口', svcText),
+                evRow(ev.cloudflared?.ok ? 'ok' : 'bad', 'cloudflared（远程访问）',
+                  ev.cloudflared?.ok ? '已安装' : '没装 —— 只能同一 WiFi 连，出门连不上'),
+                evRow(ev.tunnel?.ok ? 'ok' : 'idle', '隧道',
+                  ev.tunnel?.ok
+                    ? (ev.tunnel.mode === 'named' ? '固定域名运行中' : '临时隧道运行中')
+                    : '没在跑 —— 手机只能用同一 WiFi'),
+                evRow(ev.ffmpeg?.ok ? 'ok' : 'bad', 'ffmpeg（语音转文字）',
+                  ev.ffmpeg?.ok ? '已安装' + (ev.ffmpeg.ver ? ' ' + ev.ffmpeg.ver : '') : '没找到 —— 发语音会失败，其他功能正常'),
+                evRow(ev.token?.ok ? 'ok' : 'bad', '配对密钥', ev.token?.ok ? '已设置' : '没设置，手机连不上'),
+              ),
+        env && env.ok !== false
+          ? h('p', { className: 'ab-small', style: { margin: '8px 0 0', fontWeight: 600 } },
+              ev.reach === 'anywhere'
+                ? '结论：手机用任何网络（流量 / 别人家 WiFi）都能连。'
+                : ev.cloudflared?.ok
+                  ? '结论：现在只有同一 WiFi 能连。要出门用，点上面「启动隧道」。'
+                  : '结论：现在只有同一 WiFi 能连。要出门用，先装 cloudflared（上面有一键下载）。')
+          : null,
+        // ffmpeg 是最容易漏的一个：功能不报错，只是发出去的语音转不出文字
+        env && env.ffmpeg && !env.ffmpeg.ok
+          ? h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' } },
+              h('code', { style: cell }, 'winget install Gyan.FFmpeg'),
+              h(ui.Btn, {
+                onClick: () => {
+                  navigator.clipboard?.writeText('winget install Gyan.FFmpeg')
+                    .then(() => toast('安装命令已复制，在电脑上开 PowerShell 粘贴运行；装完刷新面板'))
+                },
+              }, '复制安装命令'),
+              h('span', { className: 'ab-small ab-muted' }, '没有 winget 就去 ffmpeg.org 下压缩包，把 ffmpeg.exe 放进 PATH'))
+          : null,
+        h('p', { className: 'ab-small ab-muted', style: { margin: '8px 0 0', lineHeight: 1.7 } },
+          '数据目录：', h('code', { style: cell }, ev.dataDir || '—'),
+          '。云电脑、网吧这类「关机还原」的机器，重启后这里的配置（含配对密钥）会丢，手机得重新配对 —— '
+          + '想让别人长期用，选持久化磁盘的规格；重启后地址变了也不怕，把新链接发一次，App 会自动认。'),
       ),
       !tun.installed
         ? h('p', { className: 'ab-small ab-muted', style: { marginTop: 6 } },
