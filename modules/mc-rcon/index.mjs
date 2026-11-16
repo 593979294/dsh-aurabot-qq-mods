@@ -68,53 +68,7 @@ const DEFAULTS = {
   personaId: '',
 }
 
-const settings = [
-  { key: 'enabled', label: '总开关', type: 'switch', hint: '关掉后不再连服务器、不回应，但 /mc 命令仍可用' },
-  { key: 'listen', label: '游戏内聊天监听', type: 'switch', hint: '打开后才会去读服务器日志、参与游戏聊天' },
-  { key: 'host', label: 'RCON 地址', type: 'text', placeholder: '127.0.0.1' },
-  { key: 'port', label: 'RCON 端口', type: 'number', min: 1, max: 65535, step: 1, hint: 'server.properties 里的 rcon.port，默认 25575' },
-  { key: 'password', label: 'RCON 密码', type: 'password', hint: 'server.properties 里的 rcon.password' },
-  { key: 'logPath', label: '服务器日志路径', type: 'text', hint: '服务器文件夹里的 logs/latest.log；纯 RCON 读不到聊天，只能靠它' },
-  { key: 'serverName', label: '服务器名字', type: 'text', hint: '只用于提示词，让她知道自己在哪个服' },
-  {
-    key: 'chatMode', label: '接话方式', type: 'select',
-    options: [
-      { value: 'all', label: '每条都看（推荐）' },
-      { value: 'smart', label: '智能接话' },
-      { value: 'wake', label: '只回应召唤' },
-    ],
-    hint: '每条都看：所有游戏聊天都交给她判断，不想接就沉默；智能接话：只把问句/话题/称呼/随机插话交给她',
-  },
-  { key: 'wakeWords', label: '必回唤醒词', type: 'textarea', hint: '一行一个；出现任意一个就一定回应（不会沉默）' },
-  { key: 'nicknames', label: '其他称呼', type: 'textarea', hint: '一行一个；提到这些算在说她，会交给她判断要不要接' },
-  { key: 'topics', label: '感兴趣的话题', type: 'textarea', hint: '一行一个；聊天里出现就更容易接话' },
-  { key: 'interjectChance', label: '随机插话概率（%）', type: 'number', min: 0, max: 100, step: 1, hint: '普通闲聊里没人叫她时，随机接一句的概率' },
-  { key: 'admins', label: '游戏内管理员', type: 'textarea', hint: '一行一个 Minecraft 玩家名，可以让她执行较广的服务器命令' },
-  { key: 'allowed', label: '允许互动的玩家', type: 'textarea', hint: '一行一个；留空 = 所有人都能聊。填了之后只有名单里的人会被回应' },
-  { key: 'qqAdmins', label: 'Aurabot 管理员 QQ', type: 'textarea', hint: '一行一个 QQ 号，可以用 /mc 命令；主人永远可以（qqAdmins 还需在插件的私聊/群白名单里）' },
-  { key: 'guestCommands', label: '普通玩家可用操作', type: 'textarea', hint: '一行一个；内置支持 gamemode（旁观/生存）、tp 坐标、back（回上一个位置）、spawn、list、time query，也可写死无参数命令（如 home）' },
-  { key: 'guestCommandCooldownSec', label: '普通玩家操作间隔（秒）', type: 'number', min: 0, max: 600, step: 1 },
-  { key: 'confirmCrossDimension', label: '跨维度 tp 先确认', type: 'switch', hint: '玩家说去下界/末地等另一个维度时，先问一句「回是我就传」' },
-  { key: 'dimensionAliases', label: '维度别名', type: 'textarea', hint: '一行一个「别名=维度id」；也可以直接说完整 id，比如 twilightforest:twilight_forest' },
-  { key: 'blockedCommands', label: '禁止执行的命令', type: 'textarea', hint: '一行一个前缀；管理员也不能执行这些（QQ 主人用 /mc cmd 不受限）' },
-  { key: 'replyMode', label: '回应方式', type: 'select', options: [{ value: 'broadcast', label: '所有人可见' }, { value: 'direct', label: '只回给说话的人' }] },
-  { key: 'replyPrefix', label: '游戏内前缀', type: 'text', placeholder: '[MC] ' },
-  { key: 'maxReplyChars', label: '每条最多字数', type: 'number', min: 20, max: 500, step: 10 },
-  { key: 'maxCommands', label: '一次最多执行几条命令', type: 'number', min: 1, max: 8, step: 1 },
-  { key: 'maxHistory', label: '给模型看最近几条聊天', type: 'number', min: 0, max: 30, step: 1 },
-  { key: 'cooldownSec', label: '同一个人冷却秒数', type: 'number', min: 0, max: 600, step: 1, hint: '只限制普通接话；被叫到名字时不受这个限制' },
-  { key: 'maxPerMinute', label: '每分钟最多回应次数', type: 'number', min: 1, max: 30, step: 1 },
-  { key: 'mergeMs', label: '连续消息合并窗口（毫秒）', type: 'number', min: 0, max: 5000, step: 100, hint: '同一个人在这段时间里连发几条会合并成一次处理，0 = 不合并' },
-  { key: 'eventsEnabled', label: '死亡时主动说话', type: 'switch', hint: '游戏里有人死了，她会在聊天里调侃/关心一句' },
-  { key: 'deathChance', label: '死亡播报概率（%）', type: 'number', min: 0, max: 100, step: 5 },
-  { key: 'deathCooldownSec', label: '同一玩家死亡播报间隔（秒）', type: 'number', min: 0, max: 3600, step: 10 },
-  { key: 'autoDetect', label: '自动检测正在运行的服务器', type: 'switch', hint: '换端后自动读新服的 server.properties（RCON 端口/密码）和 logs/latest.log，并切过去' },
-  { key: 'serverRoot', label: '服务器根目录', type: 'textarea', hint: '一行一个；下面每个带 server.properties 的子文件夹都会作为候选' },
-  { key: 'detectIntervalSec', label: '自动检测间隔（秒）', type: 'number', min: 15, max: 600, step: 5 },
-  { key: 'useThink', label: '用她完整的记忆和人格', type: 'switch', hint: '打开后用 api.think（带 QQ 记忆，慢一点）；默认用 api.ask + 人格卡，更快' },
-  { key: 'ingestToken', label: '外部转发 token', type: 'password', hint: '服务器端插件 POST /ingame 时要带这个 token；留空则关闭转入口' },
-  { key: 'personaId', label: '人格卡 id', type: 'text', placeholder: '空 = 当前人格', hint: '例如 dafeiyu；空着就用面板里选的当前人格' },
-]
+const settings = []
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -134,7 +88,7 @@ const MODE_LABEL = { smart: '智能接话', wake: '只回应召唤', all: '每�
 export default {
   id: 'mc-rcon', // 要和文件夹名一样
   name: '我的世界服务器分身',
-  version: '1.5.2',
+  version: '1.5.3',
   api: 1, // 按哪一版扩展接口写的，别改
   description: '通过 RCON 控制我的世界服务器；在游戏聊天里像群聊一样接话，有人死了会主动调侃一句；换端时自动读取运行中服务器的 RCON 与日志路径。',
 
@@ -143,6 +97,17 @@ export default {
   panel: 'panel.js',
 
   setup (api) {
+    // settings 数组是空的（面板自己渲染字段），插件不会自动登记密码字段；
+    // 手动登记，让面板不回显密码、日志自动脱敏。
+    try {
+      const configLib = api.lib('core/config.js')
+      if (configLib && typeof configLib.registerSecretField === 'function') {
+        configLib.registerSecretField(['ext', 'mc-rcon', 'password'])
+        configLib.registerSecretField(['ext', 'mc-rcon', 'ingestToken'])
+      }
+    } catch (error) {
+      api.log.warn('登记密码字段失败（密码仍可用，只是面板/日志不会打码）：' + error.message)
+    }
     const S = () => api.settings()
     const list = (value) => lineList(value)
     const num = (key, fallback) => {
