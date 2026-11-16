@@ -239,7 +239,7 @@ const modeResp = await routes['/novel/mode']({ __body: { mode: 'long' } })
 ok('/novel/mode 切长篇', modeResp.ok && modeResp.mode === 'long' && savedSettings.novelMode === 'long')
 novelModeVar = 'long'
 
-hooks.set({ doneCount: 0, perJoy: {} })
+hooks.set({ doneCount: 0, perJoy: {}, lastJoyAt: 0 })
 thinkQueue = ['深海旅店\n老陈推开旋转门的时候，风铃响了一声。他兜里只有半张船票，票根上还留着上个港口的印章。潮水的气味从门缝里涌进来，像谁在他耳边换了口气。']
 const doNovel = await doTool.execute({ what: '写小说' })
 const novelFiles = readdirSync(join(dir, 'novel')).filter((f) => f.endsWith('.docx'))
@@ -248,6 +248,7 @@ const chapText = readDocxText(readFileSync(join(dir, 'novel', novelFiles[0])))
 ok('长篇 Word 可读回', chapText.includes('船票') && chapText.includes('风铃'), chapText.slice(0, 40))
 
 thinkQueue = ['潮声\n天亮之前，老陈把船票撕成了两半。']
+hooks.set({ lastJoyAt: 0 })
 const doNovel2 = await doTool.execute({ what: '写小说' })
 const novelFiles2 = readdirSync(join(dir, 'novel')).filter((f) => f.endsWith('.docx'))
 ok('长篇第二章', doNovel2.ok && novelFiles2.length === 2 && doNovel2.message.includes('第2章'), doNovel2.message)
@@ -255,7 +256,7 @@ ok('长篇第二章', doNovel2.ok && novelFiles2.length === 2 && doNovel2.messag
 const modeResp2 = await routes['/novel/mode']({ __body: { mode: 'short' } })
 ok('/novel/mode 切短篇', modeResp2.ok && modeResp2.mode === 'short')
 novelModeVar = 'short'
-hooks.set({ doneCount: 0, perJoy: {} })
+hooks.set({ doneCount: 0, perJoy: {}, lastJoyAt: 0 })
 thinkQueue = ['他决定开个新篇，写一个关于灯塔守夜人的故事。']
 const doShort = await doTool.execute({ what: '写小说' })
 const shortFiles = readdirSync(join(dir, 'novel')).filter((f) => f.endsWith('.docx'))
