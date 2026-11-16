@@ -62,7 +62,7 @@ const HELP = [
 export default {
   id: 'cabinworld',
   name: '小屋世界',
-  version: '0.4.2',
+  version: '0.4.3',
   api: 1,
   description: '给大肥鱼一个会走路的身体：Cabin World 像素小世界。去公园、荡秋千、钓鱼、买零食、餐厅点菜、回家睡觉、电玩城玩一局，动作由游戏判定，结果记进记忆；支持一键下载安装。',
   defaults: {
