@@ -69,13 +69,21 @@ const CSS = `
 .ld-flip:disabled{opacity:.42;cursor:default;}
 `
 
-return function Panel({ toast }) {
+return function Panel({ toast, settings, draftSettings, setSettings, save }) {
   const [data, setData] = useState(null)
   const [page, setPage] = useState(0)
   const [entry, setEntry] = useState(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
+  // 设置了但是还没保存：页面底部的浮动条常常在屏幕外面，这里也放一个按钮
+  const canSave = typeof save === 'function' && draftSettings
+  const draftDirty = canSave && JSON.stringify(draftSettings) !== JSON.stringify(settings || {})
+  const saveNow = async () => {
+    if (typeof save !== 'function') return
+    try { await save(draftSettings || {}) } catch (e) { quietToast(e && e.message) }
+  }
+  const quietToast = (m) => { try { toast && toast(String(m || '保存失败'), 'err') } catch {} }
 
   const load = useCallback(async () => {
     try {
@@ -232,7 +240,11 @@ return function Panel({ toast }) {
         h(ui.Btn, { onClick: write, disabled: busy || (data && data.running) }, busy ? '写着…' : '现在写一篇'),
         h(ui.Btn, { onClick: load }, '刷新'),
         h(ui.Btn, { onClick: openFolder }, '打开文件夹'),
+        draftDirty ? h(ui.Btn, { onClick: saveNow }, '保存设置') : null,
       ),
+      draftDirty
+        ? h('div', { className: 'ab-small ab-note', style: { marginTop: 8 } }, '上面的设置改了还没保存，点「保存设置」或者按 Ctrl + S。')
+        : null,
       err ? h('p', { className: 'ab-note', style: { marginTop: 8 } }, '出错了：' + err) : null,
     ),
 
