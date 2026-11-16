@@ -183,10 +183,17 @@ const novelData = hooks.st().novel
 ok('小说内容入档', novelData.parts.length === 1 && novelData.parts[0].text.includes('风铃'))
 
 // 18) joy_do 工具（额度内直接做）
-hooks.set({ perJoy: {}, doneCount: 0 })
+// v1.2.2 起两次 joy_do 之间至少歇 30 分钟（state.lastJoyAt，wake 成功也会记），
+// 所以这里要显式把 lastJoyAt 清零，别被前面的 wake 案例挡住
+hooks.set({ perJoy: {}, doneCount: 0, lastJoyAt: 0 })
 const doTool = tools.find((t) => t.name === 'joy_do')
 const r = await doTool.execute({ what: '喝口水歇歇眼' })
 ok('joy_do 直接做', r.ok === true && r.message.includes('活动'))
+
+// 18b) joy_do 间隔：刚玩过 30 分钟内被挡，且不扣额度
+const rGap = await doTool.execute({})
+ok('joy_do 间隔挡', rGap.ok === false && /歇\d+分钟/.test(rGap.message), rGap.message)
+ok('joy_do 间隔挡不扣额度', stateOf().doneCount === 1)
 
 // 19) joy_do 额度挡
 hooks.set({ doneCount: 8 })
