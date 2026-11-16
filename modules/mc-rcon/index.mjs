@@ -4,7 +4,7 @@
 // 它做这些事：
 //   1. 通过 RCON 连上 Minecraft 服务器，能执行命令；
 //   2. 跟随服务器的 logs/latest.log，读出游戏里的玩家聊天；
-//   3. 像群聊一样参与：被叫到（面板里配的唤醒词）必回；其他聊天默认每条都看，由她自己判断接不接，
+//   3. 像群聊一样参与：被叫到（大肥鱼/吴鲸/鲸鲸…）必回；其他聊天默认每条都看，由她自己判断接不接，
 //      不想接就输出 [沉默]；回复前读 Aurabot 当前人格卡；
 //   3.5 服务器事件：有人死了，她看一眼死亡消息，主动调侃/关心一句；
 //   3.6 换端：自动扫描 serverRoot 下的服务器，读运行中那套的 server.properties 和 logs/latest.log，
@@ -26,7 +26,7 @@ import { parseDimension, dimensionLabel } from './lib/dimension.mjs'
 
 // ---------------------------------------------------------------------------
 // 默认值：第一次加载会写进 config.json 的 ext['mc-rcon']，之后以面板里的为准。
-// 提交版不预填任何服务器信息，安装后在面板里填 RCON 和日志路径。
+// 密码/日志路径填的是本机这套 Create Delight 服务端的实际值，换服务器时在面板改。
 // ---------------------------------------------------------------------------
 const DEFAULTS = {
   enabled: true, // 总开关
@@ -88,7 +88,7 @@ const MODE_LABEL = { smart: '智能接话', wake: '只回应召唤', all: '每�
 export default {
   id: 'mc-rcon', // 要和文件夹名一样
   name: '我的世界服务器分身',
-  version: '1.5.4',
+  version: '1.5.7',
   api: 1, // 按哪一版扩展接口写的，别改
   description: '通过 RCON 控制我的世界服务器；在游戏聊天里像群聊一样接话，有人死了会主动调侃一句；换端时自动读取运行中服务器的 RCON 与日志路径。',
 
@@ -143,19 +143,27 @@ export default {
     }
 
     // ---------------- 人格卡 ----------------
+    let personaCache = { at: 0, value: null }
     function persona () {
+      // 人格卡不会每秒变，缓存半分钟，省掉每条消息、每行回复都读一次文件
+      if (personaCache.value && Date.now() - personaCache.at < 30_000) return personaCache.value
+      let value = null
       try {
         const want = String(S().personaId || '').trim()
         const currentId = want || String(api.config().persona?.current || '')
         const read = api.core.personas?.read
         const p = read ? read(currentId) : null
-        if (p) return { id: p.id, name: p.name, body: p.body }
-        const body = api.core.personas?.current?.() || ''
-        if (body) return { id: currentId || 'current', name: '角色', body }
+        if (p) value = { id: p.id, name: p.name, body: p.body }
+        else {
+          const body = api.core.personas?.current?.() || ''
+          if (body) value = { id: currentId || 'current', name: '吴鲸', body }
+        }
       } catch (error) {
         api.log.warn('读人格卡失败：' + error.message)
       }
-      return { id: 'current', name: '角色', body: '你是一个真实存在的人，说话短、口语化，不要承认自己是程序。' }
+      if (!value) value = { id: 'current', name: '角色', body: '你是一个真实存在的人，说话短、口语化，不要承认自己是程序。' }
+      personaCache = { at: Date.now(), value }
+      return value
     }
 
     // ---------------- RCON ----------------
@@ -177,7 +185,9 @@ export default {
     async function safeExec (command) {
       const cmd = String(command || '').trim().replace(/^\/+/, '')
       if (!cmd) return { ok: false, cmd: '', message: '命令是空的' }
-      if (cmd.length > 300) return { ok: false, cmd, message: '命令太长了' }
+      if (/[\r\n]/.test(cmd)) return { ok: false, cmd, message: '命令里不能有换行' }
+      // tellraw 的 JSON 会把空格转义成 \u0020，300 很容易顶到上限；RCON 本身支持 32KB
+      if (cmd.length > 4000) return { ok: false, cmd, message: '命令太长了' }
       try {
         const out = await rconClient().exec(cmd)
         // 之前断线留下的旧错误，连上并成功执行后就别再挂在面板上了
@@ -228,13 +238,18 @@ export default {
       return true
     }
 
-    /** 玩家当前在哪个维度（data get entity 读 Dimension）。 */
+    /** 玩家当前在哪个维度（data get entity 读 Dimension）。查一次失败会重试一次。 */
     async function currentDimension (player) {
       if (!/^[A-Za-z0-9_]{1,32}$/.test(String(player || ''))) return ''
-      const r = await safeExec(`data get entity ${player} Dimension`)
-      if (!r.ok) return ''
-      const m = String(r.out).match(/"([^"]+)"/)
-      return m ? m[1] : ''
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const r = await safeExec(`data get entity ${player} Dimension`)
+        if (r.ok) {
+          const m = String(r.out).match(/"([^"]+)"/)
+          if (m) return m[1]
+        }
+        if (attempt === 0) await sleep(150)
+      }
+      return ''
     }
 
     /** 玩家回复「是」之后，执行确认过的跨维度 tp。 */
@@ -274,13 +289,19 @@ export default {
       const parts = String(command || '').trim().split(/\s+/).filter(Boolean)
       const base = String(parts[0] || '').toLowerCase()
       if ((base === 'tp' || base === 'teleport') && parts.length === 4 && parts.slice(1).every((v) => COORD_LIKE.test(v))) {
-        // 正好有人在等跨维度确认：优先把目标补成那个请求者
-        const pending = latestPending()
-        if (pending && pending.player !== player) {
-          return `${base} ${pending.player} ${parts.slice(1).join(' ')}`
+        const t = String(text || '')
+        // 说「我 / 自己」的，优先当成传自己
+        const forSelf = /我|自己/.test(t)
+        // 说「帮他 / 送她 / 帮 MOMO1611」这种：只在正好有人在等跨维度确认时补成那个人，
+        // 否则宁可让命令报错，也不把当前说话的人传错。
+        const forOther = !forSelf && /帮|他|她|给|送/.test(t)
+        if (forOther) {
+          const pending = latestPending()
+          if (pending && pending.player !== player) {
+            return `${base} ${pending.player} ${parts.slice(1).join(' ')}`
+          }
+          return String(command)
         }
-        // 玩家在说「帮他传 / 送她回去」这种：不要瞎补成当前说话的人，让它报错也比传错人强
-        if (/帮|他|她|给|送他|送她/.test(String(text))) return String(command)
         return `${base} ${player} ${parts.slice(1).join(' ')}`
       }
       if (base === 'gamemode' && parts.length === 2) return `gamemode ${parts[1]} ${player}`
@@ -592,26 +613,31 @@ export default {
         if (/^tp\s/i.test(check.command)) {
           const aliases = list(S().dimensionAliases)
           const wanted = parseDimension(text, aliases)
-          const cur = wanted ? await currentDimension(player) : ''
-          if (wanted && cur && wanted !== cur) {
+          // 维度 id 只允许常规字符，防止面板里配的别名把 execute in 拼坏
+          if (wanted && /^[a-z0-9_.:-]+$/i.test(wanted)) {
             const finalTp = fillTarget(check.command, player, text)
             const coords = finalTp.split(/\s+/).slice(2, 5).join(' ')
-            if (S().confirmCrossDimension !== false) {
-              const label = dimensionLabel(wanted, aliases)
-              state.pendingTp.set(player, {
-                command: `execute in ${wanted} run ${finalTp}`,
-                label,
-                at: Date.now(),
-              })
-              const ask = `去${label}的 ${coords}？回「是」我就传`
-              await sendLines(player, [ask])
-              rememberChat('你', ask, 'out')
-              continue
+            const cur = await currentDimension(player)
+            // 只要认出了目标维度，就显式 execute in：不再依赖「当前维度」查询是否成功，
+            // 也不依赖玩家刚好就在那个维度。查不到当前维度时按跨维度处理，先确认。
+            if (!cur || cur !== wanted) {
+              if (S().confirmCrossDimension !== false) {
+                const label = dimensionLabel(wanted, aliases)
+                state.pendingTp.set(player, {
+                  command: `execute in ${wanted} run ${finalTp}`,
+                  label,
+                  at: Date.now(),
+                })
+                const ask = `去${label}的 ${coords}？回「是」我就传`
+                await sendLines(player, [ask])
+                rememberChat('你', ask, 'out')
+                continue
+              }
             }
             const r = await safeExec(`execute in ${wanted} run ${finalTp}`)
             results.push(r)
             addRecent({ at: Date.now(), player: 'RCON', text: `/${r.cmd}`, dir: 'out', admin })
-            api.log.info(`[MC] RCON /${r.cmd}（跨维度）→ ${r.ok ? r.out.slice(0, 120) : '失败：' + r.message}`)
+            api.log.info(`[MC] RCON /${r.cmd}（维度 ${wanted}，当前 ${cur || '未知'}）→ ${r.ok ? r.out.slice(0, 120) : '失败：' + r.message}`)
             continue
           }
         }
@@ -926,7 +952,8 @@ export default {
     async function panelStatus () {
       const st = rconClient().status()
       const w = state.watcher?.status() || null
-      const online = await fetchOnline(true)
+      // 面板 5 秒轮询一次；这里不要每次都 force，否则每 5 秒一条 list 刷服务器日志
+      const online = await fetchOnline(false)
       return {
         ok: true,
         settings: {

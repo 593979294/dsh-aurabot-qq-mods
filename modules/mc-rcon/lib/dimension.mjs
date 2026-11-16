@@ -10,9 +10,10 @@ export function parseDimension (text, aliases = []) {
   if (!t) return ''
 
   // 1) xaero 路点分享里带 Internal-<维度>-waypoints，比坐标里的 false:0 可靠
-  const internal = t.match(/internal-([a-z_]+)-waypoints/i)
+  //    维度名可能是 the_nether，也可能是 the-nether，统一成下划线
+  const internal = t.match(/internal-([a-z_-]+)-waypoints/i)
   if (internal) {
-    const name = internal[1].toLowerCase()
+    const name = internal[1].toLowerCase().replace(/-/g, '_').replace(/_+$/, '')
     if (['overworld', 'the_nether', 'the_end'].includes(name)) return `minecraft:${name}`
   }
 
