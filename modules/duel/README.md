@@ -62,6 +62,14 @@
 - 模型输出仍然是提示词约束，偶尔会跑偏（比如该写动作的时候只写了台词）；跑偏了不影响回合推进。
 - 判胜是让模型看记录挑一个名字，挑不出来时默认发起方获胜。
 
+
+## 测试
+
+`ash
+AURABOT_PLUGIN_DIR=<dsh-aurabot-qq 源码目录> node --import ./scripts/plugin-env.mjs --test "modules/duel/test/*.test.mjs"
+`
+
+	est/duel.test.mjs 用假 api 驱动整场对决，不联网、不写盘、不真等计时器（setTimeout 全部替身）。覆盖：发起/接受/换场/判胜的回合推进，回合超时与开场超时，群聊消息的接管与跨群隔离，应战名单权限，以及模型异常、复读提示词、出站清洗整条删这三种失败路径。
 ## 许可
 
 MIT。
