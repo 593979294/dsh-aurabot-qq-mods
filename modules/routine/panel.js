@@ -16,11 +16,13 @@ return function Panel({ toast }) {
   const [draft, setDraft] = useState(null)
   const [events, setEvents] = useState(null)
   const [history, setHistory] = useState([])
+  const [profs, setProfs] = useState(null)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
 
   const reload = () => {
     call('/state').then((s) => { if (s?.ok) setState(s); else setErr('state 接口不对') }).catch((e) => setErr(String(e.message || e)))
+    call('/professions').then((r) => { if (r?.ok) setProfs(r) }).catch(() => {})
     call('/schedule').then((r) => {
       if (!r?.ok) return
       setWeek(r.week)
@@ -65,6 +67,15 @@ return function Panel({ toast }) {
     try { const r = await call('/events', { id }); if (r?.ok) { toast('取消了'); reload() } else toast(r?.message || '没取消掉') } catch (e) { toast('出错了：' + (e.message || e)) }
   }
 
+  const setProf = async (id) => {
+    setBusy(true)
+    try {
+      const r = await call('/professions', { id })
+      if (r?.ok) { toast(`换工作了：${r.name}，班表已按职业重排（手动改过的班表被覆盖）`); reload() } else toast(r?.message || '没换成')
+    } catch (e) { toast('出错了：' + (e.message || e)) }
+    setBusy(false)
+  }
+
   const infoStyle = { fontSize: 13, color: 'var(--color-text-secondary, inherit)' }
   const small = { className: 'ab-small ab-muted' }
   const barColor = state && state.pressure >= state.threshold ? 'var(--color-danger, #c62828)' : state && state.pressure >= 60 ? 'var(--color-warning, #b26a00)' : 'var(--color-success, #2e7d32)'
@@ -86,6 +97,18 @@ return function Panel({ toast }) {
       h('span', small, state.enabled
         ? `托管中 · 过日子现在是${state.livinManaged.on ? '开' : '关'}${state.livinManaged.lastWrite ? '（' + fmt(state.livinManaged.lastWrite) + '拨的）' : ''}`
         : '托管没开——开了才会注入「此刻处境」并按作息控制过日子开关。'),
+    ),
+
+    profs && h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 } },
+      h('span', small, '职业'),
+      h('select', {
+        value: profs.current,
+        onChange: (e) => setProf(e.target.value),
+        disabled: busy,
+        style: { fontSize: 13, padding: '4px 8px', borderRadius: 8, border: '1px solid rgba(128,128,128,.4)', background: 'transparent', color: 'inherit' },
+      }, profs.list.map((p) => h('option', { key: p.id, value: p.id }, p.name + (p.rotating ? '（轮班）' : '')))),
+      (() => { const p = profs.list.find((x) => x.id === profs.current); return p ? h('span', small, p.desc + (p.goods ? ` · 卖：${p.goods.join('/')}` : '')) : null })(),
+      state?.profession?.weekSource === 'custom' ? h('span', { style: { ...small, color: 'var(--color-warning, #b26a00)' } }, '手动班表生效中（职业模板暂停，换职业可恢复）') : null,
     ),
 
     state && h('div', { style: { display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 10 } },

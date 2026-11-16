@@ -177,3 +177,105 @@ test('存盘原子化：无 .tmp 残留', async () => {
   assert.ok(!files.some((f) => f.endsWith('.tmp')), '有 .tmp 残留：' + files.join(','))
   assert.ok(files.includes('routine.json') && files.includes('schedule.json'))
 })
+
+// ---------- 多职业（v1.1.0） ----------
+// 轮班周序号：锚点 2024-01-01（周一），2026-11-16 那周 idx=150（%3=0 白班/早班/大周末，%2=0 白班/大周末）
+// idx1 = 2026-11-23 那周（小夜/中班/小周末/工厂夜班），idx2 = 2026-11-30 那周（大夜/夜班）
+
+test('多职业：餐饮双班——午市/班间/晚市/下班，周二轮休', () => {
+  const { api } = makeApi({ settings: { profession: 'restaurant' } })
+  const exp = mod.setup(api)
+  exp.applyProfession(at(D('2026-11-16'), '10:00'))
+  const mon = '2026-11-16'
+  const r1 = exp.stateAt(at(D(mon), '11:00'))
+  assert.equal(r1.state, 'work')
+  assert.match(r1.label, /10:00–14:00/)
+  const r2 = exp.stateAt(at(D(mon), '15:00'))
+  assert.equal(r2.state, 'home')
+  assert.match(r2.label, /班间休息/)
+  assert.equal(r2.livin, true)
+  assert.equal(exp.stateAt(at(D(mon), '20:00')).state, 'work')
+  const r4 = exp.stateAt(at(D(mon), '22:30'))
+  assert.equal(r4.state, 'home')
+  assert.match(r4.label, /下班到家/)
+  const tue = exp.stateAt(at(D('2026-11-17'), '15:00'))
+  assert.equal(tue.state, 'home')
+  assert.match(tue.label, /休息日/)
+})
+
+test('多职业：护士三班倒——白班周/大夜周，凌晨压过睡觉时段，下夜班补觉', () => {
+  const { api } = makeApi({ settings: { profession: 'nurse' } })
+  const exp = mod.setup(api)
+  // 白班周（idx0）：周一 15:00 上班，周六休
+  exp.applyProfession(at(D('2026-11-16'), '10:00'))
+  assert.equal(exp.stateAt(at(D('2026-11-16'), '15:00')).state, 'work')
+  assert.equal(exp.stateAt(at(D('2026-11-21'), '15:00')).state, 'home')
+  // 大夜周（idx2）：周一凌晨 3 点在班上（睡觉时段被班段压过），10 点下班补觉
+  exp.applyProfession(at(D('2026-11-30'), '10:00'))
+  const r3 = exp.stateAt(at(D('2026-11-30'), '03:00'))
+  assert.equal(r3.state, 'work')
+  assert.equal(r3.night, true)
+  assert.match(r3.label, /夜班中/)
+  assert.match(r3.label, /00:00–08:00/)
+  const r10 = exp.stateAt(at(D('2026-11-30'), '10:00'))
+  assert.equal(r10.state, 'home')
+  assert.match(r10.label, /下夜班/)
+  assert.equal(r10.livin, true)
+})
+
+test('多职业：医生周三夜班跨午夜，周四早上还是班上、下午补休', () => {
+  const { api } = makeApi({ settings: { profession: 'doctor' } })
+  const exp = mod.setup(api)
+  exp.applyProfession(at(D('2026-11-16'), '10:00'))
+  const wed = exp.stateAt(at(D('2026-11-18'), '16:00'))
+  assert.equal(wed.state, 'work')
+  const thuEarly = exp.stateAt(at(D('2026-11-19'), '06:00'))
+  assert.equal(thuEarly.state, 'work') // 周三夜班延续到周四早上
+  const thuNoon = exp.stateAt(at(D('2026-11-19'), '14:00'))
+  assert.equal(thuNoon.state, 'home')
+  assert.match(thuNoon.label, /休息日|请假|在家/)
+})
+
+test('多职业：保安夜班周——周六凌晨 2 点在班上（前一天跨午夜段），周日凌晨也是', () => {
+  const { api } = makeApi({ settings: { profession: 'security' } })
+  const exp = mod.setup(api)
+  exp.applyProfession(at(D('2026-11-30'), '10:00')) // idx2 = 夜班周 23:00-07:00
+  assert.equal(exp.stateAt(at(D('2026-12-04'), '23:30')).state, 'work') // 周五
+  const sat = exp.stateAt(at(D('2026-12-05'), '02:00'))
+  assert.equal(sat.state, 'work')
+  const sun = exp.stateAt(at(D('2026-12-06'), '02:00'))
+  assert.equal(sun.state, 'work') // 周六夜班延续到周日凌晨（周日表上是休）
+})
+
+test('多职业：销售随机商品——当天稳定、隔周周六轮换上班', () => {
+  const { api } = makeApi({ settings: { profession: 'sales' } })
+  const exp = mod.setup(api)
+  // 大周末（idx0）：周六 11-21 上班，label 带在卖 X，当天两次一致
+  exp.applyProfession(at(D('2026-11-16'), '10:00'))
+  const s1 = exp.stateAt(at(D('2026-11-21'), '11:00'))
+  assert.equal(s1.state, 'work')
+  assert.match(s1.label, /在卖\S+/)
+  const s2 = exp.stateAt(at(D('2026-11-21'), '12:00'))
+  assert.equal(s2.label.match(/在卖(\S+)/)[1], s1.label.match(/在卖(\S+)/)[1])
+  // 小周末（idx1）：周六 11-28 休息
+  exp.applyProfession(at(D('2026-11-23'), '10:00'))
+  assert.equal(exp.stateAt(at(D('2026-11-28'), '11:00')).state, 'home')
+})
+
+test('多职业：手动班表不被轮换覆盖；/professions 切职业强制重排', async () => {
+  const { api, tools } = makeApi({ settings: { profession: 'nurse' } })
+  const exp = mod.setup(api)
+  exp.applyProfession(at(D('2026-11-30'), '10:00')) // 大夜周
+  const before = JSON.stringify(exp.sched().week)
+  assert.ok(before.includes('00:00'))
+  // 手动班表：轮换暂停
+  exp.sched().weekSource = 'custom'
+  exp.applyProfession(at(D('2026-12-07'), '10:00'))
+  assert.equal(JSON.stringify(exp.sched().week), before)
+  // pendingProf（模拟面板/QQ 命令切职业）：强制重排
+  exp.sched().pendingProf = true
+  exp.applyProfession(at(D('2026-12-07'), '10:00')) // 12-07 那周 idx=153，%3=0 → 白班周
+  assert.equal(JSON.stringify(exp.sched().week), JSON.stringify({ mon: [['08:00', '16:00']], tue: [['08:00', '16:00']], wed: [['08:00', '16:00']], thu: [['08:00', '16:00']], fri: [['08:00', '16:00']], sat: [], sun: [] }))
+  assert.equal(exp.sched().weekSource, 'nurse#0')
+  assert.ok(tools.some((t) => t.name === 'life_schedule'))
+})

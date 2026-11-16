@@ -4,6 +4,7 @@
 // 和 livin 的接法是零侵入：只在状态切换沿拨 ext.livin.enabled，到家了才让过日子醒来。
 import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { PROFESSIONS, weekIdxOf, goodsOf } from './professions.mjs'
 
 const MIN = 60 * 1000
 const HOUR = 60 * MIN
@@ -11,6 +12,7 @@ const DAY = 24 * HOUR
 
 const DEFAULTS = {
   enabled: false, // 托管总开关：关了就不注入、不碰 livin，装上不动
+  profession: 'office', // 职业：决定每周班表模板和上班时的处境描述，面板里换
   pressureOn: true, // 压力值：工作日累积、休息恢复，攒满会自动请假
   pressurePerWorkDay: 10, // 每个完整上班日 +多少压力
   pressureRecover: 15, // 每个休息日 -多少压力
@@ -60,11 +62,11 @@ const LIVIN_ON = new Set(['rest', 'leave', 'home'])
 export default {
   id: 'routine',
   name: '作息',
-  version: '1.0.0',
+  version: '1.1.0',
   api: 1,
   category: 'desktop',
-  tags: ['作息', '上下班', '生活'],
-  description: '她的一天的骨架：上班、通勤、在家休息、请假调休。只有「在家休息」的时段才让过日子醒来；上班时间注入「此刻处境」，让她自然知道自己在忙。',
+  tags: ['作息', '上下班', '生活', '职业'],
+  description: '她的一天的骨架：十种职业班表（含三班倒/夜班/双班）、通勤、在家休息、请假调休。只有「在家休息」的时段才让过日子醒来；上班时间注入「此刻处境」，让她自然知道自己在忙什么班。',
   capabilities: ['filesystem', 'plugin-config', 'plugin-internals'],
   minPluginVersion: '1.2.0',
   requires: [],
@@ -139,7 +141,28 @@ export default {
     }
 
     // ---------- 三层日程：overrides(请假/手动) > disturb(周日扰动) > self(她记的) > week(底座) ----------
-    const segsFrom = (list) => (Array.isArray(list) ? list.map((s) => [toMin(s[0]), toMin(s[1])]).filter((s) => s[0] >= 0 && s[1] > s[0]) : [])
+    const segsFrom = (list) => (Array.isArray(list) ? list.map((s) => [toMin(s[0]), toMin(s[1])]).filter((s) => s[0] >= 0 && s[1] >= 0 && s[1] !== s[0]) : [])
+    // 结束 < 开始 = 跨午夜的夜班段（23:00-07:00），合法，别过滤掉
+
+    // ---------- 职业：班表模板 + 轮班同步 ----------
+    const profOf = () => PROFESSIONS[cfg().profession] || PROFESSIONS.office
+    // 按职业同步 sched.week：切了职业（pendingProf）或轮班周序号变了就重排；
+    // 用户手动改过班表（weekSource='custom'）后轮换暂停，直到再切一次职业
+    function applyProfession(now) {
+      const prof = profOf()
+      const id = cfg().profession || 'office'
+      const idx = prof.rot ? ((weekIdxOf(now) % prof.rot.cycle) + prof.rot.cycle) % prof.rot.cycle : 0
+      const wanted = prof.rot ? `${id}#${idx}` : id
+      if (sched.pendingProf) { sched.pendingProf = false; sched.weekSource = '' }
+      if (sched.weekSource === 'custom') return
+      if (sched.weekSource !== wanted) {
+        sched.week = JSON.parse(JSON.stringify(prof.rot ? prof.rot.variants[idx] : prof.week))
+        sched.weekSource = wanted
+        writeJson(schedFile(), sched)
+        record('profession', { prof: prof.name, shift: prof.rot ? `第 ${idx + 1}/${prof.rot.cycle} 轮班` : '' })
+        api.log.info(`[routine] 职业班表同步：${prof.name}${prof.rot ? `（${prof.rot.variants[idx] === prof.week ? '' : '轮班 ' + (idx + 1) + '/' + prof.rot.cycle}）` : ''}`)
+      }
+    }
 
     function resolveDay(day, now) {
       const ov = st.overrides[day]
@@ -160,24 +183,69 @@ export default {
     }
 
     // 核心判定：给定时刻，她在什么处境。纯函数（读 st/sched/cfg），测试直接调。
+    // 判定顺序刻意是：班段（含跨午夜延续）> 通勤 > 睡觉 > 休息/请假 > 班间/下班——
+    // 夜班（0-8 点、23-7 点）压过睡觉时段，凌晨三点在班上就是在班上，不是睡觉。
     function stateAt(now) {
       const c = cfg()
-      if (inQuiet(now, c)) return { state: 'sleep', label: '睡觉中', livin: false, day: null, seg: null }
       const d = new Date(now)
-      const day = dayKey(now)
-      const desc = resolveDay(day, d)
-      if (desc.type === 'rest') return { state: 'home', label: '休息日，在家', livin: true, day: desc, seg: null }
-      if (desc.type === 'leave') return { state: 'home', label: '请假在家', livin: true, day: desc, seg: null }
       const mins = minsOf(now)
       const cm = Number(c.commuteMin) || 0
-      for (const [a, b] of desc.segments) {
-        if (mins >= a && mins < b) return { state: 'work', label: `上班中（${fmtMin(a)}–${fmtMin(b)}）`, livin: false, day: desc, seg: [a, b] }
-        if (cm > 0 && mins >= a - cm && mins < a) return { state: 'commute', label: `在通勤路上（${fmtMin(a)}出门）`, livin: false, day: desc, seg: [a, b] }
+      const inSeg = (segs) => {
+        for (const [a, b] of segs) {
+          if (a < b ? (mins >= a && mins < b) : (mins >= a || mins < b)) return [a, b]
+        }
+        return null
       }
-      // 班段之外的上班日：早上没出门 / 晚上到家，都是她自己的时间
-      const first = desc.segments[0]
-      const label = first && mins < first[0] ? '还没出门，在家' : '下班到家了，今晚是自己的时间'
-      return { state: 'home', label, livin: true, day: desc, seg: null }
+      const day = dayKey(now)
+      const desc = resolveDay(day, d)
+      const prof = profOf()
+      const flavor = prof.goods ? `，在卖${goodsOf(prof, day)}` : ''
+
+      // 班段内（夜班的跨午夜段：结束 < 开始）
+      let seg = null
+      if (desc.type === 'work') seg = inSeg(desc.segments)
+      // 前一天的跨午夜班段延续到今天凌晨（保安周五 23:00-07:00，周六凌晨 3 点还在班上）
+      if (!seg) {
+        const prev = resolveDay(dayKey(now - DAY), new Date(now - DAY))
+        if (prev.type === 'work') {
+          for (const [a, b] of prev.segments) {
+            if (a > b && mins < b) { seg = [a, b]; break }
+          }
+        }
+      }
+      if (seg) {
+        const night = seg[0] >= seg[1] || seg[1] <= 12 * 60
+        return {
+          state: 'work',
+          label: `${night ? '夜班中' : '上班中'}（${fmtMin(seg[0])}–${fmtMin(seg[1])}${flavor}）`,
+          night,
+          livin: false,
+          day: desc,
+          seg,
+        }
+      }
+      // 通勤：班段开始前 cm 分钟（只看当天不跨夜的班段，夜班 0 点开班的通勤算前一晚，这里不追）
+      if (desc.type === 'work' && cm > 0) {
+        for (const [a, b] of desc.segments) {
+          if (a > b) continue
+          if (mins >= a - cm && mins < a) return { state: 'commute', label: `在通勤路上（${fmtMin(a)}出门${flavor}）`, livin: false, day: desc, seg: [a, b] }
+        }
+      }
+      if (inQuiet(now, c)) return { state: 'sleep', label: '睡觉中', livin: false, day: null, seg: null }
+      if (desc.type === 'rest') return { state: 'home', label: '休息日，在家', livin: true, day: desc, seg: null }
+      if (desc.type === 'leave') return { state: 'home', label: '请假在家', livin: true, day: desc, seg: null }
+      // 上班日但不在班段里
+      const segs = desc.segments
+      const first = segs[0]
+      const last = segs[segs.length - 1]
+      if (first && mins < first[0]) return { state: 'home', label: '还没出门，在家', livin: true, day: desc, seg: null }
+      if (last && last[0] < last[1] && mins >= last[1]) {
+        // 最后一班结束在中午前 = 下的是夜班，早上这段时间在补觉
+        if (last[1] <= 12 * 60 && mins < last[1] + 4 * HOUR / MIN) return { state: 'home', label: '下夜班了，在家补觉', livin: true, day: desc, seg: null }
+        return { state: 'home', label: '下班到家了，今晚是自己的时间', livin: true, day: desc, seg: null }
+      }
+      // 两班之间的空档（餐饮午市结束到晚市开始）
+      return { state: 'home', label: '班间休息，这一小段是自己的', livin: true, day: desc, seg: null }
     }
 
     // ---------- livin 开关：只在状态切换沿写，写之前先看现在是不是已经是那个值 ----------
@@ -279,6 +347,7 @@ export default {
     const tick = async () => {
       const now = Date.now()
       rollDay(now)
+      applyProfession(now) // 轮班职业翻周时重排 week（手动班表除外）
       const res = stateAt(now)
       const on = cfg().enabled
       if (on && !st.managedOn) {
@@ -305,10 +374,13 @@ export default {
       if (res.state === 'sleep') return ''
       let line = ''
       const p = c.pressureOn && st.pressure >= 60 ? `，压力${st.pressure}有点重` : ''
-      if (res.state === 'work') line = `现在是上班时间，${res.label}${p}，只能偶尔偷偷看下手机${res.day?.note ? `（${res.day.note}）` : ''}`
+      if (res.state === 'work') line = res.night
+        ? `现在是夜班，${res.label}${p}，忙起来回复会慢，只能抽空看一眼手机${res.day?.note ? `（${res.day.note}）` : ''}`
+        : `现在是上班时间，${res.label}${p}，只能偶尔偷偷看下手机${res.day?.note ? `（${res.day.note}）` : ''}`
       else if (res.state === 'commute') line = `${res.label}，只能简单聊两句`
       else if (res.state === 'home') {
         line = res.day?.type === 'leave' ? `今天请假在家${p}，状态一般，慢慢缓`
+          : res.label === '下夜班了，在家补觉' ? `刚下夜班，${p}困得不行，回去补觉了`
           : res.day?.type === 'rest' ? `今天是休息日，${res.day.note ? '（' + res.day.note + '）' : ''}时间都是自己的`
           : `${res.label}${p}，这一段是自己的时间`
         if (res.day?.note && res.day.type !== 'rest') line += `（${res.day.note}）`
@@ -367,10 +439,10 @@ export default {
     api.command({
       name: 'routine',
       aliases: ['作息'],
-      desc: '作息托管：/作息 on 开 · /作息 off 关 · 不带参数看当前状态',
+      desc: '作息托管：/作息 on 开 · /作息 off 关 · /作息 职业 换工作 · 不带参数看当前状态',
       run: (arg) => {
-        const a = String(arg || '').trim().toLowerCase()
-        if (/^(on|开|打开|启用)$/.test(a)) {
+        const a = String(arg || '').trim()
+        if (/^(on|开|打开|启用)$/i.test(a)) {
           api.saveSettings({ enabled: true })
           const res = stateAt(Date.now())
           st.current = { state: res.state, since: Date.now(), label: res.label }
@@ -385,10 +457,51 @@ export default {
           save()
           return '作息托管关了：不再注入「此刻处境」，也不动过日子的开关了'
         }
+        // /作息 职业 → 列出；/作息 职业 医生|nurse → 换职业（名字/id 都认，模糊匹配）
+        if (/^职业|job/i.test(a)) {
+          const q = a.replace(/^职业|job/i, '').trim()
+          if (!q) {
+            return '可选职业：\n' + Object.entries(PROFESSIONS).map(([id, p]) => `- ${p.name}（${p.desc}）`).join('\n') + '\n换工作：/作息 职业 医生'
+          }
+          const hit = Object.entries(PROFESSIONS).find(([id, p]) => id === q || p.name.includes(q) || q.includes(p.name) || id.includes(q.toLowerCase()))
+          if (!hit) return `没有叫「${q}」的职业。可选：${Object.values(PROFESSIONS).map((p) => p.name).join('、')}`
+          const p = switchProfession(hit[0])
+          const res = stateAt(Date.now())
+          return `换工作了：${p.name}。${p.desc}，班表已按这个职业重排${cfg().enabled ? `，现在判定：${res.state === 'sleep' ? '睡觉中' : res.label}` : ''}。之前手动改过的班表被模板覆盖了，要改回面板里再改。`
+        }
         const res = stateAt(Date.now())
         const c = cfg()
-        return `现在：${res.state === 'sleep' ? '睡觉中' : res.label}；压力 ${st.pressure}${c.pressureOn ? '/' + c.pressureThreshold : ''}；托管${c.enabled ? '开着' : '关着'}（/作息 on 开）`
+        return `现在：${res.state === 'sleep' ? '睡觉中' : res.label}；职业：${profOf().name}；压力 ${st.pressure}${c.pressureOn ? '/' + c.pressureThreshold : ''}；托管${c.enabled ? '开着' : '关着'}（/作息 on 开，/作息 职业 换工作）`
       },
+    })
+
+    // ---------- 职业：换工作（QQ 命令里也接了一个） ----------
+    const switchProfession = (id) => {
+      const p = PROFESSIONS[id]
+      if (!p) return null
+      api.saveSettings({ profession: id })
+      sched.pendingProf = true
+      writeJson(schedFile(), sched)
+      applyProfession(Date.now())
+      record('profession', { to: p.name })
+      api.log.info(`[routine] 职业换成${p.name}，班表已按模板重排`)
+      return p
+    }
+    api.route('/professions', async (req) => {
+      if (req && req.method === 'POST') {
+        const b = await api.core.http.body(req)
+        const p = switchProfession(String(b.id || ''))
+        if (!p) return { ok: false, message: '没有这个职业' }
+        // 班表变了立刻对一次表，托管开着的话 livin 跟着新处境走
+        try { await tick() } catch {}
+        return { ok: true, profession: b.id, name: p.name, week: sched.week }
+      }
+      return {
+        ok: true,
+        current: cfg().profession || 'office',
+        weekSource: sched.weekSource || '',
+        list: Object.entries(PROFESSIONS).map(([id, p]) => ({ id, name: p.name, desc: p.desc, goods: p.goods, rotating: !!p.rot })),
+      }
     })
 
     // ---------- 面板接口 ----------
@@ -430,6 +543,7 @@ export default {
         threshold: cfg().pressureThreshold,
         today: { type: todayDesc?.type, note: todayDesc?.note || '', segments: todayDesc?.segments?.map((s) => [fmtMin(s[0]), fmtMin(s[1])]) || [], src: todayDesc?.src },
         livinManaged: { on: !!api.config().ext?.livin?.enabled, lastWrite: st.lastLivinWrite },
+        profession: { id: cfg().profession || 'office', name: profOf().name, desc: profOf().desc, rotating: !!profOf().rot, weekSource: sched.weekSource || '' },
         mood: (() => { try { const m = api.use('mood'); return m?.label?.() || '' } catch { return '' } })(),
       }
     })
@@ -440,9 +554,11 @@ export default {
           const week = {}
           for (const d of DOW) {
             const raw = Array.isArray(b.week[d]) ? b.week[d] : []
-            week[d] = raw.map((s) => [toMin(s[0]), toMin(s[1])]).filter((s) => s[0] >= 0 && s[1] > s[0]).map((s) => [fmtMin(s[0]), fmtMin(s[1])])
+            week[d] = raw.map((s) => [toMin(s[0]), toMin(s[1])]).filter((s) => s[0] >= 0 && s[1] >= 0 && s[1] !== s[0]).map((s) => [fmtMin(s[0]), fmtMin(s[1])])
           }
           sched.week = week
+          sched.weekSource = 'custom' // 手动班表优先，职业轮换暂停（再切一次职业会重排）
+          sched.pendingProf = false
           writeJson(schedFile(), sched)
           record('schedule', {})
         }
@@ -486,6 +602,6 @@ export default {
 
     api.log.info('作息就绪：她的上下班和在家时间由这张表判定')
     // hooks：测试直调
-    return { tick, stateAt, resolveDay, rollDay, genDisturb, st: () => st, sched: () => sched, set: (patch) => { st = { ...st, ...patch } }, reloadSchedule: () => { sched = loadSchedule() } }
+    return { tick, stateAt, resolveDay, rollDay, genDisturb, applyProfession, switchProfession, st: () => st, sched: () => sched, set: (patch) => { st = { ...st, ...patch } }, reloadSchedule: () => { sched = loadSchedule() } }
   },
 }
