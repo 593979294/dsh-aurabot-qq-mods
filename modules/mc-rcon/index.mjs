@@ -88,7 +88,7 @@ const MODE_LABEL = { smart: '智能接话', wake: '只回应召唤', all: '每�
 export default {
   id: 'mc-rcon', // 要和文件夹名一样
   name: '我的世界服务器分身',
-  version: '1.5.3',
+  version: '1.5.4',
   api: 1, // 按哪一版扩展接口写的，别改
   description: '通过 RCON 控制我的世界服务器；在游戏聊天里像群聊一样接话，有人死了会主动调侃一句；换端时自动读取运行中服务器的 RCON 与日志路径。',
 
