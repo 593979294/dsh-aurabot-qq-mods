@@ -234,6 +234,13 @@ test('多职业：医生周三夜班跨午夜，周四早上还是班上、下�
   const thuNoon = exp.stateAt(at(D('2026-11-19'), '14:00'))
   assert.equal(thuNoon.state, 'home')
   assert.match(thuNoon.label, /休息日|请假|在家/)
+  // 周六上午半天门诊：结束在中午前但不是夜班（v1.1.1 修正夜班启发式）
+  const satAm = exp.stateAt(at(D('2026-11-21'), '10:00'))
+  assert.equal(satAm.state, 'work')
+  assert.equal(satAm.night, false)
+  const satPm = exp.stateAt(at(D('2026-11-21'), '13:30'))
+  assert.equal(satPm.state, 'home')
+  assert.doesNotMatch(satPm.label, /下夜班/)
 })
 
 test('多职业：保安夜班周——周六凌晨 2 点在班上（前一天跨午夜段），周日凌晨也是', () => {
@@ -278,4 +285,35 @@ test('多职业：手动班表不被轮换覆盖；/professions 切职业强制�
   assert.equal(JSON.stringify(exp.sched().week), JSON.stringify({ mon: [['08:00', '16:00']], tue: [['08:00', '16:00']], wed: [['08:00', '16:00']], thu: [['08:00', '16:00']], fri: [['08:00', '16:00']], sat: [], sun: [] }))
   assert.equal(exp.sched().weekSource, 'nurse#0')
   assert.ok(tools.some((t) => t.name === 'life_schedule'))
+})
+
+test('多职业：高中生——上课/课间/晚自习/放学，周六补课周日休，校园用语', () => {
+  const { api } = makeApi({ settings: { profession: 'student' } })
+  const exp = mod.setup(api)
+  exp.applyProfession(at(D('2026-11-16'), '12:00'))
+  const mon = '2026-11-16'
+  // 早读上课中，措辞是「上课中」不是「上班中」
+  const r1 = exp.stateAt(at(D(mon), '08:30'))
+  assert.equal(r1.state, 'work')
+  assert.match(r1.label, /上课中/)
+  assert.doesNotMatch(r1.label, /上班中/)
+  assert.match(r1.label, /07:30–12:00/)
+  // 午休空档：在家，livin 开
+  const r2 = exp.stateAt(at(D(mon), '12:30'))
+  assert.equal(r2.state, 'home')
+  assert.match(r2.label, /课间休息/)
+  assert.equal(r2.livin, true)
+  // 晚自习
+  assert.equal(exp.stateAt(at(D(mon), '20:00')).state, 'work')
+  assert.equal(exp.stateAt(at(D(mon), '20:00')).night, false) // 晚自习不算夜班
+  // 放学到家
+  const r3 = exp.stateAt(at(D(mon), '22:00'))
+  assert.equal(r3.state, 'home')
+  assert.match(r3.label, /放学到家/)
+  // 周六上午补课、下午休；周日全天休
+  const sat = exp.stateAt(at(D('2026-11-21'), '10:00'))
+  assert.equal(sat.state, 'work')
+  assert.match(sat.label, /08:00–12:00/)
+  assert.equal(exp.stateAt(at(D('2026-11-21'), '15:00')).state, 'home')
+  assert.match(exp.stateAt(at(D('2026-11-22'), '15:00')).label, /休息日/)
 })

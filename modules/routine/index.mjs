@@ -214,10 +214,11 @@ export default {
         }
       }
       if (seg) {
-        const night = seg[0] >= seg[1] || seg[1] <= 12 * 60
+        // 夜班 = 跨午夜段，或凌晨（6 点前）开班的段；早读 7:30-12:00、周六半天门诊这种「结束在中午前」的班不是夜班
+        const night = seg[0] > seg[1] || seg[0] < 6 * 60
         return {
           state: 'work',
-          label: `${night ? '夜班中' : '上班中'}（${fmtMin(seg[0])}–${fmtMin(seg[1])}${flavor}）`,
+          label: `${night ? '夜班中' : (prof.w?.on || '上班中')}（${fmtMin(seg[0])}–${fmtMin(seg[1])}${flavor}）`,
           night,
           livin: false,
           day: desc,
@@ -240,12 +241,12 @@ export default {
       const last = segs[segs.length - 1]
       if (first && mins < first[0]) return { state: 'home', label: '还没出门，在家', livin: true, day: desc, seg: null }
       if (last && last[0] < last[1] && mins >= last[1]) {
-        // 最后一班结束在中午前 = 下的是夜班，早上这段时间在补觉
-        if (last[1] <= 12 * 60 && mins < last[1] + 4 * HOUR / MIN) return { state: 'home', label: '下夜班了，在家补觉', livin: true, day: desc, seg: null }
-        return { state: 'home', label: '下班到家了，今晚是自己的时间', livin: true, day: desc, seg: null }
+        // 最后一段是夜班（跨午夜判定见上，凌晨开班也算）：早上这段时间在补觉
+        if ((last[0] > last[1] || last[0] < 6 * 60) && mins < last[1] + 4 * HOUR / MIN) return { state: 'home', label: '下夜班了，在家补觉', livin: true, day: desc, seg: null }
+        return { state: 'home', label: `${prof.w?.back || '下班到家了'}，今晚是自己的时间`, livin: true, day: desc, seg: null }
       }
       // 两班之间的空档（餐饮午市结束到晚市开始）
-      return { state: 'home', label: '班间休息，这一小段是自己的', livin: true, day: desc, seg: null }
+      return { state: 'home', label: `${prof.w?.gap || '班间休息'}，这一小段是自己的`, livin: true, day: desc, seg: null }
     }
 
     // ---------- livin 开关：只在状态切换沿写，写之前先看现在是不是已经是那个值 ----------
@@ -321,10 +322,10 @@ export default {
         const desc = resolveDay(day, new Date(t))
         const roll = Math.random() * 100
         if (desc.type === 'rest' && roll < 25) {
-          st.disturb.push({ id: `d${t}`, day, type: 'work', segments: workSegs, note: '临时加班' })
+          st.disturb.push({ id: `d${t}`, day, type: 'work', segments: workSegs, note: profOf().w?.overtime || '临时加班' })
           picks++
         } else if (desc.type === 'work' && roll >= 25 && roll < 45) {
-          st.disturb.push({ id: `d${t}`, day, type: 'rest', segments: [], note: '调休' })
+          st.disturb.push({ id: `d${t}`, day, type: 'rest', segments: [], note: profOf().w?.overtime === '临时补课' ? '临时调课' : '调休' })
           picks++
         }
       }
@@ -376,7 +377,7 @@ export default {
       const p = c.pressureOn && st.pressure >= 60 ? `，压力${st.pressure}有点重` : ''
       if (res.state === 'work') line = res.night
         ? `现在是夜班，${res.label}${p}，忙起来回复会慢，只能抽空看一眼手机${res.day?.note ? `（${res.day.note}）` : ''}`
-        : `现在是上班时间，${res.label}${p}，只能偶尔偷偷看下手机${res.day?.note ? `（${res.day.note}）` : ''}`
+        : `现在是${profOf().w?.time || '上班时间'}，${res.label}${p}，只能偶尔偷偷看下手机${res.day?.note ? `（${res.day.note}）` : ''}`
       else if (res.state === 'commute') line = `${res.label}，只能简单聊两句`
       else if (res.state === 'home') {
         line = res.day?.type === 'leave' ? `今天请假在家${p}，状态一般，慢慢缓`
@@ -449,7 +450,7 @@ export default {
           alignLivin(res, Date.now(), '托管开启')
           st.managedOn = true
           save()
-          return `作息托管开了。现在是${res.state === 'sleep' ? '睡觉中' : res.label}，过日子${res.livin ? '开着，她在家休息' : '先关着，上班时间不找乐子'}`
+          return `作息托管开了。现在是${res.state === 'sleep' ? '睡觉中' : res.label}，过日子${res.livin ? '开着，她在家休息' : `先关着，${profOf().w?.time || '上班时间'}不找乐子`}`
         }
         if (/^(off|关|关闭|停用)$/.test(a)) {
           api.saveSettings({ enabled: false })
