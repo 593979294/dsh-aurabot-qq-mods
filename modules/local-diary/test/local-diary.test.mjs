@@ -10,7 +10,13 @@ import { join } from 'node:path'
 
 import mod from '../index.mjs'
 
-const DAY = '2026-11-15'
+const pad2 = (n) => String(n).padStart(2, '0')
+/** 跟模块里的 dayKey 一致（本地时区），别写死日期，否则过一天就跑挂。 */
+const todayKey = () => {
+  const d = new Date()
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+}
+const DAY = todayKey()
 const BODY = '今天在公园看锦鲤，红的一片挤过来。'
 
 /** 建一个临时根目录，用例结束自动删。 */
@@ -84,7 +90,7 @@ test('第一次写落一份 md，同一天再写往后编号，旧的不覆盖',
   assert.equal(existsSync(day1), true)
 
   const text = readFileSync(day1, 'utf8')
-  assert.match(text, /^---\ndate: 2026-11-15\n/)
+  assert.match(text, new RegExp(`^---\\ndate: ${DAY}\\n`))
   assert.match(text, /mood: "心情不错"/)
   assert.match(text, /chats: 3/)
   assert.ok(text.includes(BODY), '正文应该原样落进文件')
@@ -259,4 +265,60 @@ test('/status 报的路径、篇数与翻了页的顺序对得上', async (t) =>
   assert.ok(status.items[0].file.endsWith(`${DAY}-2.md`), '最新的排最前面')
   assert.equal(typeof status.next, 'string')
   assert.ok(status.next.length > 0)
+})
+
+test('她要想许愿就落进 frontmatter 和索引，不想写也不硬塞', async (t) => {
+  const root = tempRoot(t)
+  const { api, inst } = boot(root, {
+    think: async () => '今天在公园看锦鲤，红的一片挤过来。\n\n愿望：想和他去看一次海。',
+  })
+
+  const res = await api.routes['/run']()
+  assert.equal(res.ok, true, res.message)
+  const text = readFileSync(join(inst.folder(), `${DAY}.md`), 'utf8')
+  assert.match(text, /wish: "想和他去看一次海。"/)
+
+  const status = await api.routes['/status']()
+  assert.equal(status.items[0].wish, '想和他去看一次海。')
+
+  const tools = (() => {
+    const got = api.toolSelector({ level: 'full', chat: { kind: 'private' } })
+    return Array.isArray(got) ? got : [got]
+  })()
+  const read = await tools[0].execute({ day: DAY })
+  assert.ok(read.message.includes('愿望：想和他去看一次海。'))
+})
+
+test('没写愿望的那天，正文里不出现 wish 字段', async (t) => {
+  const root = tempRoot(t)
+  const { api, inst } = boot(root, { think: async () => '今天没什么好说的。' })
+
+  await api.routes['/run']()
+  const text = readFileSync(join(inst.folder(), `${DAY}.md`), 'utf8')
+  assert.equal(/^wish:/m.test(text), false)
+  const status = await api.routes['/status']()
+  assert.equal(status.items[0].wish, '')
+})
+
+test('愿望写法宽松：带 # 标题、用「心愿」，取最后一条', async (t) => {
+  const root = tempRoot(t)
+  const dir = join(root, '手写')
+  mkdirSync(dir, { recursive: true })
+  const file = join(dir, `${DAY}.md`)
+  writeFileSync(file, [
+    '---',
+    `date: ${DAY}`,
+    'mood: "平平常常"',
+    '---',
+    '',
+    '## 愿望：想早点睡。',
+    '后来改主意了。',
+    '心愿：还是想多看一会儿星星。',
+    '',
+  ].join('\n'), 'utf8')
+
+  const { inst } = boot(root, { preset: { dir } })
+  const item = inst.list().find((x) => x.day === DAY)
+  assert.ok(item, '应该重扫到这篇')
+  assert.equal(item.wish, '还是想多看一会儿星星。')
 })

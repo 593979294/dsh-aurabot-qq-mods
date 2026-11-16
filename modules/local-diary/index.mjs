@@ -100,6 +100,7 @@ export default {
           file,
           chars: body.length,
           mood: meta.mood || '',
+          wish: clip(meta.wish || pickWish(body), 160),
           at: quiet(() => statSync(file).mtimeMs) || Date.now(),
           summary: clip(body, 90),
         })
@@ -149,6 +150,18 @@ export default {
       return { rows, lines: lines.slice(-1200), moodLine, moodTag, seen }
     }
 
+    /** 从正文里挑出「愿望」那一行；没写就返回空串。写法认「愿望：」「心愿：」，前面带不带 # 标题都行。 */
+    function pickWish(text) {
+      const re = /^[ \t]*(?:#{1,6}[ \t]*)?(?:愿望|心愿)[ \t]*[：:][ \t]*(.+)$/gm
+      let wish = ''
+      let m
+      while ((m = re.exec(text))) {
+        const line = String(m[1] || '').trim()
+        if (line) wish = line
+      }
+      return clip(wish, 160)
+    }
+
     function buildPrompt(day, { rows, lines, moodLine, seen }) {
       const parts = []
       parts.push(`今天（${day}）快过完了。下面是今天你身边的聊天，还有你今天碰到的一些事。用不用随你，不用全塞进去。`)
@@ -163,6 +176,8 @@ export default {
         '现在写今天的日记。这本子只有你自己看，不会发给任何人，主人也不会自动读到。',
         '想写多长就写多长，想怎么排版就怎么排版，只写一句「今天没什么好说的」也行；不用写成总结报告，也不用说漂亮话。',
         '这里只有你，捡你真正在意的写：谁说了什么让你记着了、你当时怎么想的、有什么没说出的话、今天吃到或看到的东西。',
+        '写完以后，如果今天确实有想许的愿——想做的事、想要的、想跟谁一起的——就在最后单独一行写「愿望：」接一句。',
+        '没有想许的就别写，别为了填这一行硬编一个；这一行写不写、写什么，全看你此刻想不想。',
         '明天你可能就记不清这些细节了，所以写给明天那个记性不好的自己看。',
       ].join('\n'))
       return parts.join('\n\n')
@@ -185,17 +200,17 @@ export default {
         while (existsSync(file)) file = join(dir, `${day}-${n++}.md`)
 
         const when = new Date()
-        const md = [
+        const wish = pickWish(text)
+        const head = [
           '---',
           `date: ${day}`,
           `mood: ${JSON.stringify(material.moodTag || '')}`,
           `chats: ${material.rows.length}`,
           `written: ${dayKey(when)} ${pad(when.getHours())}:${pad(when.getMinutes())}`,
-          '---',
-          '',
-          text,
-          '',
-        ].join('\n')
+        ]
+        if (wish) head.push(`wish: ${JSON.stringify(wish)}`)
+        head.push('---', '', text, '')
+        const md = head.join('\n')
         writeFileSync(file, md, 'utf8')
 
         // 日记放在数据目录外面时，镜像一份到备份区，换电脑可以带走
@@ -211,6 +226,7 @@ export default {
           file,
           chars: text.length,
           mood: clip(material.moodTag, 20),
+          wish,
           at: Date.now(),
           summary: clip(text, 120),
         }
@@ -220,9 +236,9 @@ export default {
         // 回流记忆库：换身体（换会话 / 迁移）之后还能想起写过什么
         const memory = api.lazy('memory')
         quiet(() => memory?.add?.({
-          text: `我在私人日记里写过（${day}）：${clip(text, 240)}`,
+          text: `我在私人日记里写过（${day}）：${clip(text, 240)}${wish ? `；那天我许的愿：${wish}` : ''}`,
           importance: 0.55,
-          tags: ['私人日记'],
+          tags: wish ? ['私人日记', '愿望'] : ['私人日记'],
           source: 'diary',
         }))
 

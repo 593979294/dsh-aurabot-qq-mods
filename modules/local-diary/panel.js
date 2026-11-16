@@ -59,6 +59,11 @@ const CSS = `
 .ld-body::-webkit-scrollbar-thumb{background:rgba(150,130,95,.35);border-radius:5px;}
 .ld-empty{padding:26px 26px 30px 48px;color:var(--ld-faint);font-size:17px;line-height:32px;}
 .ld-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 16px 8px 18px;border-top:1px solid rgba(150,130,95,.28);background:linear-gradient(#fbf6ea,#f5eedd);font-size:12.5px;color:var(--ld-faint);}
+.ld-wish{flex:0 0 auto;display:flex;align-items:baseline;gap:10px;padding:9px 26px 10px 48px;border-top:1px dashed rgba(150,130,95,.4);background:linear-gradient(#fdf9ee,#faf2e0);}
+.ld-wish .ld-wish-k{flex:0 0 auto;font-family:${HAND_TITLE};font-size:12.5px;letter-spacing:2px;color:#b0665c;}
+.ld-wish .ld-wish-t{flex:1;font-family:${HAND_BODY};font-size:17px;line-height:1.65;color:#7b5f3a;word-break:break-word;}
+.ld-tab .ld-star{margin-left:4px;font-size:10px;color:#c08a3e;opacity:.8;vertical-align:1px;}
+
 .ld-flip{font-family:${HAND_BODY};font-size:13px;color:#7a6747;background:linear-gradient(#fdfaf0,#efe6d2);border:1px solid var(--ld-edge);border-radius:7px;padding:3px 11px;cursor:pointer;}
 .ld-flip:hover{background:linear-gradient(#fff,#f5ecd8);}
 .ld-flip:disabled{opacity:.42;cursor:default;}
@@ -188,6 +193,11 @@ return function Panel({ toast }) {
           cur
             ? h('div', { className: 'ld-body' }, blocks(cur.body))
             : h('div', { className: 'ld-empty' }, loading ? '翻页中…' : '这一页还没打开。'),
+          (cur && cur.wish) || (items[page] && items[page].wish)
+            ? h('div', { className: 'ld-wish' },
+                h('span', { className: 'ld-wish-k' }, '愿望'),
+                h('span', { className: 'ld-wish-t' }, (cur && cur.wish) || items[page].wish))
+            : null,
           h('div', { className: 'ld-foot' },
             h('button', {
               className: 'ld-flip',
@@ -234,10 +244,11 @@ return function Panel({ toast }) {
               ref: (el) => { tabRefs.current[i] = el },
               className: 'ld-tab' + (i === page ? ' on' : ''),
               onClick: () => goto(i),
-              title: `${fmtTime(it.at)}　${it.summary || ''}`,
+              title: `${fmtTime(it.at)}　${it.wish ? '愿望：' + it.wish : (it.summary || '')}`,
             },
               dayLabel(it.day),
               it.mood ? h('span', { style: { opacity: .7 } }, '　' + it.mood) : null,
+              it.wish ? h('span', { className: 'ld-star' }, '✦') : null,
               it.day === todayKey ? h('span', { className: 'ld-dot' }) : null,
             )))
         : null,
