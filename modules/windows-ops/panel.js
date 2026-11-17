@@ -18,6 +18,18 @@ const DEFAULTS = {
   rateLimit: 60, // 每分钟操作上限
   powershellPath: '', // 留空 = System32 自动
   preferUia: true, // 优先用元素定位（读无障碍树按选择器操作），关了她会更爱点坐标
+  // v1.3.0 共享屏幕 / 远程协助
+  shareInterval: 5, // 每几秒一帧
+  shareQuality: 60, // JPEG 质量
+  shareMaxWidth: 1280, // 帧宽度上限
+  shareMinutes: 10, // 一次共享默认时长
+  remoteAllow: false, // 远程协助总开关（默认关，关着不起端口）
+  remotePort: 17890, // 远程协助端口
+  remoteBind: '0.0.0.0', // 监听地址
+  remoteMinutes: 15, // 邀请有效期
+  remotePublicBase: '', // 对外地址（隧道/反代），留空用局域网 IP
+  remoteMaxWidth: 1280, // 远程画面宽度
+  remoteQuality: 55, // 远程画面质量
 }
 
 return function Panel({ settings, save, toast }) {
@@ -25,6 +37,9 @@ return function Panel({ settings, save, toast }) {
   const [st, setSt] = useState(null) // /status 的状态总览
   const [opsList, setOpsList] = useState(null) // /ops 的操作目录（白名单「加入」用）
   const [confirms, setConfirms] = useState(null) // /confirm 的待确认队列
+  const [sh, setSh] = useState(null) // /share 共享屏幕状态（v1.3.0）
+  const [ras, setRas] = useState(null) // /assist 远程协助状态（v1.3.0）
+  const [link, setLink] = useState('') // 刚生成的远程协助链接（面板可复制）
 
   // ---- 编辑草稿：改了先存本地，点「保存设置」一次落盘；null = 与已存值一致（不脏）----
   const [draft, setDraft] = useState(null)
@@ -45,6 +60,11 @@ return function Panel({ settings, save, toast }) {
     setSt(s)
     const c = await call('/confirm')
     if (c.ok) setConfirms(c.confirms || [])
+    const a = await call('/share')
+    setSh(a)
+    const b = await call('/assist')
+    setRas(b)
+    if (b && b.active && b.url) setLink(b.url)
   })
   useEffect(() => { loadStatus() }, [])
 
@@ -85,6 +105,26 @@ return function Panel({ settings, save, toast }) {
     toast(approve ? '已批准，下一次同动作直接放行' : '已拒绝', 'ok')
     await loadStatus()
   })
+
+  // ---- v1.3.0：共享屏幕 / 远程协助（面板开停；启动后 QQ 私聊会同步收到通知与链接）----
+  const actShare = (action, minutes) => lock('share:' + action, async () => {
+    const r = await call('/share', { action, minutes })
+    if (!r.ok) return toast(r.error || r.message || '共享屏幕操作失败')
+    if (r.message) toast(r.message, 'ok')
+    setSh(r)
+    await loadStatus()
+  })
+  const actAssist = (action, minutes) => lock('assist:' + action, async () => {
+    const r = await call('/assist', { action, minutes })
+    if (!r.ok) return toast(r.error || r.message || '远程协助操作失败')
+    if (r.url) setLink(r.url)
+    if (r.message) toast(r.message, 'ok')
+    setRas(r)
+  })
+  const copyLink = async () => {
+    if (!link) return
+    try { await navigator.clipboard.writeText(link); toast('链接已复制', 'ok') } catch { toast('复制失败，请手动选择链接复制') }
+  }
 
   // ---- 指引提示词库：仿「人格」页的分节编辑（分节/整段来回切，保存仍是原来的一整段） ----
   // 节标记认两种写法：【标题】（文档首行）与「◆ 标题」（总则/操作套路/坑），拼回时保持原标记，旧指引不用改。
@@ -294,6 +334,66 @@ return function Panel({ settings, save, toast }) {
         '本模块可模拟键鼠、关闭窗口、读写剪贴板、截取全屏——等同于把这台电脑交给 AI 远程控制：她能代你点击任何界面（包括聊天窗口和支付页面）、能读到剪贴板里的密码与验证码、能截走屏幕上的隐私内容。'
         + '缓解措施：总开关默认关、键鼠模拟单独开关、操作白名单、危险操作确认队列、试运行模式、每分钟限速，且工具只在主人会话放行。'
         + '请只在本人可信设备上开启；不用时把总开关关上，并留意下面的「待确认」列表，防止误批准。')),
+
+    // ===== ①½ 共享屏幕（v1.3.0）：按主人指令把画面定时发到 QQ 私聊 =====
+    h(ui.Card, {
+      title: '共享屏幕（发到 QQ 私聊）',
+      desc: '打开总开关后，点「开始共享」就按下面的间隔把她眼前的屏幕截成图片，发到主人 QQ 私聊；画面没变时不重复发（最多 60 秒补一张心跳）。'
+        + ' 改下面的参数要先点主卡的「保存设置」再开始。只在主人私聊发，群里不发。',
+    },
+    sh && sh.active
+      ? h('div', null,
+        stRow('状态', '共享中'),
+        stRow('已发送', `${sh.sent} 张（跳过 ${sh.skipped} 帧，失败 ${sh.errors} 次）`),
+        stRow('剩余', `${Math.max(0, Math.ceil((sh.remainingMs || 0) / 60000))} 分钟（每 ${sh.intervalSec} 秒一帧）`),
+        sh.lastError ? stRow('最近错误', sh.lastError) : null)
+      : h('div', { className: 'ab-small ab-muted', style: { marginBottom: 8 } }, '现在没有在共享屏幕。'),
+    h(ui.Row, { label: '每几秒一帧', hint: '2~300 秒；太短会刷屏也更费流量，默认 5 秒' },
+      h('input', { className: 'ab-input', style: { width: 100 }, type: 'number', min: 2, max: 300, value: d.shareInterval, onChange: (e) => upd({ shareInterval: e.target.value }) })),
+    h(ui.Row, { label: '画面宽度 / 质量', hint: '宽度上限（320~3840，默认 1280）与 JPEG 质量（20~95，默认 60）' },
+      h('span', { className: 'ab-flex', style: { gap: 6 } },
+        h('input', { className: 'ab-input', style: { width: 100 }, type: 'number', min: 320, max: 3840, step: 160, value: d.shareMaxWidth, onChange: (e) => upd({ shareMaxWidth: e.target.value }) }),
+        h('input', { className: 'ab-input', style: { width: 80 }, type: 'number', min: 20, max: 95, value: d.shareQuality, onChange: (e) => upd({ shareQuality: e.target.value }) }))),
+    h(ui.Row, { label: '默认共享时长', hint: '1~120 分钟；QQ 里发 /wops share <分钟> 可以临时改' },
+      h('input', { className: 'ab-input', style: { width: 100 }, type: 'number', min: 1, max: 120, value: d.shareMinutes, onChange: (e) => upd({ shareMinutes: e.target.value }) })),
+    h('div', { className: 'ab-flex', style: { marginTop: 10 } },
+      btn('开始共享', () => actShare('start'), 'share:start', true),
+      btn('停止共享', () => actShare('stop'), 'share:stop'),
+      btn('刷新状态', loadStatus, 'status'))),
+
+    // ===== ①¾ 远程协助（v1.3.0）：一次性邀请链接，主人在手机/另一台电脑上接管 =====
+    h(ui.Card, {
+      title: '远程协助（一次性邀请）',
+      desc: '生成一条只有主人能用的临时链接：主人在手机或另一台电脑打开，就能实时看到这台电脑的屏幕，并直接点击、输入。'
+        + ' 默认关；关着连端口都不起。链接 1~60 分钟有效（默认 15），生成后同时私聊发给主人，停掉或过期立即失效。',
+    },
+    swRow('允许远程协助', 'remoteAllow', '这是远程协助的总开关：关着时 /wops assist 和工具都会被拒，端口也不会监听'),
+    h(ui.Row, { label: '端口 / 有效期', hint: '端口 1024~65535（默认 17890）；有效期 1~60 分钟（默认 15）' },
+      h('span', { className: 'ab-flex', style: { gap: 6 } },
+        h('input', { className: 'ab-input', style: { width: 100 }, type: 'number', min: 1024, max: 65535, value: d.remotePort, onChange: (e) => upd({ remotePort: e.target.value }) }),
+        h('input', { className: 'ab-input', style: { width: 80 }, type: 'number', min: 1, max: 60, value: d.remoteMinutes, onChange: (e) => upd({ remoteMinutes: e.target.value }) }))),
+    h(ui.Row, { label: '监听地址', hint: '0.0.0.0 = 局域网可达（默认）；127.0.0.1 = 只有本机能连，适合套隧道/反代时用' },
+      h('input', { className: 'ab-input', style: { width: 160 }, value: d.remoteBind || '', placeholder: '0.0.0.0', onChange: (e) => upd({ remoteBind: e.target.value }) })),
+    h(ui.Row, { label: '对外地址', hint: '可选：填了就用它拼链接（frp / 反代 / 公网域名，如 https://pc.example.com）；留空自动用本机局域网 IP + 端口' },
+      h('input', { className: 'ab-input', style: { width: 320 }, value: d.remotePublicBase || '', placeholder: '（留空 = 局域网 IP）', onChange: (e) => upd({ remotePublicBase: e.target.value }) })),
+    ras && ras.active
+      ? h('div', { style: { marginTop: 8 } },
+        stRow('状态', `开着（剩 ${Math.max(0, Math.ceil((ras.remainingMs || 0) / 60000))} 分钟，已操作 ${ras.actions} 次）`),
+        stRow('端口', `${ras.bind || ''}:${ras.port || ''}`))
+      : h('div', { className: 'ab-small ab-muted', style: { marginTop: 8 } }, '现在没有开着的远程协助。'),
+    (link || (ras && ras.active && ras.url))
+      ? h('div', { style: { marginTop: 8, padding: '8px 10px', border: '1px solid var(--ab-line)', borderRadius: 6 } },
+        h('div', { className: 'ab-small ab-muted', style: { marginBottom: 4 } }, '邀请链接（只发给主人本人）'),
+        h('code', { style: { fontSize: 12, wordBreak: 'break-all' } }, link || ras.url),
+        h('div', { className: 'ab-flex', style: { marginTop: 6 } }, btn('复制链接', copyLink, 'copylink')))
+      : null,
+    h('div', { className: 'ab-flex', style: { marginTop: 10 } },
+      btn('生成邀请', () => actAssist('start'), 'assist:start', true),
+      btn('关闭通道', () => actAssist('stop'), 'assist:stop'),
+      btn('刷新状态', loadStatus, 'status')),
+    h('div', { className: 'ab-small', style: { marginTop: 10, color: '#e5484d', lineHeight: 1.7 } },
+      '⚠️ 链接等于这台电脑的临时控制权：只能发给主人本人，别转发到群里；用完立刻点「关闭通道」。'
+      + '远程点击/输入要求主卡「允许键鼠模拟」也开着——没开时只能看屏幕，动不了。')),
 
     // ===== ①⅜ 元素定位（UIA）：坐标点击 vs 读无障碍树按选择器操作，默认优先后者 =====
     // 放在高权限风险提示之后、白名单之前：先让主人知道「动」有风险，再告诉他「动」有两种动法。

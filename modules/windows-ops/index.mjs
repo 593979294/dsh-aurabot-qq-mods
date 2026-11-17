@@ -2,8 +2,13 @@
 // 来源：aurabot 模块库 modules/windows-ops（本仓库原创，MIT）
 // 作用：把 lib/ps.mjs（PowerShell 执行底座）、lib/ops.mjs（操作目录）、lib/uia.mjs（UIA 无障碍树元素定位）、
 //       lib/safety.mjs（白名单/确认/限速闸门）、lib/guides.mjs（指引库）装配成完整模块：
-//       自定义面板 panel.js、AI 工具（windows_ops / windows_ops_status / windows_ops_guide）、
-//       /wops 命令、/screenshot /status /ops /confirm /guides 面板路由。
+//       自定义面板 panel.js、AI 工具（windows_ops / windows_ops_status / windows_ops_guide /
+//       windows_share_screen / windows_remote_assist）、/wops 命令、
+//       /screenshot /status /ops /confirm /guides /share /assist 面板路由。
+// v1.3.0 新增（「逛电脑」的共享与远程）：
+//   · lib/screen.mjs —— 按主人指令把屏幕按间隔发到主人 QQ 私聊（共享屏幕）；
+//   · lib/remote.mjs —— 生成一次性邀请链接，主人在手机/另一台电脑上实时看屏幕并直接操作（远程协助邀请）。
+//   两者都不碰键鼠闸门：共享只截屏；远程协助的输入仍要求面板打开「允许键鼠模拟」。
 // 契约：export default { id, name, version, api, settings: [], setup(api) → 导出对象 }
 //   导出（api.use('windows-ops') 拿到）：
 //     run(op, args) → { ok, message, data? }  —— 直接执行一个操作（不过安全闸门）
@@ -29,13 +34,15 @@ import { createPs } from './lib/ps.mjs'
 import { createOps, OPS } from './lib/ops.mjs'
 import { createSafety } from './lib/safety.mjs'
 import { createGuides } from './lib/guides.mjs'
+import { createScreenShare } from './lib/screen.mjs'
+import { createRemoteAssist } from './lib/remote.mjs'
 
 export default {
   id: 'windows-ops',
   name: '逛电脑（Windows 自动化）',
-  version: '1.2.1',
+  version: '1.3.0',
   api: 1,
-  description: '经 PowerShell 操作这台电脑：读无障碍树（UIA）按元素点击/写值/读文本/触发表单，窗口枚举/激活/关闭、截屏、剪贴板读写、键鼠模拟。默认仅主人可用，带操作白名单、危险操作确认门槛与指引体系。',
+  description: '经 PowerShell 操作这台电脑：读无障碍树（UIA）按元素点击/写值/读文本/触发表单，窗口枚举/激活/关闭、截屏、剪贴板读写、键鼠模拟；并通过 QQ 向主人共享屏幕、生成一次性远程协助邀请（看屏幕/点击/输入）。默认仅主人可用，带操作白名单、危险操作确认门槛与指引体系。',
   panel: 'panel.js', // 自定义面板：settings 数组留空，全部字段由 panel.js 接管（仿 phone）
   // settings 留空：面板字段全部由 panel.js 接管（总开关挂在模块名同一行，仿 phone/B 站页）。
   // 默认值兜底两处：panel.js 的 DEFAULTS（显示用）+ 下面 getSettings()（运行时兜底）。
@@ -49,6 +56,18 @@ export default {
     rateLimit: 60,
     powershellPath: '',
     preferUia: true, // 优先用元素定位（v1.2.0）：默认开，关掉则按坐标操作（兜底路径仍存在）
+    // v1.3.0 共享与远程
+    shareInterval: 5, // 共享屏幕：每几秒一帧
+    shareQuality: 60, // 共享帧 JPEG 质量（20~95）
+    shareMaxWidth: 1280, // 共享帧宽度上限（省流量）
+    shareMinutes: 10, // 一次共享默认多少分钟（1~120）
+    remoteAllow: false, // 远程协助总开关：默认关，关着连端口都不起
+    remotePort: 17890, // 远程协助端口（1024~65535）
+    remoteBind: '0.0.0.0', // 监听地址：0.0.0.0 局域网可达；127.0.0.1 只有本机
+    remoteMinutes: 15, // 邀请有效期（1~60 分钟）
+    remotePublicBase: '', // 对外地址（隧道/反代），留空用局域网 IP
+    remoteMaxWidth: 1280, // 远程画面宽度上限
+    remoteQuality: 55, // 远程画面 JPEG 质量
   },
 
   setup(api) {
@@ -56,6 +75,10 @@ export default {
     /** 设置每次现读（面板改完即时生效，不缓存）。 */
     const getSettings = () => {
       const s = api.settings()
+      const num = (v, d, min, max) => {
+        const n = Number(v)
+        return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : d
+      }
       return {
         enabled: s.enabled === true, // 总开关：明确 true 才放行
         opsWhitelist: String(s.opsWhitelist || '').split(/\r?\n/).map((x) => x.trim()).filter(Boolean),
@@ -66,6 +89,18 @@ export default {
         powershellPath: String(s.powershellPath || ''),
         // 元素定位优先（面板「优先用元素定位」开关）：只有明确关成 false 才按坐标走，缺省 true
         preferUia: s.preferUia !== false,
+        // v1.3.0：共享屏幕与远程协助（数值范围在这里统一夹住，面板/命令/工具传什么都跑不出去）
+        shareInterval: num(s.shareInterval, 5, 2, 300),
+        shareQuality: num(s.shareQuality, 60, 20, 95),
+        shareMaxWidth: num(s.shareMaxWidth, 1280, 320, 3840),
+        shareMinutes: num(s.shareMinutes, 10, 1, 120),
+        remoteAllow: s.remoteAllow === true, // 默认关：关着连端口都不起
+        remotePort: num(s.remotePort, 17890, 1024, 65535),
+        remoteBind: String(s.remoteBind || '0.0.0.0') === '127.0.0.1' ? '127.0.0.1' : '0.0.0.0',
+        remoteMinutes: num(s.remoteMinutes, 15, 1, 60),
+        remotePublicBase: String(s.remotePublicBase || '').trim(),
+        remoteMaxWidth: num(s.remoteMaxWidth, 1280, 320, 3840),
+        remoteQuality: num(s.remoteQuality, 55, 20, 95),
       }
     }
     const offMsg = () => ({ ok: false, message: '逛电脑总开关没开：请先到面板打开「总开关」' })
@@ -76,6 +111,56 @@ export default {
     const ops = createOps({ ps, dataDir: dataDir() })
     const safety = createSafety({ dataDir: dataDir(), getSettings, opsMeta: OPS })
     const guides = createGuides(dataDir())
+
+    // ================= v1.3.0：共享屏幕（QQ 发帧）/ 远程协助（一次性邀请链接）=================
+    /** 主人私聊 chatId（配置里的 ownerQQ；面板/命令要用时兜底）。 */
+    const ownerChatId = () => {
+      const q = String(api.config?.()?.ownerQQ || '').trim()
+      return /^\d{5,12}$/.test(q) ? `private:${q}` : ''
+    }
+    const share = createScreenShare({
+      ops,
+      dataDir: dataDir(),
+      getSettings,
+      log: api.log,
+      sendImage: (chatId, src) => api.sendImage(chatId, src),
+      // 自动停（到点/连续失败）时在会话聊天里说一声；主人手动停不重复播报
+      onEnd: (done) => {
+        if (!done?.chatId) return
+        if (!/^(到点|连续)/.test(String(done.reason || ''))) return
+        api.send(done.chatId, `（屏幕共享已停止：${done.reason}）`).catch(() => {})
+      },
+    })
+    const remote = createRemoteAssist({ ops, dataDir: dataDir(), getSettings, log: api.log })
+
+    /** 邀请文案：链接单独一行，方便 QQ 点开；令牌不落日志、也不让模型改写。 */
+    const inviteText = (r) => [
+      '【远程协助邀请】主人，通道已经打开：',
+      r.url,
+      `有效期 ${r.minutes} 分钟，打开就能看到这台电脑的屏幕并直接点击/输入；用完发 /wops assist stop，或点页面「断开」，立刻失效。`,
+      '链接等于这台电脑的临时控制权，只发给主人本人，别转发。',
+    ].join('\n')
+
+    /** 邀请后先补一张当前画面（QQ 里能立刻看到是锁屏还是桌面）。 */
+    async function sendAssistPreview(chatId) {
+      try {
+        const cap = await ops.run('screen.capture', { maxWidth: getSettings().shareMaxWidth, quality: getSettings().shareQuality })
+        if (!cap?.ok || !cap?.data?.file) return
+        const buf = readFileSync(cap.data.file)
+        await api.sendImage(chatId, 'base64://' + Buffer.from(buf).toString('base64'))
+      } catch { /* 预览失败不影响邀请本身 */ }
+    }
+
+    // 共享屏幕的心跳：每秒调一次，只有到点才截帧（间隔/时长都由 lib/screen.mjs 管）
+    // （api.every 是插件接口；单测的 fake api 不带这个面，这里按能力探测，避免装配期报错）
+    if (typeof api.every === 'function') {
+      api.every(1000, async () => { await share.tick() }, '共享屏幕')
+      // 兜底：远程邀请到期后尽快释放端口（请求时也会判过期，这里不依赖有人访问）
+      api.every(5000, async () => {
+        const st = remote.status()
+        if (st.active && st.remainingMs <= 0) remote.stop('邀请到期')
+      }, '远程协助到期')
+    }
 
     /** 危险操作的摘要（确认队列里给主人看）。 */
     function summaryOf(op, args) {
@@ -118,6 +203,8 @@ export default {
       if (!s.enabled) return ''
       const lines = ['【逛电脑总纲（操作这台电脑时必读，与按需取的手册一起看）】', guides.get('main')]
       if (!s.preferUia) lines.push('【本次设置】元素定位优先已关闭：按坐标操作（mouse.move / mouse.click），读无障碍树只用来确认界面状态。')
+      lines.push('【共享与远程】主人说「给我看看屏幕 / 盯一下这个界面」→ windows_share_screen start（按间隔发到主人私聊，说 stop 就停）；主人说「邀请我远程协助 / 让你远程帮我」→ windows_remote_assist start，把返回的链接原样发给主人（链接等于临时控制权，只发主人私聊）。')
+      if (!s.remoteAllow) lines.push('【本次设置】远程协助总开关关着：windows_remote_assist 会被拒，先提醒主人到面板「远程协助」卡打开开关。')
       return lines.join('\n')
     })
 
@@ -138,7 +225,7 @@ export default {
         : '本次设置已关闭元素定位优先：按坐标操作（先 screenshot 看清位置，再 mouse.move / mouse.click）。'
     }
 
-    api.tool(() => [
+    api.tool((toolCtx) => [
       api.defineTool({
         name: 'windows_ops',
         description: '操作主人这台 Windows 电脑：读无障碍树（UIA）并按元素点击/写值/读文本/触发表单、读/写剪贴板、全屏截图、枚举/激活/关闭窗口、移动/点击鼠标、键入文字、按键。'
@@ -184,13 +271,91 @@ export default {
           return { ok: true, message: guides.get(key) }
         },
       }),
+      // ---- v1.3.0：共享屏幕（QQ 发帧）----
+      api.defineTool({
+        name: 'windows_share_screen',
+        description: '按固定间隔把主人这台电脑的屏幕截成图片，发到主人的 QQ 私聊（主人说「给我看看屏幕」「盯一下这个界面」时用）。'
+          + 'start 只发给主人私聊，默认按面板设置的间隔与时长；stop 立即停；status 看已发多少张、还剩多久。',
+        properties: {
+          action: { type: 'string', description: 'start 开始 / stop 停止 / status 看状态' },
+          minutes: { type: 'number', description: '这次共享多少分钟（1~120，默认按面板设置，一般不用填）' },
+        },
+        required: ['action'],
+        execute: async (args, ctx) => {
+          if (!ownerToolCall(ctx)) return notOwnerMsg()
+          const action = String(args.action || 'status').toLowerCase()
+          if (action === 'status') {
+            const st = share.status()
+            return {
+              ok: true,
+              message: st.active
+                ? `正在共享屏幕：已发 ${st.sent} 张、跳过 ${st.skipped} 帧，还剩约 ${Math.max(0, Math.ceil(st.remainingMs / 60000))} 分钟（每 ${st.intervalSec} 秒一帧）`
+                : '现在没有在共享屏幕。主人说要看屏幕时用 start 开。',
+            }
+          }
+          if (action === 'stop') {
+            const r = share.stop('主人让停')
+            return { ok: r.ok, message: r.message }
+          }
+          if (action === 'start') {
+            const chat = toolCtx?.chat || {}
+            if (chat.kind !== 'private') return { ok: false, message: '共享屏幕只往主人私聊发，群里不发' }
+            if (!getSettings().enabled) return { ok: false, message: '逛电脑总开关没开：先到面板打开「总开关」' }
+            if (!chat.chatId) return { ok: false, message: '拿不到当前私聊的 chatId，换在主人私聊里再试' }
+            const r = share.start({ chatId: chat.chatId, minutes: args.minutes })
+            if (r.ok) await share.tick() // 先发一帧，主人不用等一个间隔
+            return { ok: r.ok, message: r.message }
+          }
+          return { ok: false, message: 'action 只能是 start / stop / status' }
+        },
+      }),
+      // ---- v1.3.0：远程协助邀请（一次性链接，主人用浏览器接管）----
+      api.defineTool({
+        name: 'windows_remote_assist',
+        description: '生成一条远程协助邀请：主人在手机/另一台电脑上打开链接，就能实时看这台电脑的屏幕并直接点击、输入（主人说「邀请我远程协助」「让你远程帮我」「把电脑交给我」时用）。'
+          + '需要面板打开「允许远程协助」；默认 15 分钟、一次性；start 会把链接和一张当前画面发到主人私聊。',
+        properties: {
+          action: { type: 'string', description: 'start 生成邀请 / stop 关闭通道 / status 看状态' },
+          minutes: { type: 'number', description: '有效期多少分钟（1~60，默认按面板设置）' },
+        },
+        required: ['action'],
+        execute: async (args, ctx) => {
+          if (!ownerToolCall(ctx)) return notOwnerMsg()
+          const action = String(args.action || 'status').toLowerCase()
+          if (action === 'status') {
+            const st = remote.status()
+            return {
+              ok: true,
+              message: st.active
+                ? `远程协助开着：${st.url}（还剩约 ${Math.max(0, Math.ceil(st.remainingMs / 60000))} 分钟，已操作 ${st.actions} 次，端口 ${st.port}）`
+                : '现在没有开着的远程协助邀请。',
+            }
+          }
+          if (action === 'stop') {
+            const r = remote.stop('主人让停')
+            return { ok: r.ok, message: r.message }
+          }
+          if (action === 'start') {
+            const chat = toolCtx?.chat || {}
+            if (chat.kind !== 'private') return { ok: false, message: '邀请链接只往主人私聊发，群里不发' }
+            if (!getSettings().enabled) return { ok: false, message: '逛电脑总开关没开：先到面板打开「总开关」' }
+            if (!chat.chatId) return { ok: false, message: '拿不到当前私聊的 chatId，换在主人私聊里再试' }
+            const r = await remote.invite({ minutes: args.minutes })
+            if (!r.ok) return { ok: false, message: r.message }
+            await api.sendText(chat.chatId, inviteText(r)).catch(() => {})
+            await sendAssistPreview(chat.chatId)
+            return { ok: true, message: `远程协助邀请已发到主人私聊（${r.minutes} 分钟有效）：${r.url}` }
+          }
+          return { ok: false, message: 'action 只能是 start / stop / status' }
+        },
+      }),
     ])
 
     // ================= /wops 命令（框架只认主人）=================
     api.command({
       name: 'wops',
-      desc: '逛电脑：ops / status / shot / confirm 批准|拒绝 <尾号>',
-      async run(arg) {
+      desc: '逛电脑：ops / status / shot / share 开始|停止 / assist 开始|停止 / confirm 批准|拒绝 <尾号>',
+      async run(arg, msg) {
         const [verb, ...rest] = arg.trim().split(/\s+/)
         try {
           switch (verb) {
@@ -204,6 +369,42 @@ export default {
             case 'shot': {
               const r = await exec('screenshot', {})
               return r.message
+            }
+            // ---- v1.3.0：/wops share —— 按主人指令把屏幕发到 QQ 私聊 ----
+            case 'share': {
+              const sub = String(rest[0] || '').toLowerCase()
+              if (sub === 'stop' || sub === '停止') return share.stop('主人停止').message
+              if (sub === 'status' || sub === '状态') {
+                const st = share.status()
+                return st.active
+                  ? `共享中：已发 ${st.sent} 张、跳过 ${st.skipped} 帧，还剩约 ${Math.max(0, Math.ceil(st.remainingMs / 60000))} 分钟（每 ${st.intervalSec} 秒一帧）`
+                  : '现在没有在共享屏幕。发 /wops share [分钟] 开始（只发主人私聊）。'
+              }
+              if (msg?.kind !== 'private') return '共享屏幕只往主人私聊发，群里不发。'
+              if (!getSettings().enabled) return '逛电脑总开关没开：先到面板打开「总开关」'
+              const mins = Number(sub)
+              const r = share.start({ chatId: msg.chatId, minutes: Number.isFinite(mins) && mins > 0 ? mins : undefined })
+              if (r.ok) await share.tick() // 先发一帧
+              return r.message
+            }
+            // ---- v1.3.0：/wops assist —— 生成一次性远程协助邀请（链接私聊发主人）----
+            case 'assist': {
+              const sub = String(rest[0] || '').toLowerCase()
+              if (sub === 'stop' || sub === '停止') return remote.stop('主人停止').message
+              if (sub === 'status' || sub === '状态') {
+                const st = remote.status()
+                return st.active
+                  ? `远程协助开着：${st.url}（还剩约 ${Math.max(0, Math.ceil(st.remainingMs / 60000))} 分钟，已操作 ${st.actions} 次）`
+                  : '现在没有开着的远程协助。发 /wops assist [分钟] 生成邀请（只在主人私聊可用）。'
+              }
+              if (msg?.kind !== 'private') return '远程协助邀请只发主人私聊，群里不发。'
+              if (!getSettings().enabled) return '逛电脑总开关没开：先到面板打开「总开关」'
+              const mins = Number(sub)
+              const r = await remote.invite({ minutes: Number.isFinite(mins) && mins > 0 ? mins : undefined })
+              if (!r.ok) return r.message
+              await api.sendText(msg.chatId, inviteText(r)).catch(() => {})
+              await sendAssistPreview(msg.chatId)
+              return `远程协助已开启（${r.minutes} 分钟有效）：${r.url}`
             }
             case 'confirm': {
               const [sub, tail] = rest
@@ -227,7 +428,7 @@ export default {
               return '用法：/wops confirm [批准|拒绝 <尾号>]'
             }
             case '':
-              return '用法：/wops ops|status|shot|confirm ...'
+              return '用法：/wops ops|status|shot|share [分钟|stop]|assist [分钟|stop]|confirm ...'
             default:
               return `未知子命令 ${verb}`
           }
@@ -270,6 +471,50 @@ export default {
       if (body.reject) { safety.rejectConfirm(item.id); return { ok: true } }
       return { ok: false, error: '需要 { approve|reject, id }' }
     })
+    // ---- v1.3.0：共享屏幕（面板开/停/看状态；POST 里 chatId 可覆盖，缺省用配置里的主人 QQ）----
+    api.route('/share', async (req) => {
+      if (req.method === 'GET') return { ok: true, ...share.status() }
+      if (req.method !== 'POST') return { ok: false, error: '只支持 GET/POST' }
+      const body = await api.core.http.body(req).catch(() => ({}))
+      const action = String(body.action || 'status')
+      if (action === 'stop') {
+        const r = share.stop('面板停止')
+        return { ok: r.ok, message: r.message, ...share.status() }
+      }
+      if (action === 'start') {
+        if (!getSettings().enabled) return { ok: false, error: '总开关没开：先打开「总开关」再共享屏幕' }
+        const chatId = String(body.chatId || ownerChatId() || '')
+        if (!chatId) return { ok: false, error: '配置里没有主人 QQ：先在插件设置里填主人 QQ，或在私聊里发 /wops share' }
+        const r = share.start({ chatId, minutes: body.minutes })
+        if (r.ok) await share.tick() // 先发一帧
+        return { ok: r.ok, message: r.message, ...share.status() }
+      }
+      return { ok: true, ...share.status() }
+    })
+    // ---- v1.3.0：远程协助（面板生成邀请/停止/看状态；邀请链接同时私聊发给主人）----
+    api.route('/assist', async (req) => {
+      if (req.method === 'GET') return { ok: true, ...remote.status() }
+      if (req.method !== 'POST') return { ok: false, error: '只支持 GET/POST' }
+      const body = await api.core.http.body(req).catch(() => ({}))
+      const action = String(body.action || 'status')
+      if (action === 'stop') {
+        const r = remote.stop('面板停止')
+        return { ok: r.ok, message: r.message, ...remote.status() }
+      }
+      if (action === 'start') {
+        if (!getSettings().enabled) return { ok: false, error: '总开关没开：先打开「总开关」再开远程协助' }
+        const chatId = String(body.chatId || ownerChatId() || '')
+        const r = await remote.invite({ minutes: body.minutes })
+        if (!r.ok) return { ok: false, error: r.message }
+        if (chatId) {
+          await api.sendText(chatId, inviteText(r)).catch(() => {})
+          await sendAssistPreview(chatId)
+        }
+        return { ok: true, message: chatId ? '邀请链接已私聊发给主人' : '已生成邀请（配置里没有主人 QQ，链接只显示在这里）', url: r.url, ...remote.status() }
+      }
+      return { ok: true, ...remote.status() }
+    })
+
     // ---- 指引提示词库：面板查看/编辑自定义指引（路由形态对齐 phone /guides）----
     api.route('/guides', async (req) => {
       if (req.method === 'GET') return { guides: guides.list() }
@@ -303,11 +548,17 @@ export default {
         ops: Object.keys(OPS),
         guides: guides.list().map((g) => ({ key: g.key, name: g.name, source: g.source })),
         platform: process.platform,
+        // v1.3.0：共享与远程的状态总览（面板/命令看同一份）
+        share: share.status(),
+        remote: remote.status(),
       }
     }
 
-    // 模块停下：没有常驻句柄要释放（每次操作都是一次性的 powershell 进程），留空钩子以备后用
-    api.onDispose(() => {})
+    // 模块停下：释放共享定时任务与远程协助端口（api.every 的定时器由框架自动撤）
+    api.onDispose(() => {
+      try { share.stop('模块停下') } catch { /* 已经停了 */ }
+      try { remote.dispose() } catch { /* 已经关了 */ }
+    })
 
     // setup 返回导出对象（别的模块 api.use('windows-ops') 拿到）
     return {
@@ -318,6 +569,9 @@ export default {
       OPS,
       // 危险操作确认队列（供宿主面板/可信模块代批；真正的主人确认走 /wops confirm 或面板）
       confirm: { list: () => safety.listConfirms(), approve: (id) => safety.approveConfirm(id), reject: (id) => safety.rejectConfirm(id) },
+      // v1.3.0：共享屏幕 / 远程协助（别的模块要复用可以拿这两个句柄）
+      share,
+      remote,
     }
   },
 }

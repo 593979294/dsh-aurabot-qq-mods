@@ -36,6 +36,10 @@ export const OPS = {
   'clipboard.read': { label: '读剪贴板', danger: 'safe' },
   'clipboard.write': { label: '写剪贴板', danger: 'safe' },
   'screenshot': { label: '全屏截图', danger: 'safe' },
+  // v1.3.0：共享屏幕 / 远程协助用的压缩帧。截图落盘仍是 safe（只读屏幕、不碰键鼠），
+  // 真正的风险在「把画面发给别人」和「远端输入」——那两道闸门在 lib/screen.mjs / lib/remote.mjs 里。
+  'screen.capture': { label: '截屏（JPEG 压缩帧）', danger: 'safe' },
+  'screen.info': { label: '读屏幕尺寸', danger: 'safe' },
   'window.list': { label: '枚举窗口', danger: 'safe' },
   'window.activate': { label: '激活窗口', danger: 'input' },
   'window.close': { label: '关闭窗口', danger: 'close' },
@@ -86,6 +90,45 @@ $g.Dispose()
 $bmp.Save((D $a[0]),[System.Drawing.Imaging.ImageFormat]::Png)
 $bmp.Dispose()
 Write-Output ok`,
+  // v1.3.0：共享帧。与 screenshot 的区别是「缩放 + JPEG 质量」——整屏 PNG 每帧 3~8MB，
+  // 走 QQ 发图或网页拉流都撑不住；缩到 maxWidth 宽、质量 20~95 的 JPEG 一般 60~250KB。
+  // 输出末尾一行 JSON 是虚拟屏幕矩形（远端输入的归一化坐标按它换算），文件路径由 JS 生成后经 base64 传入。
+  'screen.capture':
+    `${PREFIX}$ErrorActionPreference='Stop'
+${ARGS}
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$b=[System.Windows.Forms.SystemInformation]::VirtualScreen
+$maxW=[int](D $a[0]); $q=[int](D $a[1])
+if($maxW -lt 320){ $maxW=320 }; if($maxW -gt 3840){ $maxW=3840 }
+if($q -lt 20){ $q=20 }; if($q -gt 95){ $q=95 }
+$scale=1.0
+if($b.Width -gt $maxW){ $scale=$maxW / [double]$b.Width }
+$w=[int][Math]::Max(1,[Math]::Round($b.Width * $scale))
+$h=[int][Math]::Max(1,[Math]::Round($b.Height * $scale))
+$bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height
+$g=[System.Drawing.Graphics]::FromImage($bmp)
+$g.CopyFromScreen($b.X,$b.Y,0,0,$bmp.Size)
+$g.Dispose()
+$small=New-Object System.Drawing.Bitmap $w,$h
+$g2=[System.Drawing.Graphics]::FromImage($small)
+$g2.InterpolationMode=[System.Drawing.Drawing2D.InterpolationMode]::HighQualityBilinear
+$g2.DrawImage($bmp,0,0,$w,$h)
+$g2.Dispose()
+$enc=[System.Drawing.Imaging.Encoder]::Quality
+$ep=[System.Drawing.Imaging.EncoderParameters]::new(1)
+$ep.Param[0]=[System.Drawing.Imaging.EncoderParameter]::new($enc,[long]$q)
+$codec=([System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' })[0]
+$small.Save((D $a[2]),$codec,$ep)
+$ep.Dispose()
+$small.Dispose()
+$bmp.Dispose()
+@{x=[int]$b.X;y=[int]$b.Y;w=[int]$b.Width;h=[int]$b.Height;sw=$w;sh=$h} | ConvertTo-Json -Compress`,
+  'screen.info':
+    `${PREFIX}$ErrorActionPreference='Stop'
+Add-Type -AssemblyName System.Windows.Forms
+$b=[System.Windows.Forms.SystemInformation]::VirtualScreen
+@{x=[int]$b.X;y=[int]$b.Y;w=[int]$b.Width;h=[int]$b.Height} | ConvertTo-Json -Compress`,
   'window.list':
     `${PREFIX}$ErrorActionPreference='Stop'
 @{ w=@(Get-Process | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object @{n='pid';e={$_.Id}},@{n='name';e={$_.ProcessName}},@{n='title';e={$_.MainWindowTitle}}) } | ConvertTo-Json -Compress -Depth 3`,
@@ -188,7 +231,13 @@ export function createOps({ ps, dataDir }) {
         return { argv: [text], summary: `${text.length} 个字符` }
       }
       case 'screenshot':
+      case 'screen.info':
         return { argv: [], summary: '' } // 文件名由 run 自己生成（落 dataDir/shots，调用方传什么都不认）
+      case 'screen.capture': { // v1.3.0：共享帧的参数只认「宽度上限 + JPEG 质量」，路径由 run 生成
+        const maxWidth = Math.min(3840, Math.max(320, Math.round(Number(args.maxWidth) || 1280)))
+        const quality = Math.min(95, Math.max(20, Math.round(Number(args.quality) || 60)))
+        return { argv: [String(maxWidth), String(quality)], summary: `${maxWidth}px · JPEG ${quality}` }
+      }
       case 'window.activate':
       case 'window.close': {
         const pid = num(args.pid, 'pid')
@@ -230,12 +279,17 @@ export function createOps({ ps, dataDir }) {
       mkdirSync(join(dataDir, 'shots'), { recursive: true })
       argv.push(join(dataDir, 'shots', `shot-${Date.now()}.png`))
     }
+    // v1.3.0：共享帧同样落 dataDir/shots（文件名带随机后缀，避免同一毫秒两帧撞名）
+    if (op === 'screen.capture') {
+      mkdirSync(join(dataDir, 'shots'), { recursive: true })
+      argv.push(join(dataDir, 'shots', `frame-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.jpg`))
+    }
     // UIA 五件：脚本内部已经把「找不到窗口/元素/不支持该模式」都翻成结构化失败输出，正常退出；
     // 只有真出错（PowerShell 起不来、脚本崩）才会抛。抛的时候错误上若挂着已产出的 stdout
     // （注入的 fake ps 可以挂），照样按结构化结果解释——真实 ps.run 不挂，就把错往上交。
     const isUia = op.startsWith('uia.')
     // 只读类操作偶发失败（PS 5.1 首次加载模块的退出码毛刺）安全重试一次；动作类绝不重试（防重复点击）
-    const retryable = ['screenshot', 'window.list', 'clipboard.read', 'uia.tree', 'uia.getText']
+    const retryable = ['screenshot', 'screen.capture', 'screen.info', 'window.list', 'clipboard.read', 'uia.tree', 'uia.getText']
     let out = ''
     try {
       out = (await ps.run(buildScript(target, argv))).trim()
@@ -254,6 +308,27 @@ export function createOps({ ps, dataDir }) {
         return { ok: true, message: '已写入剪贴板' }
       case 'screenshot':
         return { ok: true, message: `截图已保存：${argv[0]}`, data: argv[0] }
+      // v1.3.0：共享帧。stdout 末尾是虚拟屏幕矩形 JSON；解析失败不算失败（画面已经存下来了），
+      // 只是远端坐标换算会退回「按画面尺寸等比」的兜底。
+      case 'screen.capture': {
+        let meta = {}
+        try { const m = String(out).match(/\{[\s\S]*\}/); meta = m ? JSON.parse(m[0]) : {} } catch { meta = {} }
+        return {
+          ok: true,
+          message: `已截一帧：${meta.sw || '?'}×${meta.sh || '?'}（${argv[0]}px / JPEG ${argv[1]}）`,
+          data: {
+            file: argv[2],
+            x: Number(meta.x) || 0, y: Number(meta.y) || 0,
+            width: Number(meta.w) || 0, height: Number(meta.h) || 0,
+            scaledWidth: Number(meta.sw) || 0, scaledHeight: Number(meta.sh) || 0,
+          },
+        }
+      }
+      case 'screen.info': {
+        let meta = {}
+        try { const m = String(out).match(/\{[\s\S]*\}/); meta = m ? JSON.parse(m[0]) : {} } catch { throw new Error('屏幕尺寸读不出来：' + String(out).slice(0, 120)) }
+        return { ok: true, message: `虚拟屏幕 ${meta.w}×${meta.h}（原点 ${meta.x},${meta.y}）`, data: { x: Number(meta.x) || 0, y: Number(meta.y) || 0, width: Number(meta.w) || 0, height: Number(meta.h) || 0 } }
+      }
       case 'window.list': {
         // ConvertTo-Json 单元素时给的不是数组：统一包一层
         let list = []
