@@ -317,3 +317,87 @@ test('愿望写法宽松：带 # 标题、用「心愿」，取最后一条', as
   assert.ok(item, '应该重扫到这篇')
   assert.equal(item.wish, '还是想多看一会儿星星。')
 })
+
+const at = (day, hh, mm = 0) => new Date(`${day}T${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:00`)
+
+test('早上补写昨天：只补昨天，不会因为 state.last 倒回去又重写今天', async (t) => {
+  const root = tempRoot(t)
+  const { inst } = boot(root, { preset: { at: '07:00' } })
+  const today = DAY
+  const yesterday = dayKey(new Date(at(today, 12).getTime() - 86400000))
+
+  await inst.tick(at(today, 7, 30))   // 昨天没写 → 先补昨天
+  assert.deepEqual(inst.list().map((x) => x.day), [yesterday])
+  await inst.tick(at(today, 7, 31))   // 昨天有了 → 写今天
+  await inst.tick(at(today, 7, 32))   // 今天也有了 → 什么都不做
+  await inst.tick(at(today, 7, 33))
+  const days = inst.list().map((x) => x.day).sort()
+  assert.deepEqual(days, [yesterday, today].sort(), '每天恰好一篇，不重复')
+})
+
+test('默认 23:30 的配置下，早上 7–9 点也能补昨天', async (t) => {
+  const root = tempRoot(t)
+  const { inst } = boot(root)
+  await inst.tick(at(DAY, 8, 0))
+  assert.equal(inst.list().length, 1)
+  assert.notEqual(inst.list()[0].day, DAY)
+  await inst.tick(at(DAY, 8, 1))
+  assert.equal(inst.list().length, 1, '还没到 23:30，不写今天')
+})
+
+test('写失败不会每分钟重试：同一天最多 3 次，间隔 10 分钟', async (t) => {
+  const root = tempRoot(t)
+  let calls = 0
+  const { inst } = boot(root, { think: async () => { calls++; throw new Error('boom') }, preset: { at: '00:00', catchUp: false } })
+  const now = Date.now()
+  const realNow = Date.now
+  t.after(() => { Date.now = realNow })
+  for (let i = 0; i < 40; i++) {
+    Date.now = () => now + i * 60_000
+    await inst.tick(at(DAY, 12, 0))
+  }
+  assert.equal(calls, 3)
+})
+
+test('/status 返回全部篇目，不只最近 20 篇', async (t) => {
+  const root = tempRoot(t)
+  const dir = join(root, '多')
+  mkdirSync(dir, { recursive: true })
+  for (let i = 1; i <= 25; i++) {
+    const d = `2026-10-${String(i).padStart(2, '0')}`
+    writeFileSync(join(dir, `${d}.md`), `---\ndate: ${d}\nmood: "心情不错"\n---\n\n第 ${i} 天\n`, 'utf8')
+  }
+  const { api } = boot(root, { preset: { dir } })
+  const status = await api.routes['/status']()
+  assert.equal(status.count, 25)
+  assert.equal(status.items.length, 25)
+  assert.equal(status.items[0].day, '2026-10-25')
+  assert.equal(status.items[24].day, '2026-10-01')
+})
+
+test('镜像判断不被同名前缀骗到：data2 不算在 data 里面', async (t) => {
+  const root = tempRoot(t)
+  const { api } = boot(root, { preset: { dir: join(root, 'data2'), mirror: true } })
+  const res = await api.routes['/run']()
+  assert.equal(res.ok, true, res.message)
+  assert.equal(existsSync(join(root, 'data', 'archive', `${DAY}.md`)), true)
+})
+
+test('昨天补写试够了不会把今天也挡住', async (t) => {
+  const root = tempRoot(t)
+  const yesterday = dayKey(new Date(at(DAY, 12).getTime() - 86400000))
+  const { inst } = boot(root, {
+    preset: { at: '07:00' },
+    think: async (prompt) => { if (prompt.includes('补上')) throw new Error('boom'); return BODY },
+  })
+  const realNow = Date.now
+  t.after(() => { Date.now = realNow })
+  const base = realNow()
+  for (let i = 0; i < 5; i++) {
+    Date.now = () => base + i * 11 * 60_000
+    await inst.tick(at(DAY, 8, i))
+  }
+  const days = inst.list().map((x) => x.day)
+  assert.equal(days.includes(yesterday), false)
+  assert.equal(days.includes(DAY), true, '昨天写不出来，今天照写')
+})

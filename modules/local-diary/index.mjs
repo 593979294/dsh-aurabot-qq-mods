@@ -3,7 +3,7 @@
 // 写成功会回写记忆库，聊天时也会带上最近几篇的线索，她还能主动用 diary_read 翻旧账。
 /** @type {import('../aurabot').AurabotModule} */
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
 
@@ -19,12 +19,17 @@ const shiftDay = (day, n) => {
   return dayKey(d)
 }
 const clip = (s, n) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, n)
+// dir 是否在 base 里面（不能用 startsWith：data2 会被当成在 data 里面）
+const isInside = (base, dir) => {
+  const r = relative(resolve(base), resolve(dir))
+  return r === '' || (!r.startsWith('..') && !isAbsolute(r))
+}
 const quiet = (fn) => { try { return fn() } catch { return undefined } }
 
 export default {
   id: 'local-diary',
   name: '私人日记',
-  version: '1.0.1',
+  version: '1.1.0',
   api: 1,
   description: '每天写一篇 md 私人日记到本地文件夹，写给她自己看；随插件备份一起搬家',
   defaults: {
@@ -164,7 +169,9 @@ export default {
 
     function buildPrompt(day, { rows, lines, moodLine, seen }) {
       const parts = []
-      parts.push(`今天（${day}）快过完了。下面是今天你身边的聊天，还有你今天碰到的一些事。用不用随你，不用全塞进去。`)
+      parts.push(day === dayKey()
+        ? `今天（${day}）快过完了。下面是今天你身边的聊天，还有你今天碰到的一些事。用不用随你，不用全塞进去。`
+        : `${day} 那天已经过去了，昨晚没来得及写，现在补上。下面是那天你身边的聊天，还有那天你碰到的一些事。用不用随你，不用全塞进去。`)
       if (lines.length) parts.push(`--- 今天的聊天（${rows.length} 条，抽了一部分）---\n${lines.join('\n')}`)
       else parts.push('--- 今天几乎没人跟你说话，挺安静的。---')
       if (seen.length) {
@@ -214,7 +221,7 @@ export default {
         writeFileSync(file, md, 'utf8')
 
         // 日记放在数据目录外面时，镜像一份到备份区，换电脑可以带走
-        if (s.mirror && !resolve(dir).startsWith(resolve(base))) {
+        if (s.mirror && !isInside(base, dir)) {
           try {
             mkdirSync(mirrorDir, { recursive: true })
             writeFileSync(join(mirrorDir, basename(file)), md, 'utf8')
@@ -242,7 +249,7 @@ export default {
           source: 'diary',
         }))
 
-        state.last = day
+        if (day >= String(state.last || '')) state.last = day
         saveState()
         api.log.info?.(`私人日记：${auto ? '定时' : '手动'}写了 ${file}（${text.length} 字）`)
         return { ok: true, message: `日记写好了：${file}（${text.length} 字）`, file, chars: text.length }
@@ -260,31 +267,44 @@ export default {
       const now = new Date()
       const [h, m] = String(s.at || '23:30').split(':').map((v) => Number(v) || 0)
       const nowMin = now.getHours() * 60 + now.getMinutes()
-      if (nowMin >= h * 60 + m && state.last !== dayKey(now)) return '马上（今天还没写）'
+      if (nowMin >= h * 60 + m && !wrote(dayKey(now))) return '马上（今天还没写）'
       const target = new Date(now)
       target.setHours(h, m, 0, 0)
       if (target <= now) target.setDate(target.getDate() + 1)
       return `${dayKey(target)} ${pad(target.getHours())}:${pad(target.getMinutes())}`
     }
 
-    // 每分钟看一眼：到点没写就写；早上顺手补昨天
-    api.every(60_000, async () => {
+    // 某天是否已经写过：state.last 只记最新一天，补写昨天时不能靠它，所以也看索引
+    const wrote = (day) => state.last === day || hasDiary(day)
+
+    // 自动写失败后的退避：同一天最多试 3 次，每次隔 10 分钟，免得模型一直报错时每分钟狂刷
+    const tries = {}
+    async function attempt(day) {
+      const t = tries[day] || { n: 0, next: 0 }
+      if (t.n >= 3 || Date.now() < t.next) return false
+      const res = await run({ day, auto: true })
+      if (res && res.ok) delete tries[day]
+      else tries[day] = { n: t.n + 1, next: Date.now() + 10 * 60_000 }
+      return true
+    }
+
+    // 每分钟看一眼：早上 7–9 点先补昨天；到点没写今天就写
+    async function tick(now = new Date()) {
       if (state.running) return
       const s = api.settings()
       if (!s.on) return
-      const now = new Date()
       const today = dayKey(now)
+      for (const k of Object.keys(tries)) if (k < shiftDay(today, -1)) delete tries[k]
+      if (s.catchUp && now.getHours() >= 7 && now.getHours() < 9) {
+        const yesterday = shiftDay(today, -1)
+        if (!wrote(yesterday) && await attempt(yesterday)) return   // 昨天这轮没轮到（退避中/试够了）就接着看今天
+      }
       const [h, m] = String(s.at || '23:30').split(':').map((v) => Number(v) || 0)
       if (now.getHours() * 60 + now.getMinutes() < h * 60 + m) return
-      if (state.last === today) return
-      await run({ day: today, auto: true })
-      if (s.catchUp) {
-        const yesterday = shiftDay(today, -1)
-        if (now.getHours() >= 7 && now.getHours() < 9 && !hasDiary(yesterday) && state.last !== yesterday) {
-          await run({ day: yesterday, auto: true })
-        }
-      }
-    }, '每天写私人日记')
+      if (wrote(today)) return
+      await attempt(today)
+    }
+    api.every(60_000, () => tick(), '每天写私人日记')
 
     // QQ 里发 /日记 手动写一篇
     api.command({
@@ -342,7 +362,7 @@ export default {
       running: !!state.running,
       next: nextText(),
       count: index.length,
-      items: index.slice(-20).reverse(),
+      items: index.slice().reverse(),
     }))
     api.route('/run', async () => run({ day: dayKey() }))
     // 手写字体：面板用它画日记本上的字。字体是可选的，没有就退回系统楷体，面板照常能用。
@@ -381,6 +401,6 @@ export default {
     })
     api.route('/rescan', async () => { rescan(); return { ok: true, count: index.length } })
 
-    return { run, folder, list: () => index.slice() }
+    return { run, tick, folder, list: () => index.slice() }
   },
 }
