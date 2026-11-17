@@ -13,6 +13,7 @@
 import { join } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { UIA_OPS, uiaScripts, prepareUia, interpretUia } from './uia.mjs'
+import { QQ_OPS, qqScripts, prepareQq, interpretQq } from './qq.mjs'
 
 /** SendKeys 白名单：常用键名 → token。不接受任意字符串（SendKeys 的 +^%~(){}[] 是语法字符）。 */
 const KEY_TOKENS = {
@@ -36,10 +37,13 @@ export const OPS = {
   'clipboard.read': { label: '读剪贴板', danger: 'safe' },
   'clipboard.write': { label: '写剪贴板', danger: 'safe' },
   'screenshot': { label: '全屏截图', danger: 'safe' },
-  // v1.3.0：共享屏幕 / 远程协助用的压缩帧。截图落盘仍是 safe（只读屏幕、不碰键鼠），
-  // 真正的风险在「把画面发给别人」和「远端输入」——那两道闸门在 lib/screen.mjs / lib/remote.mjs 里。
+  // v1.3.0 保留的通用截屏：抓虚拟屏幕→缩放→JPEG。v1.3.1 不再用它做「共享屏幕」
+  //（共享改走 QQ 客户端原生功能），但截图/诊断仍可用；只读屏幕，danger=safe。
   'screen.capture': { label: '截屏（JPEG 压缩帧）', danger: 'safe' },
   'screen.info': { label: '读屏幕尺寸', danger: 'safe' },
+  // v1.3.1：走机器人自己的 QQ 客户端（GUI）发屏幕共享 / 远程协助邀请。
+  // 不再截图发帧、也不自建网页；真正的风险是「把屏幕交出去」→ input。
+  ...QQ_OPS,
   'window.list': { label: '枚举窗口', danger: 'safe' },
   'window.activate': { label: '激活窗口', danger: 'input' },
   'window.close': { label: '关闭窗口', danger: 'close' },
@@ -201,6 +205,8 @@ Write-Output ok`,
   // UIA 的 5 段脚本在 lib/uia.mjs（与选择器解析、输出解释放在一起，方便对照契约看）；
   // PREFIX/ARGS 从本文件注入，保证「压进度流 + base64 参数」两处只有一份实现。
   ...uiaScripts({ PREFIX, ARGS }),
+  // v1.3.1：QQ 原生屏幕共享 / 远程协助（脚本在 lib/qq.mjs，同样只注入 PREFIX/ARGS）。
+  ...qqScripts({ PREFIX, ARGS }),
 }
 
 /**
@@ -235,6 +241,13 @@ export function createOps({ ps, dataDir }) {
       case 'uia.getText':
       case 'uia.invoke':
         return prepareUia(op, args)
+      // v1.3.1：QQ 原生共享/协助的参数整理在 lib/qq.mjs（hwnd/昵称/等待秒数）。
+      case 'qq.windows':
+      case 'qq.share':
+      case 'qq.shareStop':
+      case 'qq.assist':
+      case 'qq.assistStop':
+        return prepareQq(op, args)
       case 'clipboard.write': {
         const text = String(args.text ?? '')
         return { argv: [text], summary: `${text.length} 个字符` }
@@ -297,19 +310,22 @@ export function createOps({ ps, dataDir }) {
     // 只有真出错（PowerShell 起不来、脚本崩）才会抛。抛的时候错误上若挂着已产出的 stdout
     // （注入的 fake ps 可以挂），照样按结构化结果解释——真实 ps.run 不挂，就把错往上交。
     const isUia = op.startsWith('uia.')
+    const isQq = op.startsWith('qq.')
     // 只读类操作偶发失败（PS 5.1 首次加载模块的退出码毛刺）安全重试一次；动作类绝不重试（防重复点击）
-    const retryable = ['screenshot', 'screen.capture', 'screen.info', 'window.list', 'clipboard.read', 'uia.tree', 'uia.getText']
+    const retryable = ['screenshot', 'screen.capture', 'screen.info', 'window.list', 'clipboard.read', 'uia.tree', 'uia.getText', 'qq.windows']
     let out = ''
     try {
       out = (await ps.run(buildScript(target, argv))).trim()
     } catch (e) {
       const partial = typeof e?.stdout === 'string' ? e.stdout.trim() : ''
-      if (isUia && partial) out = partial
+      if ((isUia || isQq) && partial) out = partial
       else if (!retryable.includes(op)) throw e
       else out = (await ps.run(buildScript(target, argv))).trim()
     }
     // UIA 五件的后续处理统一交给 lib/uia.mjs 的 interpretUia（按操作挑字段、拼给主人看的话）
     if (isUia) return interpretUia(op, out)
+    // v1.3.1：QQ 原生共享/协助同样由脚本内部把失败原因结构化，再交给 lib/qq.mjs 统一翻译。
+    if (isQq) return interpretQq(op, out)
     switch (op) {
       case 'clipboard.read':
         return { ok: true, message: out ? `剪贴板内容（${out.length} 字符）` : '剪贴板是空的', data: out }
