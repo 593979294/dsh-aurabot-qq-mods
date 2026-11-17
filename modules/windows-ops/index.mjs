@@ -7,6 +7,7 @@
 //   · 屏幕共享 = 机器人自己的 QQ 客户端里点「屏幕共享」→ 选「桌面」→「确定」；
 //   · 远程协助 = 机器人客户端里点「远程协助 → 邀请对方远程协助」，主人在 QQ 里接受后直接操作；
 //   · 窗口优先按机器人 QQ 号识别：RestartManager 反查账号分区锁文件 → PID → 顶层窗口；昵称只用于确认会话对象。
+// v1.3.2：真正点按钮前先把当前屏幕截图发主人私聊，主人回复「确认」后才发起；截图只用于确认，不是共享内容。
 // 契约：export default { id, name, version, api, settings: [], setup(api) → 导出对象 }
 //   导出（api.use('windows-ops') 拿到）：
 //     run(op, args) → { ok, message, data? }  —— 直接执行一个操作（不过安全闸门）
@@ -29,13 +30,14 @@ import { createOps, OPS } from './lib/ops.mjs'
 import { createSafety } from './lib/safety.mjs'
 import { createGuides } from './lib/guides.mjs'
 import { pickQqTarget } from './lib/qq.mjs'
+import { QQ_CONFIRM_TTL_MS, makeQqConfirmId, parseQqConfirmReply } from './lib/qq-confirm.mjs'
 
 export default {
   id: 'windows-ops',
   name: '逛电脑（Windows 自动化）',
-  version: '1.3.1',
+  version: '1.3.2',
   api: 1,
-  description: '经 PowerShell 操作这台电脑：读无障碍树（UIA）按元素点击/写值/读文本/触发表单，窗口枚举/激活/关闭、截屏、剪贴板读写、键鼠模拟；并通过机器人自己的 QQ 客户端原生「屏幕共享」向主人或主人指定的好友共享屏幕、用「邀请对方远程协助」让对方直接接管。默认仅主人可用，带操作白名单、危险操作确认门槛与指引体系。',
+  description: '经 PowerShell 操作这台电脑：读无障碍树（UIA）按元素点击/写值/读文本/触发表单，窗口枚举/激活/关闭、截屏、剪贴板读写、键鼠模拟；并通过机器人自己的 QQ 客户端原生「屏幕共享」向主人或主人指定的好友共享屏幕、用「邀请对方远程协助」让对方直接接管；发起前先把当前屏幕截图发主人私聊确认。默认仅主人可用，带操作白名单、危险操作确认门槛与指引体系。',
   panel: 'panel.js', // 自定义面板：settings 数组留空，全部字段由 panel.js 接管（仿 phone）
   settings: [],
   defaults: {
@@ -53,6 +55,7 @@ export default {
     qqBotName: '', // 可选：机器人昵称兜底（OneBot 连不上时用）
     qqOwnerName: '', // 可选：主人昵称兜底
     qqWindowHwnd: 0, // 高级：直接指定机器人 QQ 窗口句柄（0=自动）
+    qqConfirmBeforeStart: true, // 发起前先截图发主人确认（默认开；关掉就直接点 QQ 按钮）
     shareAutoStopMinutes: 30, // 屏幕共享自动停止（0=不自动；原生 QQ 共享不会自己停）
   },
 
@@ -80,6 +83,7 @@ export default {
         qqBotName: String(s.qqBotName || '').trim(),
         qqOwnerName: String(s.qqOwnerName || '').trim(),
         qqWindowHwnd: num(s.qqWindowHwnd, 0, 0, 2147483647),
+        qqConfirmBeforeStart: s.qqConfirmBeforeStart !== false,
         shareAutoStopMinutes: num(s.shareAutoStopMinutes, 30, 0, 240),
       }
     }
@@ -93,9 +97,9 @@ export default {
     const guides = createGuides(dataDir())
 
     // ================= v1.3.1：QQ 原生屏幕共享 / 远程协助 =================
-    /** 主人私聊 chatId（配置里的 ownerQQ；面板/命令要用时兜底）。 */
+    /** 主人私聊 chatId（面板显式填的 qqOwnerQQ 优先，否则用插件配置 ownerQQ）。 */
     const ownerChatId = () => {
-      const q = String(config().ownerQQ || '').trim()
+      const q = String(ownerQQ() || '').trim()
       return /^\d{5,12}$/.test(q) ? `private:${q}` : ''
     }
     /** 机器人/主人 QQ 号：面板显式填的优先，否则用插件配置（botQQ / ownerQQ）。 */
@@ -191,16 +195,58 @@ export default {
     let qqLastTarget = { qq: '', name: '' }
     let shareStartedAt = 0
     let assistStartedAt = 0
+    /** 发起前截图确认：同一时间只允许一条，避免主人回「确认」时不知道该放行哪一个。 */
+    let qqPending = null
 
-    /** 调 QQ 原生操作：机器人窗口优先按 QQ 号锁定（账号分区→进程），昵称只用于确认会话对象。 */
-    async function runQq(op, { ownerHint = '', target = '' } = {}) {
-      const n = await resolveNames({ ownerHint })
-      if (!n.ownerName && !String(target || '').trim()) return { ok: false, message: n.error || '主人昵称没解析出来' }
-      const t = await resolveTarget(target, n)
-      if (!t.ok) return { ok: false, message: t.error || '目标好友解析失败' }
-      if (!t.name) return { ok: false, message: `目标 QQ ${t.qq || ''} 没有可用的会话昵称` }
+    function pendingView() {
+      return qqPending
+        ? { id: qqPending.id, op: qqPending.op, target: qqPending.t, at: qqPending.at, expiresAt: qqPending.at + QQ_CONFIRM_TTL_MS, file: qqPending.file }
+        : null
+    }
+
+    /** 清掉待确认（超时/取消/停止时调用）。 */
+    function dropPending() {
+      const p = qqPending
+      qqPending = null
+      if (p?.timer) clearTimeout(p.timer)
+      return p
+    }
+
+    /** 给主人发一条状态文字；失败不阻塞动作本身。 */
+    async function notifyOwner(chat, text) {
+      try { if (typeof api.sendText === 'function') await api.sendText(chat, text) } catch { /* 消息失败不影响状态机 */ }
+    }
+
+    /** 发截图确认的目标私聊：优先用解析出来的主人 QQ，再退回设置/插件配置。 */
+    function ownerQqFor(n) {
+      const q = String(n?.ownerQQ || ownerQQ() || '').trim()
+      return /^\d{5,12}$/.test(q) ? q : ''
+    }
+
+    /**
+     * 已经拿到主人「发起前截图确认」后执行。这里跳过通用 confirmDanger 队列，
+     * 因为截图确认本身就是更具体的一道确认；但白名单、键鼠开关、试运行、限速、日志都照旧。
+     */
+    async function execConfirmed(op, args = {}) {
+      if (!getSettings().enabled) return offMsg()
+      const cp = safety.checkOp(String(op))
+      if (!cp.ok) return { ok: false, message: cp.reason }
+      if (getSettings().dryRun) return { ok: true, message: `试运行：本该执行 ${OPS[op]?.label || op}，没有真动` }
+      if (!safety.checkRate()) return { ok: false, message: `操作太频繁：每分钟上限 ${getSettings().rateLimit} 次` }
+      try {
+        const r = await ops.run(op, args)
+        safety.log(String(op), r.message).catch(() => {})
+        return r
+      } catch (e) {
+        safety.log(String(op), `失败：${e.message}`).catch(() => {})
+        return { ok: false, message: e.message }
+      }
+    }
+
+    /** 真正点 QQ 按钮。发起前截图确认通过后只会走到这里。 */
+    async function executeQqOp(op, n, t, { confirmed = false } = {}) {
       const s = getSettings()
-      const r = await exec(op, {
+      const args = {
         hwnd: s.qqWindowHwnd,
         botName: n.botName,
         ownerName: t.name,
@@ -208,7 +254,8 @@ export default {
         targetQQ: t.qq,
         botQQ: n.botQQ,
         ownerQQ: n.ownerQQ,
-      })
+      }
+      const r = confirmed ? await execConfirmed(op, args) : await exec(op, args)
       if (r?.ok && !String(r.message || '').startsWith('试运行')) {
         qqLastMessage = String(r.message || '')
         if (op === 'qq.share' || op === 'qq.assist') qqLastTarget = { qq: String(t.qq || ''), name: t.name }
@@ -219,14 +266,159 @@ export default {
       }
       return r
     }
+
+    /**
+     * 发起前截图确认：先截当前屏幕（JPEG，落 dataDir/shots），通过 OneBot 发给主人，
+     * 挂起 pending；主人回「确认」才真正执行。截图只发给主人，不发给目标好友。
+     * 返回 { ok:true, pending:true, id, message }，不是真的已发起。
+     */
+    async function requestQqConfirm(op, n, t) {
+      if (qqPending) {
+        return { ok: false, message: `已有一条待确认的 QQ 操作（${qqPending.t.name}，确认码 ${qqPending.id}）：先在主人私聊回复「确认」或「取消」` }
+      }
+      const s = getSettings()
+      if (!s.enabled) return offMsg()
+      const args = {
+        hwnd: s.qqWindowHwnd,
+        botName: n.botName,
+        ownerName: t.name,
+        targetName: t.name,
+        targetQQ: t.qq,
+        botQQ: n.botQQ,
+        ownerQQ: n.ownerQQ,
+      }
+      const cp = safety.checkOp(op)
+      if (!cp.ok) return { ok: false, message: cp.reason }
+      const cfg = config()
+      if (cfg.enabled === false) return { ok: false, message: 'Aurabot 总开关没开：发不出确认截图，未发起' }
+      if (cfg.dryRun === true) return { ok: true, message: `试运行：本该发起 ${OPS[op]?.label || op}，没有真动` }
+      if (getSettings().dryRun) return { ok: true, message: `试运行：本该发起 ${OPS[op]?.label || op}，没有真动` }
+
+      const owner = ownerQqFor(n)
+      if (!owner) return { ok: false, message: '主人 QQ 没解析出来：无法把发起前截图发给主人确认' }
+      if (typeof api.sendImage !== 'function' || typeof api.sendText !== 'function') {
+        return { ok: false, message: '当前插件没有发图/发文字接口，无法做发起前截图确认' }
+      }
+      if (typeof api.on !== 'function') {
+        return { ok: false, message: '当前插件没有消息监听接口，无法接收主人的「确认/取消」' }
+      }
+
+      let shot
+      try {
+        shot = await ops.run('screen.capture', { maxWidth: 1600, quality: 72 })
+      } catch (e) {
+        return { ok: false, message: `发起前截图失败，未发起：${String(e?.message || e)}` }
+      }
+      const file = String(shot?.data?.file || '')
+      if (!shot?.ok || !file) {
+        return { ok: false, message: `发起前截图失败，未发起：${shot?.message || '截图没有落盘'}` }
+      }
+
+      const id = makeQqConfirmId()
+      const label = op === 'qq.assist' ? '邀请对方远程协助（对方接受后可操作这台电脑）' : '屏幕共享（对方能看到这台电脑的屏幕）'
+      const chat = `private:${owner}`
+      const caption = [
+        `【发起前确认】准备通过机器人 QQ 向 ${t.name}（${t.qq}）发起：${label}。`,
+        '下面是当前屏幕截图，只发给主人核对，不会发给目标好友；请确认画面里没有不想让对方看到的内容。',
+        `回复「确认」继续发起，回复「取消」放弃（${Math.round(QQ_CONFIRM_TTL_MS / 60000)} 分钟内有效）。`,
+        `确认码：${id}`,
+      ].join('\n')
+      try {
+        const imgSent = await api.sendImage(chat, file)
+        const textSent = await api.sendText(chat, caption)
+        // hub.sendImage/sendText 在总开关关着、试运行或被扩展模块拦下时返回 null：
+        // 这时截图/说明并没有真的到主人手机上，不能挂 pending 等一个永远等不到的确认。
+        if (imgSent === null || textSent === null) {
+          return { ok: false, message: '确认截图或说明没有真正发出去（发送被总开关/试运行/扩展模块拦下），未发起' }
+        }
+      } catch (e) {
+        return { ok: false, message: '发起前截图/确认消息发给主人失败，未发起：' + (e?.message || e) }
+      }
+
+      qqPending = {
+        id, op, n, t, chat, file,
+        at: Date.now(),
+        timer: null,
+      }
+      qqPending.timer = setTimeout(async () => {
+        const p = qqPending
+        if (!p || p.id !== id) return
+        dropPending()
+        await notifyOwner(p.chat, `发起前确认已超时（${Math.round(QQ_CONFIRM_TTL_MS / 60000)} 分钟），没有发起 ${p.op === 'qq.assist' ? '远程协助' : '屏幕共享'}。要重试请重新发起。`)
+      }, QQ_CONFIRM_TTL_MS)
+      if (qqPending.timer.unref) qqPending.timer.unref()
+
+      return {
+        ok: true,
+        pending: true,
+        id,
+        message: `已把发起前截图发到主人私聊，等待确认（确认码 ${id}，${Math.round(QQ_CONFIRM_TTL_MS / 60000)} 分钟内有效）。回复「确认」后才会真正发起；回复「取消」放弃。`,
+      }
+    }
+
+    /** 调 QQ 原生操作：机器人窗口优先按 QQ 号锁定（账号分区→进程），昵称只用于确认会话对象。 */
+    async function runQq(op, { ownerHint = '', target = '' } = {}) {
+      // 停止类操作先把同类型的待确认撤掉，避免「已停止」之后又被一条旧确认放行。
+      if (op === 'qq.shareStop' || op === 'qq.assistStop') {
+        const startOp = op.replace(/Stop$/, '')
+        if (qqPending?.op === startOp) dropPending()
+      }
+      const n = await resolveNames({ ownerHint })
+      if (!n.ownerName && !String(target || '').trim()) return { ok: false, message: n.error || '主人昵称没解析出来' }
+      const t = await resolveTarget(target, n)
+      if (!t.ok) return { ok: false, message: t.error || '目标好友解析失败' }
+      if (!t.name) return { ok: false, message: `目标 QQ ${t.qq || ''} 没有可用的会话昵称` }
+      if ((op === 'qq.share' || op === 'qq.assist') && getSettings().qqConfirmBeforeStart) {
+        return requestQqConfirm(op, n, t)
+      }
+      return executeQqOp(op, n, t)
+    }
     const qq = {
       windows: () => ops.run('qq.windows', {}),
       share: (o) => runQq('qq.share', o),
       shareStop: (o) => runQq('qq.shareStop', o),
       assist: (o) => runQq('qq.assist', o),
       assistStop: (o) => runQq('qq.assistStop', o),
-      status: () => ({ botQQ: botQQ(), ownerQQ: ownerQQ(), botName: nameCache.botName, ownerName: nameCache.ownerName, lastTarget: qqLastTarget, lastMessage: qqLastMessage }),
+      status: () => ({ botQQ: botQQ(), ownerQQ: ownerQQ(), botName: nameCache.botName, ownerName: nameCache.ownerName, lastTarget: qqLastTarget, lastMessage: qqLastMessage, pending: pendingView() }),
     }
+
+    /** 主人在 QQ 私聊里回复「确认/取消」后，才真正执行截图确认过的动作。 */
+    async function handleOwnerConfirmMessage(msg) {
+      if (!qqPending) return false
+      if (msg?.kind !== 'private') return false
+      let isOwner = false
+      try { isOwner = api.isOwner(msg.userId) === true } catch { isOwner = String(msg.userId || '') === String(ownerQQ() || '') }
+      if (!isOwner) return false
+      const parsed = parseQqConfirmReply(msg.text)
+      if (!parsed) return false
+      const p = qqPending
+      if (Date.now() - p.at > QQ_CONFIRM_TTL_MS) {
+        dropPending()
+        await notifyOwner(p.chat, '发起前确认已超时，没有发起。要重试请重新发起。')
+        return true
+      }
+      if (parsed.id && parsed.id !== p.id) {
+        await notifyOwner(p.chat, `确认码不对（当前待确认是 ${p.id}）；回复「确认 ${p.id}」或「取消」。`)
+        return true
+      }
+      if (parsed.action === 'cancel') {
+        dropPending()
+        await notifyOwner(p.chat, `已取消：${p.op === 'qq.assist' ? '远程协助邀请' : '屏幕共享'}没有发起。`)
+        return true
+      }
+      // 先撤 pending，再执行；避免执行期间又来一条「确认」重复点按钮。
+      dropPending()
+      await notifyOwner(p.chat, `收到确认，开始发起${p.op === 'qq.assist' ? '远程协助邀请' : '屏幕共享'}…`)
+      let r
+      try {
+        r = await executeQqOp(p.op, p.n, p.t, { confirmed: true })
+      } catch (e) {
+        r = { ok: false, message: String(e?.message || e) }
+      }
+      await notifyOwner(p.chat, r.ok ? `已发起：${r.message}` : `发起失败：${r.message}`)
+      return true
+    }
+    if (typeof api.on === 'function') api.on('message', handleOwnerConfirmMessage)
 
     /** 原生共享状态（没有帧计数，只有开始时间和自动停止倒计时）。 */
     function shareStatus() {
@@ -241,10 +433,11 @@ export default {
         autoStopMinutes: s.shareAutoStopMinutes,
         remainingMs,
         lastMessage: qqLastMessage,
+        pending: qqPending?.op === 'qq.share' ? pendingView() : null,
       }
     }
     function assistStatus() {
-      return { active: assistStartedAt > 0, startedAt: assistStartedAt || 0, lastMessage: qqLastMessage }
+      return { active: assistStartedAt > 0, startedAt: assistStartedAt || 0, lastMessage: qqLastMessage, pending: qqPending?.op === 'qq.assist' ? pendingView() : null }
     }
 
     // 原生屏幕共享不会自己停：按面板设置到点调 QQ 的「停止共享」。
@@ -374,7 +567,7 @@ export default {
           return {
             ok: true,
             message: `总开关${st.enabled ? '开' : '关'}，键鼠模拟${st.allowInput ? '开' : '关'}${st.dryRun ? '，试运行中' : ''}${confirms}`
-              + `\nQQ 屏幕共享：${st.share.active ? '共享中' : '未共享'}；远程协助：${st.assist.active ? '邀请已发出' : '未邀请'}`
+              + `\nQQ 屏幕共享：${st.share.pending ? `待确认（${st.share.pending.id}）` : st.share.active ? '共享中' : '未共享'}；远程协助：${st.assist.pending ? `待确认（${st.assist.pending.id}）` : st.assist.active ? '邀请已发出' : '未邀请'}`
               + `\n可用操作：${st.ops.join(' / ')}`,
           }
         },
@@ -394,7 +587,7 @@ export default {
       api.defineTool({
         name: 'windows_share_screen',
         description: '让机器人通过它自己的 QQ 客户端，向主人或指定好友发起 QQ 原生「屏幕共享」（不是截图发帧）。'
-          + 'start：在机器人 QQ 的聊天工具栏点「屏幕共享」，在「选择你想共享的窗口」里选「桌面」→「确定」；stop：点 QQ 的「停止共享」；status：看是否共享中、还剩多久自动停。'
+          + 'start：先把当前屏幕截图发到主人私聊，主人回复「确认」后才在机器人 QQ 里点「屏幕共享」→ 选「桌面」→「确定」；stop：点 QQ 的「停止共享」；status：看是否共享中、待确认或还剩多久自动停。'
           + 'target 可选：机器人好友列表里的 QQ 号或备注/昵称；不填 = 主人。',
         properties: {
           action: { type: 'string', description: 'start 开始 / stop 停止 / status 看状态' },
@@ -408,6 +601,9 @@ export default {
           const action = String(args.action || 'status').toLowerCase()
           if (action === 'status') {
             const st = shareStatus()
+            if (st.pending) {
+              return { ok: true, message: `待主人确认：已把发起前截图发给主人，确认码 ${st.pending.id}；回复「确认」后才会真正共享（${st.pending.target.name}）` }
+            }
             return {
               ok: true,
               message: st.active
@@ -430,7 +626,7 @@ export default {
       api.defineTool({
         name: 'windows_remote_assist',
         description: '让机器人通过它自己的 QQ 客户端，向主人或指定好友发 QQ 原生「邀请对方远程协助」：对方在 QQ 里点接受后，就能直接看这台电脑的屏幕并操作鼠标键盘。'
-          + 'start：点「远程协助」右侧箭头 →「邀请对方远程协助」；stop：尝试点 QQ 里的停止/取消按钮；status：看邀请是否已发出。需要先打开「允许键鼠模拟」。'
+          + 'start：先把当前屏幕截图发到主人私聊，主人回复「确认」后才点「远程协助」右侧箭头 →「邀请对方远程协助」；stop：尝试点 QQ 里的停止/取消按钮；status：看邀请/待确认状态。需要先打开「允许键鼠模拟」。'
           + 'target 可选：机器人好友列表里的 QQ 号或备注/昵称；不填 = 主人。',
         properties: {
           action: { type: 'string', description: 'start 发邀请 / stop 取消 / status 看状态' },
@@ -444,6 +640,9 @@ export default {
           const action = String(args.action || 'status').toLowerCase()
           if (action === 'status') {
             const st = assistStatus()
+            if (st.pending) {
+              return { ok: true, message: `待主人确认：已把发起前截图发给主人，确认码 ${st.pending.id}；回复「确认」后才会发出远程协助邀请（${st.pending.target.name}）` }
+            }
             return {
               ok: true,
               message: st.active
@@ -467,7 +666,7 @@ export default {
     // ================= /wops 命令（框架只认主人）=================
     api.command({
       name: 'wops',
-      desc: '逛电脑：ops / status / shot / qq / share [QQ号或备注|开始|停止|状态] / assist [QQ号或备注|开始|停止|状态] / confirm 批准|拒绝 <尾号>',
+      desc: '逛电脑：ops / status / shot / qq / share [QQ号或备注|开始|停止|状态] / assist [QQ号或备注|开始|停止|状态] / confirm 批准|拒绝 <尾号>（share/assist 发起后会先发截图给主人，回复「确认」才真正发起）',
       async run(arg, msg) {
         const [verb, ...rest] = arg.trim().split(/\s+/)
         const ownerHint = String(msg?.nickname || '').trim()
@@ -497,6 +696,7 @@ export default {
               }
               if (sub === 'status' || sub === '状态') {
                 const st = shareStatus()
+                if (st.pending) return `待主人确认：已把发起前截图发给主人（${st.pending.target.name}），确认码 ${st.pending.id}；回复「确认」后才发起。`
                 return st.active
                   ? `QQ 屏幕共享中（原生）${st.remainingMs == null ? '' : `，约 ${Math.max(0, Math.ceil(st.remainingMs / 60000))} 分钟后自动停止`}`
                   : `现在没有在共享屏幕。${qqLastMessage || ''}`
@@ -516,6 +716,7 @@ export default {
               }
               if (sub === 'status' || sub === '状态') {
                 const st = assistStatus()
+                if (st.pending) return `待主人确认：已把发起前截图发给主人（${st.pending.target.name}），确认码 ${st.pending.id}；回复「确认」后才发邀请。`
                 return st.active
                   ? `QQ 远程协助邀请已发出，等对方在 QQ 里接受。${qqLastMessage || ''}`
                   : `现在没有发出中的远程协助邀请。${qqLastMessage || ''}`
@@ -669,8 +870,9 @@ export default {
       }
     }
 
-    // 模块停下：尽量把机器人客户端里还开着的共享/协助停掉（异步，失败不阻塞卸载）
+    // 模块停下：撤掉还没确认的发起前截图，尽量把机器人客户端里还开着的共享/协助停掉（异步，失败不阻塞卸载）
     api.onDispose(() => {
+      dropPending()
       Promise.resolve().then(async () => {
         try {
           const n = await resolveNames()

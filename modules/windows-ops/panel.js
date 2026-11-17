@@ -24,6 +24,7 @@ const DEFAULTS = {
   qqBotName: '', // 昵称兜底（OneBot 连不上时手填）
   qqOwnerName: '', // 昵称兜底
   qqWindowHwnd: 0, // 高级：机器人 QQ 窗口句柄（0=自动）
+  qqConfirmBeforeStart: true, // 发起前先截图发主人确认
   shareAutoStopMinutes: 30, // 屏幕共享自动停止（0=不自动）
 }
 
@@ -328,11 +329,16 @@ return function Panel({ settings, save, toast }) {
     h(ui.Card, {
       title: 'QQ 屏幕共享（机器人客户端）',
       desc: '机器人用自己的 QQ 客户端，在聊天工具栏点「屏幕共享」→ 在「选择你想共享的窗口」里选「桌面」→「确定」。主人在 QQ 里看到的是 QQ 原生共享，不是截图发帧。'
-        + ' 默认发给主人；要发给机器人好友列表里的某个人，在 QQ 私聊发 `/wops share <QQ号或备注>`。共享不会自己停，可设自动停止分钟数。',
+        + ' 发起前会先把当前屏幕截图发到主人私聊，主人回复「确认」后才真正点按钮；要发给机器人好友列表里的某个人，在 QQ 私聊发 `/wops share <QQ号或备注>`。共享不会自己停，可设自动停止分钟数。',
     },
     stRow('机器人 QQ', `${d.qqBotQQ || '（用插件配置 botQQ）'}${d.qqBotName ? ' · ' + d.qqBotName : ''}`),
     stRow('主人 QQ', `${d.qqOwnerQQ || '（用插件配置 ownerQQ）'}${d.qqOwnerName ? ' · ' + d.qqOwnerName : ''}`),
-    sh && sh.active
+    sh && sh.pending
+      ? h('div', null,
+        stRow('状态', '等待主人确认（截图已发）'),
+        stRow('目标', `${sh.pending.target?.name || ''}（${sh.pending.target?.qq || ''}）`),
+        stRow('确认码', sh.pending.id || ''))
+      : sh && sh.active
       ? h('div', null,
         stRow('状态', 'QQ 原生共享中'),
         stRow('开始时间', new Date(sh.startedAt).toLocaleTimeString()),
@@ -349,6 +355,7 @@ return function Panel({ settings, save, toast }) {
         h('input', { className: 'ab-input', style: { width: 140 }, value: d.qqOwnerName || '', placeholder: '主人昵称', onChange: (e) => upd({ qqOwnerName: e.target.value }) }))),
     h(ui.Row, { label: '自动停止（分钟）', hint: '原生 QQ 共享不会自己停：到点自动点「停止共享」。0 = 不自动，默认 30' },
       h('input', { className: 'ab-input', style: { width: 100 }, type: 'number', min: 0, max: 240, value: d.shareAutoStopMinutes, onChange: (e) => upd({ shareAutoStopMinutes: e.target.value }) })),
+    swRow('发起前截图确认', 'qqConfirmBeforeStart', '默认开：发起屏幕共享/远程协助前，先把当前屏幕截图发到主人私聊；主人在 QQ 里回复「确认」后才真正点 QQ 按钮。关掉 = 直接发起，不截确认图。'),
     h('div', { className: 'ab-flex', style: { marginTop: 10 } },
       btn('开始共享', () => actShare('start'), 'share:start', true),
       btn('停止共享', () => actShare('stop'), 'share:stop'),
@@ -358,9 +365,14 @@ return function Panel({ settings, save, toast }) {
     h(ui.Card, {
       title: '远程协助（QQ 原生邀请）',
       desc: '机器人用自己的 QQ 客户端，点「远程协助」右侧箭头 → 菜单「邀请对方远程协助」；对方会在 QQ 里收到原生邀请，接受后直接看屏并操作鼠标键盘。'
-        + ' 默认发给主人；也可发 `/wops assist <QQ号或备注>` 指定机器人好友。不需要链接、端口或网页；但会把控制权交出去，必须先打开主卡的「允许键鼠模拟」。',
+        + ' 发起前会先把当前屏幕截图发到主人私聊，主人回复「确认」后才真正发邀请；也可发 `/wops assist <QQ号或备注>` 指定机器人好友。不需要链接、端口或网页；但会把控制权交出去，必须先打开主卡的「允许键鼠模拟」。',
     },
-    ras && ras.active
+    ras && ras.pending
+      ? h('div', null,
+        stRow('状态', '等待主人确认（截图已发）'),
+        stRow('目标', `${ras.pending.target?.name || ''}（${ras.pending.target?.qq || ''}）`),
+        stRow('确认码', ras.pending.id || ''))
+      : ras && ras.active
       ? h('div', null,
         stRow('状态', '邀请已发出，等对方在 QQ 里接受'),
         stRow('发出时间', new Date(ras.startedAt).toLocaleTimeString()),
