@@ -50,6 +50,7 @@
 - `maxSharesPerDay` 每天最多分享几部（默认 3）
 - `shareEnabled` 刷到好的就私聊发给我（默认开；关掉只自己看）
 - `dwellMin` / `dwellMax` 每部停留秒数（默认 20~90，随机取中间值）
+- `closeAfterRun` 刷完自动关浏览器（默认开；省内存，下一轮再冷启动，登录状态不受影响）
 - `browserPath` 浏览器路径（留空自动找）
 - `visionModel` 看画面用哪个模型（留空 = 跟聊天模型）
 

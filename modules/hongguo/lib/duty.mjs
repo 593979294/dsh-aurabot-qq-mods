@@ -333,6 +333,9 @@ export function createHongguo ({ getConfig, hub, memory, log, dataDir, site: inj
         message: `看了 ${looked.length} 部（实际播放 ${totalSec} 秒）${eye}${shared ? `，推给你 ${shared} 部` : '，没有值得推的'}`
       }
     } finally {
+      // 每轮跑完就把浏览器关掉：省内存，下一轮再冷启动；登录态在 profile 里，不用重新扫码。
+      // 放在 busy 置 false 之前，避免关的中途 tick 又插进来跑一轮
+      if (getConfig().hongguo?.closeAfterRun !== false) await browser.close().catch((error) => log.debug('刷完关浏览器失败：', error.message))
       busy = false
     }
   }

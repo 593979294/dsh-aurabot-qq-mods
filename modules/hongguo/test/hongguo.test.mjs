@@ -394,3 +394,32 @@ describe('失败回退与健壮性', () => {
     assert.equal(r.ok, true, '热评拿不到不该让整轮失败')
   })
 })
+
+describe('刷完自动关浏览器', () => {
+  const spy = () => {
+    const calls = []
+    return { calls, b: { close: async () => { calls.push(1) }, open: async () => ({ ok: true }), connected: () => true } }
+  }
+
+  test('默认每轮跑完关一次', async () => {
+    const s = spy()
+    const { hg } = makeHG({ browser: s.b })
+    await hg.run({ force: true })
+    assert.equal(s.calls.length, 1, '一轮结束应当关闭浏览器')
+  })
+
+  test('closeAfterRun 关掉就不动浏览器', async () => {
+    const s = spy()
+    const { hg } = makeHG({ browser: s.b, settings: { closeAfterRun: false } })
+    await hg.run({ force: true })
+    assert.equal(s.calls.length, 0, '关掉开关后不该动浏览器')
+  })
+
+  test('这一轮失败也要关，别把浏览器留着', async () => {
+    const s = spy()
+    const { hg } = makeHG({ browser: s.b, site: fakeSite({ feed: async () => [] }) })
+    const r = await hg.run({ force: true })
+    assert.equal(r.ok, false)
+    assert.equal(s.calls.length, 1)
+  })
+})
