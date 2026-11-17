@@ -1,7 +1,7 @@
 /**
  * roost 内置安装器 + 兼容层配置客户端
  * ==================================
- * roost 连同必需依赖（ws / silk-wasm）已打包在模块的 vendor/roost/ 里（只读母本）。
+ * roost 连同必需依赖（ws / silk-wasm）已打包在模块的 lib/vendor/roost/ 里（只读母本）。
  * 启动前把整份复制到 modules-data/<id>/roost-code/，从那里运行：
  *   - 模块目录不会被 roost 的运行时写入（ports.json / plugins/）碰脏，宿主不会热重载；
  *   - 不用改 roost 框架源码，升级就是重新复制一份；
@@ -24,8 +24,8 @@ import { randomBytes, createHash } from 'node:crypto';
 
 /** 兼容旧调用：默认目录就是模块自带那份（真实绝对路径由入口传 vendorDir） */
 export const DEFAULT_DIR = () => join(homedir(), '.roost', 'aurabot-bridge');
-/** 模块自带的 roost 母本（只读，不直接运行） */
-export const inplaceDir = (moduleDir) => join(String(moduleDir || ''), 'vendor', 'roost');
+/** 模块自带的 roost 母本（只读，不直接运行）；按市场约定集中在 lib/ 下，模块根只留入口与说明 */
+export const inplaceDir = (moduleDir) => join(String(moduleDir || ''), 'lib', 'vendor', 'roost');
 /** 实际运行用的 roost 副本：整体复制到模块数据目录，避免写脏被监控的模块目录 */
 export const runtimeDir = (dataDir) => join(String(dataDir || ''), 'roost-code');
 /** roost 运行数据（config/logs/data）落点 */
@@ -113,7 +113,7 @@ export function prepareDeps({ vendorDir, homeDir, log = () => {} } = {}) {
   const from = existsSync(join(bundled, 'ws', 'package.json')) ? bundled : legacy;
   const to = join(String(homeDir || ''), 'data', 'deps', 'ext');
   if (!existsSync(join(from, 'ws', 'package.json'))) {
-    throw new Error('模块自带的 roost 缺 ws 依赖（vendor/roost/data/deps/ext/bundled/ws），请重装本模块');
+    throw new Error('模块自带的 roost 缺 ws 依赖（lib/vendor/roost/data/deps/ext/bundled/ws），请重装本模块');
   }
   if (existsSync(join(to, 'node_modules', 'ws', 'package.json'))
     && existsSync(join(to, 'node_modules', 'silk-wasm', 'package.json'))) {

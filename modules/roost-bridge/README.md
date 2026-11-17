@@ -16,7 +16,7 @@
 4. 卡住了点「一键诊断」，逐项查出面板通不通、机器人在不在线、兼容层开没开、网关指没指。
 
 几个省心点：
-- **整体复制到数据目录、数据隔离**：模块自带 `vendor/roost/` 是只读母本；就绪/启动前整份同步到 `modules-data/roost-bridge/roost-code/` 并从那里运行（按内容指纹判断，模块升级自动重复制）。roost 会把 `data/ports.json`、空 `plugins/` 写在自己的代码目录，现在都落在数据目录，不会弄脏被宿主监控的模块目录、也不触发热重载。运行数据（config/logs/data）仍用 `ROOST_HOME` 指到 `roost-home/`，凭证不随代码复制。
+- **整体复制到数据目录、数据隔离**：模块自带 `lib/vendor/roost/` 是只读母本；就绪/启动前整份同步到 `modules-data/roost-bridge/roost-code/` 并从那里运行（按内容指纹判断，模块升级自动重复制）。roost 会把 `data/ports.json`、空 `plugins/` 写在自己的代码目录，现在都落在数据目录，不会弄脏被宿主监控的模块目录、也不触发热重载。运行数据（config/logs/data）仍用 `ROOST_HOME` 指到 `roost-home/`，凭证不随代码复制。
 - **端口不用管**：roost 面板端口被占会自动顺延，模块读 `data/ports.json` + `/healthz` 自动找真实端口，不用你改配置。
 - **密钥只存内存**：扫码拿到的 AppID/AppSecret 暂存内存；**等 roost 停稳后**才写进 roost 自己的 `config/bots/*.json` 并回读校验，再启动让配置生效。面板 accessKey/兼容层 token 只存内存，DSH 重启后按提示重填即可（roost 那份仍在，通常不用动）。
 - **一键退出**：「一键改回原网关」把大肥鱼的网关恢复成原来的 SnowLuma 配置。
@@ -66,7 +66,7 @@
 
 审核者重点看这几条，这里如实写清楚：
 
-- **下载与联网边界如实说明**：模块胶水本身不下载、不执行远端代码：内置 roost 与 `ws` / `silk-wasm` 已作为普通文件打包在 `vendor/roost/`，启动前只在本机整份复制到数据目录；模块自身对外的请求只有 `127.0.0.1` 上 roost 面板 API（含透传扫码），扫码协议由 roost 访问 `q.qq.com`，模块不接触。随包 roost 框架保留原版自更新能力：上游默认每 6 小时只**检查**新版本；本模块每次启动前会把运行配置的 `update.autoApply` 硬写回 `false`，只保留面板手动确认的更新路径，绝不在模块侧自动下载安装。用户手动确认时才由 roost 访问 `github.com` / `raw.githubusercontent.com` / `api.github.com` / `gitee.com`；发语音等场景还可能按 roost 面板配置的 npm 源（默认 `registry.npmjs.org`）装 `silk-wasm` / `@ffmpeg-installer`。这是内嵌框架的行为，不是模块胶水发起的。这份内置副本锁定 roost 1.1.5 / commit `64382086…`，逐文件校验见 `vendor/roost/SOURCE.md` + `SOURCE.sha256`，与发版逐字节一致、没有打补丁。模块胶水为 MIT，随包 roost 为 AGPL-3.0-only（许可证见 `vendor/roost/LICENSE`），分发例外由 roost 上游源仓 `LICENSE-EXCEPTIONS.md` 正式给出，随包副本见 `vendor/roost/LICENSE-EXCEPTION.md`，依赖各自带 LICENSE。停用 / 卸载模块会延迟自动恢复网关（热重载不触发），但 DSH 进程直接退出无法保证，面板同时强提示先手动恢复。
+- **下载与联网边界如实说明**：模块胶水本身不下载、不执行远端代码：内置 roost 与 `ws` / `silk-wasm` 已作为普通文件打包在 `lib/vendor/roost/`，启动前只在本机整份复制到数据目录；模块自身对外的请求只有 `127.0.0.1` 上 roost 面板 API（含透传扫码），扫码协议由 roost 访问 `q.qq.com`，模块不接触。随包 roost 框架保留原版自更新能力：上游默认每 6 小时只**检查**新版本；本模块每次启动前会把运行配置的 `update.autoApply` 硬写回 `false`，只保留面板手动确认的更新路径，绝不在模块侧自动下载安装。用户手动确认时才由 roost 访问 `github.com` / `raw.githubusercontent.com` / `api.github.com` / `gitee.com`；发语音等场景还可能按 roost 面板配置的 npm 源（默认 `registry.npmjs.org`）装 `silk-wasm` / `@ffmpeg-installer`。这是内嵌框架的行为，不是模块胶水发起的。这份内置副本锁定 roost 1.1.5 / commit `64382086…`，逐文件校验见 `lib/vendor/roost/SOURCE.md` + `SOURCE.sha256`，与发版逐字节一致、没有打补丁。模块胶水为 MIT，随包 roost 为 AGPL-3.0-only（许可证见 `lib/vendor/roost/LICENSE`），分发例外由 roost 上游源仓 `LICENSE-EXCEPTIONS.md` 正式给出，随包副本见 `lib/vendor/roost/LICENSE-EXCEPTION.md`，依赖各自带 LICENSE。停用 / 卸载模块会延迟自动恢复网关（热重载不触发），但 DSH 进程直接退出无法保证，面板同时强提示先手动恢复。
 - **凭据处理**：AppSecret、机器人 Token、roost 面板 accessKey、兼容层 token **只存本进程内存**，不写进模块数据目录、不回显明文（面板只显示「已暂存」）。唯一落盘的是 roost 自己 `config/bots/*.json` 里那份——那是 roost 的地盘。
 - **不外发隐私**：不读取、不上传大肥鱼的聊天内容、记忆、Cookie。模块只调本机 roost 面板 API。
 - **权限面**：所有面板接口带 `access: 'panel'`，复用宿主的回环 / 可信代理 / Host / CSRF 闸；模块不注册 QQ 命令，也不向模型注册工具，权限面只剩面板。扫码拿到的凭证先暂存内存，等 roost 停稳后写进配置并回读校验，不落模块数据目录、不回显明文。
@@ -78,13 +78,13 @@
 
 ## roost 进程的生命周期
 
-模块起 roost 前先把 `vendor/roost` 同步到数据目录 `roost-code`，再由 `lib/launch.mjs` 守护进程从那里拉起（`ROOST_HOME` 指 `roost-home`）。守护进程盯着宿主进程：**宿主真退出（正常关闭或崩溃）才收掉 roost**；模块热重载不换宿主 pid，不会把刚启动的 roost 误关。因为关 DSH 会停 roost，重开 DSH 后想让机器人自己上线，请打开设置里的「自动拉起」开关（默认关）。roost 自己的实例锁防止同一个机器人双开；手动停请用面板「关闭 roost」（走框架 `/api/shutdown`，会释放锁）。
+模块起 roost 前先把 `lib/vendor/roost` 同步到数据目录 `roost-code`，再由 `lib/launch.mjs` 守护进程从那里拉起（`ROOST_HOME` 指 `roost-home`）。守护进程盯着宿主进程：**宿主真退出（正常关闭或崩溃）才收掉 roost**；模块热重载不换宿主 pid，不会把刚启动的 roost 误关。因为关 DSH 会停 roost，重开 DSH 后想让机器人自己上线，请打开设置里的「自动拉起」开关（默认关）。roost 自己的实例锁防止同一个机器人双开；手动停请用面板「关闭 roost」（走框架 `/api/shutdown`，会释放锁）。
 
 ## 故障排查
 
-- 「模块自带的 roost 副本不完整」：安装包缺了 `vendor/roost/src/main.js`，重装本模块。
+- 「模块自带的 roost 副本不完整」：安装包缺了 `lib/vendor/roost/src/main.js`，重装本模块。
 - 「没装全局 Node，roost 会不会打不开」：不会。模块用宿主的 `process.execPath`，不查 PATH；桌面版 DSH 是 Electron 外壳时会自动加 `ELECTRON_RUN_AS_NODE=1`，让那个可执行文件按 Node 方式跑 `src/main.js`。点「一键诊断」能看到实际用的是哪个运行时。
-- 「兼容模式需要 ws 依赖」：`ws` 随模块内置 roost 一起放在 `vendor/roost/data/deps/ext/bundled/`，启动前会复制到 roost 数据目录的 `node_modules/`（市场打包器会跳过任何 `node_modules/`，所以源码里不能放那儿）。出现这条说明模块自带的 roost 副本缺文件，重装本模块。
+- 「兼容模式需要 ws 依赖」：`ws` 随模块内置 roost 一起放在 `lib/vendor/roost/data/deps/ext/bundled/`，启动前会复制到 roost 数据目录的 `node_modules/`（市场打包器会跳过任何 `node_modules/`，所以源码里不能放那儿）。出现这条说明模块自带的 roost 副本缺文件，重装本模块。
 - 「扫码后机器人没上线」：确认看到过「凭证已写入 roost，进程已重启」；这步会自动重启，不用再手动点。若没看到，重新扫码一次；再看开放平台是否开了「接收所有消息」、机器人有没有被拉进群。
 - 「模块里填了 QQ 号，aurabot 里还是旧的」：模块里的 `selfUin` 只先写进 roost 兼容层；**要点「接入大肥鱼」**才会同步到 aurabot 顶层 `botQQ`。aurabot「连接」页的「用什么接 QQ → 接我已有的 OneBot 机器人」对应 `gateway:'onebot'`，接入时已经自动选好，不用手点；要改的是同一张卡片下面的「机器人 QQ 号」。aurabot 连上后会用 `get_login_info` 核对这个号，不一致会自己断开。点「一键诊断」能看到两边是否一致。
 - 「配置好了但群里没反应」：① roost 建机器人后没重启；② aurabot 的 `botQQ` 还是旧号（重新点「接入大肥鱼」）；③ 开放平台没开「接收所有消息」；④ 机器人没进群；⑤ 网关改了但 DSH 没重启。

@@ -12,21 +12,21 @@
 | commit | `64382086cb735a56a63cca64700231ba694a4123` |
 | 提交信息 | `chore(release): 1.1.5` |
 | 本地发版源 | `douluo/bot` @ 上述 commit |
-| 随包路径 | `modules/roost-bridge/vendor/roost/` |
+| 随包路径 | `modules/roost-bridge/lib/vendor/roost/` |
 | 文件数 | 147（不含本文件、`SOURCE.sha256`、`LICENSE-EXCEPTION.md`） |
 
 内置副本从上述发版源整份复制，模块胶水**不打补丁、不修改任何 roost 源码**。随包依赖：
 
-- `ws 8.22.2`（`vendor/roost/data/deps/ext/bundled/ws/`，MIT）
-- `silk-wasm 3.7.1`（`vendor/roost/data/deps/ext/bundled/silk-wasm/`，按其自带 LICENSE）
+- `ws 8.22.2`（`lib/vendor/roost/data/deps/ext/bundled/ws/`，MIT）
+- `silk-wasm 3.7.1`（`lib/vendor/roost/data/deps/ext/bundled/silk-wasm/`，按其自带 LICENSE）
 - 不含可选 `@ffmpeg-installer`（约 62MB）
 
 ## 校验
 
-`SOURCE.sha256` 是本目录全部随包文件的 sha256 清单，路径相对 `vendor/roost/`：
+`SOURCE.sha256` 是本目录全部随包文件的 sha256 清单，路径相对 `lib/vendor/roost/`：
 
 ```bash
-cd modules/roost-bridge/vendor/roost
+cd modules/roost-bridge/lib/vendor/roost
 sha256sum -c SOURCE.sha256
 ```
 

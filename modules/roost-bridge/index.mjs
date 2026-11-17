@@ -13,14 +13,10 @@ import { join } from 'node:path';
 import * as fs from 'node:fs';
 import * as roost from './lib/roost.mjs';
 import * as state from './lib/state.mjs';
+import { createGatewayRestore } from './lib/gateway-restore.mjs';
 import { textDigest, summary, WHY_ROOST, textWhyRoost } from './lib/compat.mjs';
 
 const ID = 'roost-bridge';
-
-/** 停用/卸载后延迟恢复网关：热重载会在宽限期内启动新实例并取消 */
-const RESTORE_GRACE_MS = 5000;
-const PENDING_RESTORE = '__roostBridgePendingGatewayRestore';
-const SETUP_GENERATION = '__roostBridgeSetupGeneration';
 
 export default {
   id: ID,
@@ -80,45 +76,17 @@ export default {
     /** 成功路径统一清掉上一次的报错，避免 state.json 里长期残留误导排查 */
     const clearError = () => state.set({ lastError: '' });
 
-    /** 每次 setup 都是新实例；热重载时用它识别并取消旧实例留下的恢复任务 */
-    const myGeneration = Number(globalThis[SETUP_GENERATION] || 0) + 1;
-    globalThis[SETUP_GENERATION] = myGeneration;
-
-    function cancelPendingRestore() {
-      const timer = globalThis[PENDING_RESTORE];
-      if (timer) {
-        clearTimeout(timer);
-        globalThis[PENDING_RESTORE] = null;
-      }
-    }
-    cancelPendingRestore();
-
-    /** 真停用/卸载时把 aurabot 网关写回原配置；热重载会在宽限期内被新实例取消 */
-    function scheduleGatewayRestore() {
-      // 旧实例被热重载替换后不再有权安排恢复
-      if (globalThis[SETUP_GENERATION] !== myGeneration) return;
-      cancelPendingRestore();
-      const timer = setTimeout(() => {
-        if (globalThis[PENDING_RESTORE] !== timer) return;
-        globalThis[PENDING_RESTORE] = null;
-        // 新实例已经接管就绝不恢复
-        if (globalThis[SETUP_GENERATION] !== myGeneration) return;
-        try {
-          const s = state.get();
-          if (!s.linked) return;
-          api.setConfig(roost.restoreGatewayPatch({
-            botQQ: s.prevBotQQ,
-            diary: s.prevDiaryEnabled,
-            qzoneSocial: s.prevQzoneSocialEnabled,
-          }));
-          state.mark('linked', false);
-          log('模块已停用，aurabot 网关已自动恢复为原配置');
-        } catch (e) { log('停用后自动恢复网关失败：' + e.message); }
-      }, RESTORE_GRACE_MS);
-      timer.unref?.();
-      globalThis[PENDING_RESTORE] = timer;
-    }
-    api.onDispose?.(scheduleGatewayRestore);
+    /**
+     * 停用/卸载后延迟恢复网关。调度逻辑在 lib/gateway-restore.mjs（可单测）：
+     * 这里只负责把宿主 API 注进去——新实例创建即取消旧实例留下的待恢复任务。
+     */
+    const gatewayRestore = createGatewayRestore({
+      state,
+      setConfig: (patch) => api.setConfig(patch),
+      restorePatch: roost.restoreGatewayPatch,
+      log,
+    });
+    api.onDispose?.(gatewayRestore.schedule);
 
     /** 面板接口全部带 access:'panel'，复用宿主鉴权闸（1.3.0+） */
     const panelRoute = (path, handler) => api.route(path, handler, { access: 'panel' });
