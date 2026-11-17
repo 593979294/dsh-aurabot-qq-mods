@@ -100,26 +100,32 @@ test('prepareQq：qq.windows 无参数', () => {
 })
 
 test('prepareQq：只给 botName 也能过；两个都空且 hwnd=0、botQQ 也空要抛错', () => {
-  assert.deepEqual(prepareQq('qq.share', { botName: '机器人' }).argv, ['0', '机器人', '', '', '20'])
+  assert.deepEqual(prepareQq('qq.share', { botName: '机器人' }).argv, ['0', '机器人', '', '', '', '20'])
   assert.throws(() => prepareQq('qq.share', {}), /botQQ|botName|ownerName|hwnd/)
 })
 
 test('prepareQq：只给 botQQ 就按 QQ 号定位，summary 显示 QQ 号', () => {
   const r = prepareQq('qq.share', { botQQ: '123456789' })
-  assert.deepEqual(r.argv, ['0', '', '', '123456789', '20'])
+  assert.deepEqual(r.argv, ['0', '', '', '123456789', '', '20'])
   assert.match(r.summary, /QQ 123456789/)
 })
 
 test('prepareQq：只给 hwnd 也能过，且 summary 显示句柄', () => {
   const r = prepareQq('qq.assist', { hwnd: 4265170 })
-  assert.deepEqual(r.argv, ['4265170', '', '', ''])
+  assert.deepEqual(r.argv, ['4265170', '', '', '', ''])
   assert.match(r.summary, /#4265170/)
 })
 
 test('prepareQq：waitSec 夹到 5~60，默认 20', () => {
-  assert.equal(prepareQq('qq.share', { botName: 'x', waitSec: 1 }).argv[4], '5')
-  assert.equal(prepareQq('qq.share', { botName: 'x', waitSec: 999 }).argv[4], '60')
-  assert.equal(prepareQq('qq.share', { botName: 'x' }).argv[4], '20')
+  assert.equal(prepareQq('qq.share', { botName: 'x', waitSec: 1 }).argv[5], '5')
+  assert.equal(prepareQq('qq.share', { botName: 'x', waitSec: 999 }).argv[5], '60')
+  assert.equal(prepareQq('qq.share', { botName: 'x' }).argv[5], '20')
+})
+
+test('prepareQq：targetQQ 进 argv 第 5 位，summary 也带目标 QQ', () => {
+  const r = prepareQq('qq.assist', { botQQ: '123456789', ownerName: '同事小A', targetQQ: '555666777' })
+  assert.deepEqual(r.argv, ['0', '', '同事小A', '123456789', '555666777'])
+  assert.match(r.summary, /目标 QQ 555666777/)
 })
 
 test('prepareQq：未知操作抛错', () => {
@@ -223,12 +229,12 @@ test('createOps.run：qq.windows 走脚本并交给 interpretQq', async () => {
   assert.equal(ps.calls.length, 1)
 })
 
-test('createOps.run：qq.share 的 argv 按 hwnd/botName/ownerName/botQQ/waitSec 顺序进脚本', async () => {
+test('createOps.run：qq.share 的 argv 按 hwnd/botName/ownerName/botQQ/targetQQ/waitSec 顺序进脚本', async () => {
   const ps = fakePs(qqOut({ ok: false, message: '未找到窗口' }))
   const ops = createOps({ ps, dataDir: DATA })
-  await ops.run('qq.share', { hwnd: 4265170, botName: '机器人', ownerName: '主人', botQQ: '123456789', waitSec: 15 })
+  await ops.run('qq.share', { hwnd: 4265170, botName: '机器人', ownerName: '同事小A', botQQ: '123456789', targetQQ: '555666777', waitSec: 15 })
   const argv = argvOf(ps.calls[0])
-  assert.deepEqual(argv, ['4265170', '机器人', '主人', '123456789', '15'])
+  assert.deepEqual(argv, ['4265170', '机器人', '同事小A', '123456789', '555666777', '15'])
 })
 
 test('createOps.run：qq.share 失败不触发重试（动作类防重复点按钮），有结构化输出就按失败返回', async () => {

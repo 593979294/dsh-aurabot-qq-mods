@@ -87,9 +87,9 @@ export function prepareQq(op, args = {}) {
   const targetLabel = targetQQ ? `，目标 QQ ${targetQQ}` : ''
   if (op === 'qq.share') {
     const wait = Math.min(60, Math.max(5, Math.round(Number(args.waitSec) || 20)))
-    return { argv: [String(hwnd), botName, ownerName, botQQ, String(wait)], summary: `机器人窗口${hwnd ? `#${hwnd}` : botQQ ? `QQ ${botQQ}` : `（${botName || ownerName}）`}${targetLabel}，等待 ${wait}s` }
+    return { argv: [String(hwnd), botName, ownerName, botQQ, targetQQ, String(wait)], summary: `机器人窗口${hwnd ? `#${hwnd}` : botQQ ? `QQ ${botQQ}` : `（${botName || ownerName}）`}${targetLabel}，等待 ${wait}s` }
   }
-  return { argv: [String(hwnd), botName, ownerName, botQQ], summary: `机器人窗口${hwnd ? `#${hwnd}` : botQQ ? `QQ ${botQQ}` : `（${botName || ownerName}）`}${targetLabel}` }
+  return { argv: [String(hwnd), botName, ownerName, botQQ, targetQQ], summary: `机器人窗口${hwnd ? `#${hwnd}` : botQQ ? `QQ ${botQQ}` : `（${botName || ownerName}）`}${targetLabel}` }
 }
 
 /** 拆脚本输出：Emit 打的是 UTF-8 base64 JSON；测试注入也兼容直接 JSON。 */
@@ -328,7 +328,23 @@ function FindContact($root,$name){
   }
   return $null
 }
-function SearchContact($root,$name){
+function SearchHits($root,$term){
+  $liCond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::ListItem)
+  $isQq=($term -match '^[0-9]{5,}')
+  for($i=0;$i -lt 15;$i++){
+    Start-Sleep -Milliseconds 200
+    $hits=@()
+    foreach($e in $root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$liCond)){
+      $n=$e.Current.Name
+      if(-not $n -or (ClassOf $e) -notlike 'search-result-item*'){ continue }
+      if($isQq){ $hits += $e }
+      elseif($n.Contains('我的好友') -and $n.StartsWith($term)){ $hits += $e }
+    }
+    if($hits.Count -gt 0){ return @($hits) }
+  }
+  return @()
+}
+function SearchContact($root,$name,$qq){
   $edit=$null
   $editCond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Edit)
   foreach($e in $root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$editCond)){
@@ -338,16 +354,14 @@ function SearchContact($root,$name){
   try{ $vp=$edit.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern) }catch{ return $false }
   $old=''
   try{ $old=$vp.Current.Value }catch{}
-  try{ $vp.SetValue($name) }catch{ return $false }
   $item=$null
-  $liCond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::ListItem)
-  for($i=0;$i -lt 15;$i++){
-    Start-Sleep -Milliseconds 200
-    $hits=@()
-    foreach($e in $root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$liCond)){
-      $n=$e.Current.Name
-      if((ClassOf $e) -like 'search-result-item*' -and $n -and $n.StartsWith($name) -and $n.Contains('我的好友')){ $hits += $e }
-    }
+  # 主人给的 QQ 号优先：QQ 搜索框按号码搜出来的人就是它，头像/备注不会认错。
+  $terms=@()
+  if($qq){ $terms += $qq }
+  if($name){ $terms += $name }
+  foreach($term in $terms){
+    try{ $vp.SetValue($term) }catch{ continue }
+    $hits=@(SearchHits $root $term)
     if($hits.Count -eq 1){ $item=$hits[0]; break }
     if($hits.Count -gt 1){ break }
   }
@@ -359,12 +373,14 @@ function SearchContact($root,$name){
   try{ $vp.SetValue($old) }catch{}
   return $ok
 }
-function EnsureChat($w,$ownerName){
+function EnsureChat($w,$ownerName,$targetQQ){
   $root=[System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$w.hwnd)
   if(-not $ownerName){ return $true }
   if((HeaderOf $root) -eq $ownerName){ return $true }
   [QqWin]::Show([IntPtr]$w.hwnd)
   Start-Sleep -Milliseconds 250
+  # 指定了 QQ 号：先用 QQ 搜索框按号码搜人；搜不到再退回最近会话列表/按名字搜。
+  if($targetQQ -and (SearchContact $root $ownerName $targetQQ)){ return $true }
   $item=FindContact $root $ownerName
   if($null -ne $item){
     $r=$item.Current.BoundingRectangle
@@ -373,8 +389,7 @@ function EnsureChat($w,$ownerName){
     Start-Sleep -Milliseconds 1200
     if((HeaderOf $root) -eq $ownerName){ return $true }
   }
-  # 不在最近会话列表时，用 QQ 搜索框按名字找「我的好友」结果；只点唯一一条，重名就失败。
-  return (SearchContact $root $ownerName)
+  return (SearchContact $root $ownerName '')
 }
 function FindPicker($pidNum){
   foreach($line in [QqWin]::List()){
@@ -416,10 +431,10 @@ Emit @{ ok=$true; windows=$items }`,
     'qq.share': `${PREFIX}$ErrorActionPreference='Stop'
 ${ARGS}
 ${BASE}
-$hwnd=[int](D $a[0]); $bot=D $a[1]; $owner=D $a[2]; $botQQ=D $a[3]; $wait=[int](D $a[4])
+$hwnd=[int](D $a[0]); $bot=D $a[1]; $owner=D $a[2]; $botQQ=D $a[3]; $targetQQ=D $a[4]; $wait=[int](D $a[5])
 $w=SelectWin $hwnd $bot $owner $botQQ
 if($null -eq $w){ ${NO_WIN} }
-if(-not (EnsureChat $w $owner)){ ${NO_CHAT} }
+if(-not (EnsureChat $w $owner $targetQQ)){ ${NO_CHAT} }
 [QqWin]::Show([IntPtr]$w.hwnd)
 Start-Sleep -Milliseconds 250
 $root=[System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$w.hwnd)
@@ -466,10 +481,10 @@ Emit @{ ok=$true; message='已停止 QQ 屏幕共享' }`,
     'qq.assist': `${PREFIX}$ErrorActionPreference='Stop'
 ${ARGS}
 ${BASE}
-$hwnd=[int](D $a[0]); $bot=D $a[1]; $owner=D $a[2]; $botQQ=D $a[3]
+$hwnd=[int](D $a[0]); $bot=D $a[1]; $owner=D $a[2]; $botQQ=D $a[3]; $targetQQ=D $a[4]
 $w=SelectWin $hwnd $bot $owner $botQQ
 if($null -eq $w){ ${NO_WIN} }
-if(-not (EnsureChat $w $owner)){ ${NO_CHAT} }
+if(-not (EnsureChat $w $owner $targetQQ)){ ${NO_CHAT} }
 [QqWin]::Show([IntPtr]$w.hwnd)
 Start-Sleep -Milliseconds 250
 $root=[System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$w.hwnd)
