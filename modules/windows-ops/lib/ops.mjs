@@ -92,12 +92,16 @@ $bmp.Dispose()
 Write-Output ok`,
   // v1.3.0：共享帧。与 screenshot 的区别是「缩放 + JPEG 质量」——整屏 PNG 每帧 3~8MB，
   // 走 QQ 发图或网页拉流都撑不住；缩到 maxWidth 宽、质量 20~95 的 JPEG 一般 60~250KB。
+  // 编码走 WPF JpegBitmapEncoder，不用 System.Drawing 的 EncoderParameters：真机（2026-11-17）
+  // Defender AMSI 会把「CopyFromScreen + EncoderParameters 落 JPEG」整段判成恶意脚本，换成 WPF 才放行。
   // 输出末尾一行 JSON 是虚拟屏幕矩形（远端输入的归一化坐标按它换算），文件路径由 JS 生成后经 base64 传入。
   'screen.capture':
     `${PREFIX}$ErrorActionPreference='Stop'
 ${ARGS}
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName PresentationCore
+Add-Type -AssemblyName WindowsBase
 $b=[System.Windows.Forms.SystemInformation]::VirtualScreen
 $maxW=[int](D $a[0]); $q=[int](D $a[1])
 if($maxW -lt 320){ $maxW=320 }; if($maxW -gt 3840){ $maxW=3840 }
@@ -115,12 +119,17 @@ $g2=[System.Drawing.Graphics]::FromImage($small)
 $g2.InterpolationMode=[System.Drawing.Drawing2D.InterpolationMode]::HighQualityBilinear
 $g2.DrawImage($bmp,0,0,$w,$h)
 $g2.Dispose()
-$enc=[System.Drawing.Imaging.Encoder]::Quality
-$ep=[System.Drawing.Imaging.EncoderParameters]::new(1)
-$ep.Param[0]=[System.Drawing.Imaging.EncoderParameter]::new($enc,[long]$q)
-$codec=([System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' })[0]
-$small.Save((D $a[2]),$codec,$ep)
-$ep.Dispose()
+$ms=New-Object System.IO.MemoryStream
+$small.Save($ms,[System.Drawing.Imaging.ImageFormat]::Bmp)
+$ms.Position=0
+$frame=[System.Windows.Media.Imaging.BitmapFrame]::Create($ms)
+$enc=New-Object System.Windows.Media.Imaging.JpegBitmapEncoder
+$enc.QualityLevel=[int]$q
+$enc.Frames.Add($frame)
+$fs=[System.IO.File]::Create((D $a[2]))
+$enc.Save($fs)
+$fs.Dispose()
+$ms.Dispose()
 $small.Dispose()
 $bmp.Dispose()
 @{x=[int]$b.X;y=[int]$b.Y;w=[int]$b.Width;h=[int]$b.Height;sw=$w;sh=$h} | ConvertTo-Json -Compress`,

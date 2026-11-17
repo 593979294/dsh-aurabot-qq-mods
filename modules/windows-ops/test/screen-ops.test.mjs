@@ -20,7 +20,7 @@ function fakePs() {
     run: async (script) => {
       calls.push(script)
       // screen.capture 的输出带缩放后的宽高；screen.info 只有虚拟屏幕矩形
-      if (script.includes('EncoderParameters')) return '{"x":0,"y":0,"w":1920,"h":1080,"sw":1280,"sh":720}'
+      if (script.includes('JpegBitmapEncoder')) return '{"x":0,"y":0,"w":1920,"h":1080,"sw":1280,"sh":720}'
       return '{"x":0,"y":0,"w":1920,"h":1080}'
     },
   }
@@ -31,7 +31,7 @@ test('操作目录里声明了共享帧与屏幕尺寸（都是 safe，不碰键
   assert.equal(OPS['screen.info'].danger, 'safe')
 })
 
-test('screen.capture：脚本用 JPEG 编码器 + 缩放，文件落 dataDir/shots，矩形原样带回', async () => {
+test('screen.capture：脚本用 WPF JPEG 编码器 + 缩放，文件落 dataDir/shots，矩形原样带回', async () => {
   const ps = fakePs()
   const ops = createOps({ ps, dataDir: DATA })
   const r = await ops.run('screen.capture', { maxWidth: 1600, quality: 70 })
@@ -44,7 +44,8 @@ test('screen.capture：脚本用 JPEG 编码器 + 缩放，文件落 dataDir/sho
   assert.ok(ps.calls[0].includes("'MTYwMA=='"))
   assert.ok(ps.calls[0].includes("'NzA='"))
   // 质量/缩放的关键语句在脚本里（防止以后换成 PNG 又把帧撑大）
-  assert.match(ps.calls[0], /EncoderParameters/)
+  assert.match(ps.calls[0], /JpegBitmapEncoder/)
+  assert.match(ps.calls[0], /QualityLevel/)
   assert.match(ps.calls[0], /HighQualityBilinear/)
   assert.match(ps.calls[0], /CopyFromScreen/)
 })
