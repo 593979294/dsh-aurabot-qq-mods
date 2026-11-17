@@ -6,7 +6,8 @@
  *   - 模块目录不会被 roost 的运行时写入（ports.json / plugins/）碰脏，宿主不会热重载；
  *   - 不用改 roost 框架源码，升级就是重新复制一份；
  *   - 凭证、配置、日志仍在 ROOST_HOME（roost-home），跟代码彻底分开。
- * 不下载、不执行远端代码。ffmpeg（62MB，可选）只在用户真发 mp3/ogg 语音时由 roost 按需装。
+ * 模块胶水不下载、不执行远端代码；随包 roost 自带的可选更新路径见 README：
+ * autoApply 会在每次启动前硬锁为 false，所有下载只在用户主动确认后由 roost 发起。
  *
  * 安全边界：
  *   - 没有任何 fetch 到外部下载代码的行为；唯一的 fetch 是调本机 roost 面板 API
@@ -122,6 +123,22 @@ export function prepareDeps({ vendorDir, homeDir, log = () => {} } = {}) {
   cpSync(from, join(to, 'node_modules'), { recursive: true, force: true });
   log(`已把内置 ws / silk-wasm 放到 ${to}`);
   return { ok: true, skipped: false, dir: to, message: '已把内置 ws / silk-wasm 放到 roost 数据目录（不联网）' };
+}
+
+/**
+ * 把 roost 自更新锁成「只检查、不自动应用」。
+ * 只改 ROOST_HOME 的运行配置，不改随包源码；每次启动前调用，防止用户配置把 autoApply 打开。
+ */
+export function lockAutoApply(homeDir, log = () => {}) {
+  const file = join(String(homeDir || ''), 'config', 'bot.json');
+  let cfg = null;
+  try { cfg = JSON.parse(readFileSync(file, 'utf8')); } catch { return { ok: false, skipped: true }; }
+  if (!cfg || typeof cfg !== 'object') return { ok: false, skipped: true };
+  const before = cfg.update?.autoApply;
+  cfg.update = { ...(cfg.update && typeof cfg.update === 'object' ? cfg.update : {}), autoApply: false };
+  writeFileSync(file, JSON.stringify(cfg, null, 2) + '\n');
+  if (before !== false) log('已把 roost 自动更新锁为关闭（只检查、不自动安装）');
+  return { ok: true, changed: before !== false };
 }
 
 /** 机器人配置是否已落盘。dir = ROOST_HOME（数据目录），与模块内存密钥无关。 */

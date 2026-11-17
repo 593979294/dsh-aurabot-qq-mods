@@ -17,6 +17,11 @@ import { textDigest, summary, WHY_ROOST, textWhyRoost } from './lib/compat.mjs';
 
 const ID = 'roost-bridge';
 
+/** 停用/卸载后延迟恢复网关：热重载会在宽限期内启动新实例并取消 */
+const RESTORE_GRACE_MS = 5000;
+const PENDING_RESTORE = '__roostBridgePendingGatewayRestore';
+const SETUP_GENERATION = '__roostBridgeSetupGeneration';
+
 export default {
   id: ID,
   name: '官方机器人接入',
@@ -74,6 +79,46 @@ export default {
     const panelKey = () => String(roost.readPanelKey(homeDir) || state.get().accessKey || '').trim();
     /** 成功路径统一清掉上一次的报错，避免 state.json 里长期残留误导排查 */
     const clearError = () => state.set({ lastError: '' });
+
+    /** 每次 setup 都是新实例；热重载时用它识别并取消旧实例留下的恢复任务 */
+    const myGeneration = Number(globalThis[SETUP_GENERATION] || 0) + 1;
+    globalThis[SETUP_GENERATION] = myGeneration;
+
+    function cancelPendingRestore() {
+      const timer = globalThis[PENDING_RESTORE];
+      if (timer) {
+        clearTimeout(timer);
+        globalThis[PENDING_RESTORE] = null;
+      }
+    }
+    cancelPendingRestore();
+
+    /** 真停用/卸载时把 aurabot 网关写回原配置；热重载会在宽限期内被新实例取消 */
+    function scheduleGatewayRestore() {
+      // 旧实例被热重载替换后不再有权安排恢复
+      if (globalThis[SETUP_GENERATION] !== myGeneration) return;
+      cancelPendingRestore();
+      const timer = setTimeout(() => {
+        if (globalThis[PENDING_RESTORE] !== timer) return;
+        globalThis[PENDING_RESTORE] = null;
+        // 新实例已经接管就绝不恢复
+        if (globalThis[SETUP_GENERATION] !== myGeneration) return;
+        try {
+          const s = state.get();
+          if (!s.linked) return;
+          api.setConfig(roost.restoreGatewayPatch({
+            botQQ: s.prevBotQQ,
+            diary: s.prevDiaryEnabled,
+            qzoneSocial: s.prevQzoneSocialEnabled,
+          }));
+          state.mark('linked', false);
+          log('模块已停用，aurabot 网关已自动恢复为原配置');
+        } catch (e) { log('停用后自动恢复网关失败：' + e.message); }
+      }, RESTORE_GRACE_MS);
+      timer.unref?.();
+      globalThis[PENDING_RESTORE] = timer;
+    }
+    api.onDispose?.(scheduleGatewayRestore);
 
     /** 面板接口全部带 access:'panel'，复用宿主鉴权闸（1.3.0+） */
     const panelRoute = (path, handler) => api.route(path, handler, { access: 'panel' });
@@ -317,6 +362,8 @@ export default {
         if (!roost.looksLikeRoost(codeDir)) throw new Error('roost 运行副本不完整，请点一次「roost 就绪」');
         // 兼容层依赖（ws/silk）按 ROOST_HOME 找；从运行副本里取自带的那份放到 home 数据目录
         roost.prepareDeps({ vendorDir: codeDir, homeDir, log });
+        // 随包 roost 保留原版自更新代码，但本模块运行时锁死 autoApply：只读检查，不自动下载安装
+        roost.lockAutoApply(homeDir, log);
         // 手动启动不要求已有机器人配置：新流程是「先起 roost 面板 → 扫码建机器人」，
         // 机器人配置是扫码成功后才写的（roost 面板本身不依赖机器人配置，官方也支持 --serve 只起面板）。
         // 但自动拉起不同：那是 DSH 重启后的恢复场景，必须确实配置完成才起，
@@ -627,8 +674,9 @@ export default {
     });
 
     /**
-     * 不再导出 dispose()：Aurabot 热重载也会调它（core/modules.js:749），
-     * 会把用户刚启动的 roost 误关。DSH 真退出由 lib/launch.mjs 的父进程守护负责。
+     * 不导出 dispose()：Aurabot 热重载也会调它，直接停机/恢复网关会误伤正在运行的实例。
+     * 停用/卸载恢复走上面的 api.onDispose 延迟任务；热重载时新 setup 会取消它。
+     * roost 进程本身由 lib/launch.mjs 的父进程守护负责。
      */
     return { state, roost };
   },

@@ -344,6 +344,9 @@ return function RoostBridgePanel({ settings, toast: toastFn }) {
         h(Btn, { onClick: () => act('/unlink', {}, '恢复'), disabled: Boolean(busy) }, '一键改回原网关'),
       ),
       h('p', { className: 'ab-muted ab-small' }, '改回后重启一次 DSH 生效；roost 本身不会被卸载。'),
+      h('p', { className: 'ab-note', style: { marginTop: 8 } },
+        '停用 / 卸载本模块前，请先点「一键改回原网关」。模块被停用时会自动尝试恢复网关（热重载不会误触发），但 DSH 进程直接退出的场景无法保证，手动点一次最稳。',
+      ),
       log.length ? h('div', null, ...log.map((l, i) => h('div', { key: i, className: 'ab-small ab-muted' }, l)))
         : h('div', { className: 'ab-muted ab-small' }, '还没有操作'),
     ),

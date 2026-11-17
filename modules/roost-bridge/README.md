@@ -66,7 +66,7 @@
 
 审核者重点看这几条，这里如实写清楚：
 
-- **下载与联网边界如实说明**：模块胶水本身不下载、不执行远端代码：内置 roost 与 `ws` / `silk-wasm` 已作为普通文件打包在 `vendor/roost/`，启动前只在本机整份复制到数据目录；模块自身对外的请求只有 `127.0.0.1` 上 roost 面板 API（含透传扫码），扫码协议由 roost 访问 `q.qq.com`，模块不接触。随包 roost 框架保留原版自更新能力：默认每 6 小时只**检查**新版本（`update.autoApply:false`）；用户手动确认或显式开启自动更新时，会访问 `github.com` / `raw.githubusercontent.com` / `api.github.com` / `gitee.com` 下载框架代码并替换；发语音等场景还可能按 roost 面板配置的 npm 源（默认 `registry.npmjs.org`）装 `silk-wasm` / `@ffmpeg-installer`。这是内嵌框架的行为，不是模块胶水发起的；这份内置副本与框架发版逐字节一致，没有打补丁。模块胶水为 MIT，随包 roost 为 AGPL-3.0-only（许可证见 `vendor/roost/LICENSE`），依赖各自带 LICENSE。
+- **下载与联网边界如实说明**：模块胶水本身不下载、不执行远端代码：内置 roost 与 `ws` / `silk-wasm` 已作为普通文件打包在 `vendor/roost/`，启动前只在本机整份复制到数据目录；模块自身对外的请求只有 `127.0.0.1` 上 roost 面板 API（含透传扫码），扫码协议由 roost 访问 `q.qq.com`，模块不接触。随包 roost 框架保留原版自更新能力：上游默认每 6 小时只**检查**新版本；本模块每次启动前会把运行配置的 `update.autoApply` 硬写回 `false`，只保留面板手动确认的更新路径，绝不在模块侧自动下载安装。用户手动确认时才由 roost 访问 `github.com` / `raw.githubusercontent.com` / `api.github.com` / `gitee.com`；发语音等场景还可能按 roost 面板配置的 npm 源（默认 `registry.npmjs.org`）装 `silk-wasm` / `@ffmpeg-installer`。这是内嵌框架的行为，不是模块胶水发起的。这份内置副本锁定 roost 1.1.5 / commit `64382086…`，逐文件校验见 `vendor/roost/SOURCE.md` + `SOURCE.sha256`，与发版逐字节一致、没有打补丁。模块胶水为 MIT，随包 roost 为 AGPL-3.0-only（许可证见 `vendor/roost/LICENSE`），并由版权持有人另给本仓库分发例外（`vendor/roost/LICENSE-EXCEPTION.md`），依赖各自带 LICENSE。停用 / 卸载模块会延迟自动恢复网关（热重载不触发），但 DSH 进程直接退出无法保证，面板同时强提示先手动恢复。
 - **凭据处理**：AppSecret、机器人 Token、roost 面板 accessKey、兼容层 token **只存本进程内存**，不写进模块数据目录、不回显明文（面板只显示「已暂存」）。唯一落盘的是 roost 自己 `config/bots/*.json` 里那份——那是 roost 的地盘。
 - **不外发隐私**：不读取、不上传大肥鱼的聊天内容、记忆、Cookie。模块只调本机 roost 面板 API。
 - **权限面**：所有面板接口带 `access: 'panel'`，复用宿主的回环 / 可信代理 / Host / CSRF 闸；模块不注册 QQ 命令，也不向模型注册工具，权限面只剩面板。扫码拿到的凭证先暂存内存，等 roost 停稳后写进配置并回读校验，不落模块数据目录、不回显明文。

@@ -79,3 +79,30 @@ test('落盘端口为 0 时仍能读出 token；lastBridgePort 可作为快照',
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+test('启动时把 roost 自动更新锁成 false', () => {
+  const home = mkdtempSync(join(tmpdir(), 'roost-bridge-autoapply-'))
+  try {
+    mkdirSync(join(home, 'config'), { recursive: true })
+    const file = join(home, 'config', 'bot.json')
+    writeFileSync(file, JSON.stringify({ update: { autoApply: true, autoCheck: true } }))
+    const result = roost.lockAutoApply(home)
+    assert.equal(result.ok, true)
+    assert.equal(result.changed, true)
+    const saved = JSON.parse(readFileSync(file, 'utf8'))
+    assert.equal(saved.update.autoApply, false)
+    assert.equal(saved.update.autoCheck, true)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('随包 roost 有来源锁定与许可证例外', () => {
+  const vendor = fileURLToPath(new URL('../modules/roost-bridge/vendor/roost/', import.meta.url))
+  for (const name of ['LICENSE', 'LICENSE-EXCEPTION.md', 'SOURCE.md', 'SOURCE.sha256']) {
+    assert.ok(existsSync(join(vendor, name)), `缺 ${name}`)
+  }
+  const lines = readFileSync(join(vendor, 'SOURCE.sha256'), 'utf8').trim().split('\n')
+  assert.ok(lines.length >= 140, `校验和条目太少：${lines.length}`)
+  assert.ok(lines.every((line) => /^[a-f0-9]{64}  \S+$/.test(line)))
+})
