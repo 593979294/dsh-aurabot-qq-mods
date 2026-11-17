@@ -666,7 +666,7 @@ export default {
     // ================= /wops 命令（框架只认主人）=================
     api.command({
       name: 'wops',
-      desc: '逛电脑：ops / status / shot / qq / share [QQ号或备注|开始|停止|状态] / assist [QQ号或备注|开始|停止|状态] / confirm 批准|拒绝 <尾号>（share/assist 发起后会先发截图给主人，回复「确认」才真正发起）',
+      desc: '逛电脑：ops / status / shot / qq / share [QQ号或备注|开始|停止|状态] / assist [QQ号或备注|开始|停止|状态] / confirm 批准|拒绝 <尾号>（share/assist 发起后会先发截图给主人，回复「确认」才真正发起；也可 /wops confirm 批准 <确认码>）',
       async run(arg, msg) {
         const [verb, ...rest] = arg.trim().split(/\s+/)
         const ownerHint = String(msg?.nickname || '').trim()
@@ -729,11 +729,23 @@ export default {
             }
             case 'confirm': {
               const [sub, tail] = rest
+              const pending = qqPending
+              const pendingId = String(tail || '').trim().toUpperCase()
+              if (pending && (sub === '批准' || sub === 'approve' || sub === '确认') && (!pendingId || pending.id === pendingId)) {
+                dropPending()
+                const r = await executeQqOp(pending.op, pending.n, pending.t, { confirmed: true })
+                return r.ok ? `已发起：${r.message}` : `发起失败：${r.message}`
+              }
+              if (pending && (sub === '拒绝' || sub === 'reject' || sub === '取消') && (!pendingId || pending.id === pendingId)) {
+                dropPending()
+                return `已取消：${pending.op === 'qq.assist' ? '远程协助邀请' : '屏幕共享'}没有发起。`
+              }
               const list = safety.listConfirms()
               if (!sub || sub === 'list') {
-                return list.length
-                  ? list.map((c, i) => `${i + 1}. ${c.op}（${c.summary}）尾号 ${c.id.slice(-6)}`).join('\n')
-                  : '没有待确认的危险操作。'
+                const lines = []
+                if (pending) lines.push(`0. QQ 发起前确认：${pending.t.name}（${pending.t.qq}），确认码 ${pending.id}；回复「确认」或 /wops confirm 批准 ${pending.id}`)
+                if (list.length) lines.push(...list.map((c, i) => `${i + 1}. ${c.op}（${c.summary}）尾号 ${c.id.slice(-6)}`))
+                return lines.length ? lines.join('\n') : '没有待确认的危险操作。'
               }
               const item = list.find((c) => c.id.endsWith(String(tail || '')))
               if (!item) return '尾号不对，先发 /wops confirm 看列表。'
@@ -746,7 +758,7 @@ export default {
                 safety.rejectConfirm(item.id)
                 return `已拒绝：${item.op}（${item.summary}）`
               }
-              return '用法：/wops confirm [批准|拒绝 <尾号>]'
+              return '用法：/wops confirm [批准|拒绝 <尾号>]（QQ 发起前确认也可用 /wops confirm 批准 <确认码>）'
             }
             case '':
               return '用法：/wops ops|status|shot|qq|share [QQ号或备注|开始|停止|状态]|assist [QQ号或备注|开始|停止|状态]|confirm ...'

@@ -22,7 +22,7 @@ v1.3.2 给这两件事加了 **发起前截图确认**：真正点 QQ 按钮前�
   - `/wops qq` 列出机器人/主人的 QQ 窗口（诊断窗口识别）
   - `/wops share` / `/wops share <QQ号或备注>` / `/wops share stop` / `/wops share status` 发起 / 停止 / 查看 QQ 原生屏幕共享（不带目标 = 主人；发起后先发截图，主人回复「确认」才真正点按钮）
   - `/wops assist` / `/wops assist <QQ号或备注>` / `/wops assist stop` / `/wops assist status` 发 / 取消 / 查看 QQ 原生远程协助邀请（不带目标 = 主人；同样先截图确认）
-  - `/wops confirm 批准|拒绝 <尾号>` 批准/拒绝危险操作
+  - `/wops confirm 批准|拒绝 <尾号>` 批准/拒绝危险操作；如果正在等 QQ 发起前确认，也可 `/wops confirm 批准 <4位确认码>`
 - 键鼠类操作（激活窗口/移动/点击/打字/按键，以及 uia.click / uia.setValue / uia.invoke）要再打开面板的「允许键鼠模拟」；
   **远程协助会把键鼠交给对方**，所以 `qq.assist` 也归为键鼠类，必须打开这个开关；屏幕共享只读屏幕，不需要。
 
