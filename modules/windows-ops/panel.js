@@ -328,7 +328,7 @@ return function Panel({ settings, save, toast }) {
     h(ui.Card, {
       title: 'QQ 屏幕共享（机器人客户端）',
       desc: '机器人用自己的 QQ 客户端，在聊天工具栏点「屏幕共享」→ 在「选择你想共享的窗口」里选「桌面」→「确定」。主人在 QQ 里看到的是 QQ 原生共享，不是截图发帧。'
-        + ' 发起前机器人客户端必须已登录，且当前会话是主人私聊；共享不会自己停，可设自动停止分钟数。',
+        + ' 默认发给主人；要发给机器人好友列表里的某个人，在 QQ 私聊发 `/wops share <QQ号或备注>`。共享不会自己停，可设自动停止分钟数。',
     },
     stRow('机器人 QQ', `${d.qqBotQQ || '（用插件配置 botQQ）'}${d.qqBotName ? ' · ' + d.qqBotName : ''}`),
     stRow('主人 QQ', `${d.qqOwnerQQ || '（用插件配置 ownerQQ）'}${d.qqOwnerName ? ' · ' + d.qqOwnerName : ''}`),
@@ -357,12 +357,12 @@ return function Panel({ settings, save, toast }) {
     // ===== ①¾ QQ 原生「邀请对方远程协助」=====
     h(ui.Card, {
       title: '远程协助（QQ 原生邀请）',
-      desc: '机器人用自己的 QQ 客户端，点「远程协助」右侧箭头 → 菜单「邀请对方远程协助」；主人会在 QQ 里收到原生邀请，接受后直接看屏并操作鼠标键盘。'
-        + ' 不需要链接、端口或网页；但会把控制权交出去，必须先打开主卡的「允许键鼠模拟」。',
+      desc: '机器人用自己的 QQ 客户端，点「远程协助」右侧箭头 → 菜单「邀请对方远程协助」；对方会在 QQ 里收到原生邀请，接受后直接看屏并操作鼠标键盘。'
+        + ' 默认发给主人；也可发 `/wops assist <QQ号或备注>` 指定机器人好友。不需要链接、端口或网页；但会把控制权交出去，必须先打开主卡的「允许键鼠模拟」。',
     },
     ras && ras.active
       ? h('div', null,
-        stRow('状态', '邀请已发出，等主人在 QQ 里接受'),
+        stRow('状态', '邀请已发出，等对方在 QQ 里接受'),
         stRow('发出时间', new Date(ras.startedAt).toLocaleTimeString()),
         ras.lastMessage ? stRow('最近结果', ras.lastMessage) : null)
       : h('div', { className: 'ab-small ab-muted', style: { marginTop: 8 } }, '现在没有发出中的远程协助邀请。' + (ras && ras.lastMessage ? ' 上次：' + ras.lastMessage : '')),
@@ -373,7 +373,7 @@ return function Panel({ settings, save, toast }) {
       btn('取消邀请', () => actAssist('stop'), 'assist:stop'),
       btn('刷新状态', loadStatus, 'status')),
     h('div', { className: 'ab-small', style: { marginTop: 10, color: '#e5484d', lineHeight: 1.7 } },
-      '⚠️ 远程协助等于把这台电脑的键鼠交给主人：只发给主人本人；主人接受后请盯着操作，不用时立刻点「取消邀请」或在 QQ 里断开。'
+      '⚠️ 远程协助等于把这台电脑的键鼠交给对方：只发给主人在 QQ 里点名、且确认在机器人好友列表里的好友；对方接受后请盯着操作，不用时立刻点「取消邀请」或在 QQ 里断开。'
       + ' 需要主卡「允许键鼠模拟」也开着——没开时邀请会被安全闸门拦下。')),
 
     // ===== ①⅜ 元素定位（UIA）：坐标点击 vs 读无障碍树按选择器操作，默认优先后者 =====

@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { b64arg } from '../lib/ps.mjs'
 import { createOps, OPS } from '../lib/ops.mjs'
-import { QQ_OPS, qqScripts, prepareQq, interpretQq } from '../lib/qq.mjs'
+import { QQ_OPS, qqScripts, prepareQq, interpretQq, pickQqTarget } from '../lib/qq.mjs'
 
 const DATA = mkdtempSync(join(tmpdir(), 'wops-qq-'))
 
@@ -51,6 +51,46 @@ test('QQ_OPS：共享是 safe，远程协助是 input（控制权交出去）', 
   // OPS 是合并后的总表，工具/安全闸门读的是它
   assert.equal(OPS['qq.share'].danger, 'safe')
   assert.equal(OPS['qq.assist'].danger, 'input')
+})
+
+// ---------- 目标好友解析 ----------
+
+const FRIENDS = [
+  { user_id: 123456789, nickname: '机器人', remark: '' },
+  { user_id: 987654321, nickname: '主人', remark: '' },
+  { user_id: 555666777, nickname: 'Alice', remark: '同事小A' },
+  { user_id: 555666778, nickname: 'Alice', remark: '' },
+  { user_id: 2113929217, nickname: '我的电脑', remark: '我的电脑' },
+]
+
+test('pickQqTarget：不指定 = 主人，用主人 QQ 号和昵称', () => {
+  const r = pickQqTarget(FRIENDS, '', { botQQ: '123456789', ownerQQ: '987654321', ownerName: '主人' })
+  assert.deepEqual(r, { ok: true, qq: '987654321', name: '主人' })
+})
+
+test('pickQqTarget：按 QQ 号指定好友，备注优先作为窗口显示名', () => {
+  const r = pickQqTarget(FRIENDS, '555666777', { botQQ: '123456789', ownerQQ: '987654321' })
+  assert.deepEqual(r, { ok: true, qq: '555666777', name: '同事小A' })
+})
+
+test('pickQqTarget：按备注或昵称指定；重名时报错并要求用 QQ 号', () => {
+  assert.deepEqual(pickQqTarget(FRIENDS, '同事小A', { botQQ: '123456789' }), { ok: true, qq: '555666777', name: '同事小A' })
+  const dup = pickQqTarget(FRIENDS, 'Alice', { botQQ: '123456789' })
+  assert.equal(dup.ok, false)
+  assert.match(dup.error, /匹配到 2 个好友/)
+})
+
+test('pickQqTarget：机器人自己、陌生号、设备号都不能当目标', () => {
+  assert.equal(pickQqTarget(FRIENDS, '123456789', { botQQ: '123456789' }).ok, false)
+  assert.equal(pickQqTarget(FRIENDS, '111111111', { botQQ: '123456789' }).ok, false)
+  assert.equal(pickQqTarget(FRIENDS, '我的电脑', { botQQ: '123456789' }).ok, false)
+})
+
+test('pickQqTarget：@ 前缀会被去掉，空列表也能清楚报错', () => {
+  assert.deepEqual(pickQqTarget(FRIENDS, '@同事小A', { botQQ: '123456789' }), { ok: true, qq: '555666777', name: '同事小A' })
+  const r = pickQqTarget([], '555666777', { botQQ: '123456789' })
+  assert.equal(r.ok, false)
+  assert.match(r.error, /好友列表里没有/)
 })
 
 // ---------- 参数整理 ----------

@@ -36,6 +36,38 @@ function str(v) {
   return String(v ?? '').trim()
 }
 
+/** 好友在 QQ 窗口上显示的名字：备注优先，其次昵称。 */
+function friendName(f) {
+  return str(f?.remark) || str(f?.nickname) || String(f?.user_id ?? '')
+}
+
+/** 机器人 QQ 的「我的电脑/我的手机/我的Pad」不是好友，不能当共享目标。 */
+const DEVICE_NAMES = new Set(['我的电脑', '我的手机', '我的Pad'])
+
+/**
+ * 从机器人好友列表里挑目标：target 为空 = 主人；纯数字 = QQ 号；否则按备注/昵称匹配。
+ * 返回 { ok, qq, name, error }。纯函数，方便单测；OneBot 好友列表由 index.mjs 取。
+ */
+export function pickQqTarget(friends, target, { botQQ = '', ownerQQ = '', ownerName = '' } = {}) {
+  const list = (Array.isArray(friends) ? friends : []).filter((f) => f && f.user_id != null)
+  const usable = list.filter((f) => String(f.user_id) !== String(botQQ) && !DEVICE_NAMES.has(str(f.nickname)))
+  const want = str(target).replace(/^@+/, '')
+  if (!want) {
+    if (!ownerQQ) return { ok: false, error: '没有指定目标，也没有配置主人 QQ 号' }
+    const f = usable.find((x) => String(x.user_id) === String(ownerQQ))
+    return { ok: true, qq: String(ownerQQ), name: (f ? friendName(f) : '') || str(ownerName) || String(ownerQQ) }
+  }
+  if (/^\d{5,}$/.test(want)) {
+    const f = usable.find((x) => String(x.user_id) === want)
+    if (!f) return { ok: false, error: `机器人好友列表里没有 QQ ${want}：确认这是机器人账号的好友（不是群友/陌生人），且没被填成机器人自己` }
+    return { ok: true, qq: want, name: friendName(f) }
+  }
+  const hits = usable.filter((x) => friendName(x) === want || str(x.nickname) === want)
+  if (!hits.length) return { ok: false, error: `机器人好友列表里没有备注/昵称为「${want}」的好友` }
+  if (hits.length > 1) return { ok: false, error: `「${want}」匹配到 ${hits.length} 个好友（备注或昵称重名），请改用 QQ 号指定` }
+  return { ok: true, qq: String(hits[0].user_id), name: friendName(hits[0]) }
+}
+
 /**
  * 参数整理：hwnd 0=自动；botQQ 优先按 QQ 号锁定机器人窗口；botName/ownerName 作兜底。
  * @param {string} op
@@ -48,14 +80,16 @@ export function prepareQq(op, args = {}) {
   const botName = str(args.botName)
   const ownerName = str(args.ownerName)
   const botQQ = str(args.botQQ)
+  const targetQQ = str(args.targetQQ)
   if (!hwnd && !botQQ && !botName && !ownerName) {
-    throw new Error('要定位机器人 QQ 窗口：请填机器人 QQ 号（botQQ）、机器人昵称（botName）、主人昵称（ownerName），或直接给窗口句柄 hwnd')
+    throw new Error('要定位机器人 QQ 窗口：请填机器人 QQ 号（botQQ）、机器人昵称（botName）、目标好友昵称（ownerName），或直接给窗口句柄 hwnd')
   }
+  const targetLabel = targetQQ ? `，目标 QQ ${targetQQ}` : ''
   if (op === 'qq.share') {
     const wait = Math.min(60, Math.max(5, Math.round(Number(args.waitSec) || 20)))
-    return { argv: [String(hwnd), botName, ownerName, botQQ, String(wait)], summary: `机器人窗口${hwnd ? `#${hwnd}` : botQQ ? `QQ ${botQQ}` : `（${botName || ownerName}）`}，等待 ${wait}s` }
+    return { argv: [String(hwnd), botName, ownerName, botQQ, String(wait)], summary: `机器人窗口${hwnd ? `#${hwnd}` : botQQ ? `QQ ${botQQ}` : `（${botName || ownerName}）`}${targetLabel}，等待 ${wait}s` }
   }
-  return { argv: [String(hwnd), botName, ownerName, botQQ], summary: `机器人窗口${hwnd ? `#${hwnd}` : botQQ ? `QQ ${botQQ}` : `（${botName || ownerName}）`}` }
+  return { argv: [String(hwnd), botName, ownerName, botQQ], summary: `机器人窗口${hwnd ? `#${hwnd}` : botQQ ? `QQ ${botQQ}` : `（${botName || ownerName}）`}${targetLabel}` }
 }
 
 /** 拆脚本输出：Emit 打的是 UTF-8 base64 JSON；测试注入也兼容直接 JSON。 */
@@ -275,19 +309,25 @@ function InvokeEl($e){
     return $true
   }catch{ return $false }
 }
+function FindContact($root,$name){
+  $c=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,$name)
+  foreach($e in $root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$c)){
+    $item=$e
+    for($i=0;$i -lt 5;$i++){
+      if((ClassOf $item) -like 'recent-contact-item*'){ return $item }
+      $parent=[System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($item)
+      if($null -eq $parent){ break }
+      $item=$parent
+    }
+  }
+  return $null
+}
 function EnsureChat($w,$ownerName){
   $root=[System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$w.hwnd)
   if(-not $ownerName){ return $true }
   if((HeaderOf $root) -eq $ownerName){ return $true }
-  $t=ByName $root $ownerName
-  if(-not $t){ return $false }
-  $item=$t
-  for($i=0;$i -lt 5;$i++){
-    $parent=[System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($item)
-    if($null -eq $parent){ break }
-    $item=$parent
-    if((ClassOf $item) -like 'recent-contact-item*'){ break }
-  }
+  $item=FindContact $root $ownerName
+  if($null -eq $item){ return $false }
   $r=$item.Current.BoundingRectangle
   if($r.Width -le 0 -or $r.Height -le 0){ return $false }
   [QqWin]::Show([IntPtr]$w.hwnd)
@@ -322,7 +362,7 @@ function FindStopBtn($pidNum){
 `
 
   const NO_WIN = "Emit @{ ok=$false; message='没找到机器人 QQ 窗口：请确认机器人 QQ 号对应的客户端已登录，或用 qq.windows 看当前窗口、在面板填机器人昵称/窗口句柄' }; exit 0"
-  const NO_CHAT = "Emit @{ ok=$false; message='机器人 QQ 当前不是主人会话：请先在机器人客户端里打开主人私聊，或让主人先给机器人发一条消息' }; exit 0"
+  const NO_CHAT = "Emit @{ ok=$false; message='机器人 QQ 当前不是目标好友会话，而且会话列表里没找到这个好友：可能从没和 TA 聊过，请先在机器人客户端里打开目标好友私聊一次，再回来发起' }; exit 0"
 
   return {
     'qq.windows': `${PREFIX}$ErrorActionPreference='Stop'

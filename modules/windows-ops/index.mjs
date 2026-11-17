@@ -6,8 +6,7 @@
 // v1.3.1 关键变化（按主人要求，彻底放弃 v1.3.0 的截图发帧 + 自建网页）：
 //   · 屏幕共享 = 机器人自己的 QQ 客户端里点「屏幕共享」→ 选「桌面」→「确定」；
 //   · 远程协助 = 机器人客户端里点「远程协助 → 邀请对方远程协助」，主人在 QQ 里接受后直接操作；
-//   · 窗口按「机器人 QQ 号 / 主人 QQ 号」识别：先用 OneBot 把 QQ 号解析成当前昵称，再按昵称找窗口。
-//     （QQ 窗口本身不暴露 QQ 号，昵称只是屏幕上的标签；QQ 号才是稳定身份，昵称改了也能跟上。）
+//   · 窗口优先按机器人 QQ 号识别：RestartManager 反查账号分区锁文件 → PID → 顶层窗口；昵称只用于确认会话对象。
 // 契约：export default { id, name, version, api, settings: [], setup(api) → 导出对象 }
 //   导出（api.use('windows-ops') 拿到）：
 //     run(op, args) → { ok, message, data? }  —— 直接执行一个操作（不过安全闸门）
@@ -29,13 +28,14 @@ import { createPs } from './lib/ps.mjs'
 import { createOps, OPS } from './lib/ops.mjs'
 import { createSafety } from './lib/safety.mjs'
 import { createGuides } from './lib/guides.mjs'
+import { pickQqTarget } from './lib/qq.mjs'
 
 export default {
   id: 'windows-ops',
   name: '逛电脑（Windows 自动化）',
   version: '1.3.1',
   api: 1,
-  description: '经 PowerShell 操作这台电脑：读无障碍树（UIA）按元素点击/写值/读文本/触发表单，窗口枚举/激活/关闭、截屏、剪贴板读写、键鼠模拟；并通过机器人自己的 QQ 客户端原生「屏幕共享」向主人共享屏幕、用「邀请对方远程协助」让主人直接接管。默认仅主人可用，带操作白名单、危险操作确认门槛与指引体系。',
+  description: '经 PowerShell 操作这台电脑：读无障碍树（UIA）按元素点击/写值/读文本/触发表单，窗口枚举/激活/关闭、截屏、剪贴板读写、键鼠模拟；并通过机器人自己的 QQ 客户端原生「屏幕共享」向主人或主人指定的好友共享屏幕、用「邀请对方远程协助」让对方直接接管。默认仅主人可用，带操作白名单、危险操作确认门槛与指引体系。',
   panel: 'panel.js', // 自定义面板：settings 数组留空，全部字段由 panel.js 接管（仿 phone）
   settings: [],
   defaults: {
@@ -106,6 +106,40 @@ export default {
     const unwrap = (r) => (r && typeof r === 'object' && r.data && typeof r.data === 'object' ? r.data : (r || {}))
     /** 昵称解析缓存：QQ 号不变、昵称没改时，10 分钟内不重复问 OneBot。 */
     let nameCache = { key: '', botName: '', ownerName: '', botQQ: '', ownerQQ: '', at: 0, error: '' }
+    /** 机器人好友列表缓存：目标好友必须在这张表里，避免把屏幕发给陌生人/群友。 */
+    let friendCache = { botQQ: '', list: [], at: 0, error: '' }
+    async function friendList() {
+      const bq = botQQ()
+      if (friendCache.botQQ === bq && Date.now() - friendCache.at < 10 * 60 * 1000) {
+        return friendCache.error ? { ok: false, error: friendCache.error } : { ok: true, list: friendCache.list }
+      }
+      const onebot = typeof api.onebot === 'function' ? api.onebot : null
+      if (!onebot) {
+        friendCache = { botQQ: bq, list: [], at: Date.now(), error: 'OneBot 没连接，读不到机器人好友列表' }
+        return { ok: false, error: friendCache.error }
+      }
+      try {
+        const raw = unwrap(await onebot('get_friend_list', {}))
+        const list = Array.isArray(raw) ? raw : Array.isArray(raw?.data) ? raw.data : []
+        friendCache = { botQQ: bq, list, at: Date.now(), error: '' }
+        return { ok: true, list }
+      } catch (e) {
+        friendCache = { botQQ: bq, list: [], at: Date.now(), error: `读取机器人好友列表失败：${String(e?.message || e)}` }
+        return { ok: false, error: friendCache.error }
+      }
+    }
+    /** 解析共享/协助目标：空 = 主人；QQ 号或备注/昵称 = 机器人好友列表里的某个人。 */
+    async function resolveTarget(target, n) {
+      const t = String(target ?? '').trim()
+      if (!t && n.ownerName) return { ok: true, qq: n.ownerQQ, name: n.ownerName }
+      if (!t && !n.ownerQQ) return { ok: false, error: '没有指定目标，也没有配置主人 QQ 号' }
+      if (t && n.ownerQQ && (t === String(n.ownerQQ) || t === n.ownerName)) {
+        return { ok: true, qq: String(n.ownerQQ), name: n.ownerName }
+      }
+      const fl = await friendList()
+      if (!fl.ok) return { ok: false, error: fl.error }
+      return pickQqTarget(fl.list, t, { botQQ: n.botQQ, ownerQQ: n.ownerQQ, ownerName: n.ownerName })
+    }
     /**
      * 按 QQ 号解析当前昵称。
      * 身份的真身是 QQ 号；昵称只是 QQ 窗口上显示的文字。所以：
@@ -154,23 +188,30 @@ export default {
     }
 
     let qqLastMessage = ''
+    let qqLastTarget = { qq: '', name: '' }
     let shareStartedAt = 0
     let assistStartedAt = 0
 
     /** 调 QQ 原生操作：机器人窗口优先按 QQ 号锁定（账号分区→进程），昵称只用于确认会话对象。 */
-    async function runQq(op, { ownerHint = '' } = {}) {
+    async function runQq(op, { ownerHint = '', target = '' } = {}) {
       const n = await resolveNames({ ownerHint })
-      if (!n.ownerName) return { ok: false, message: n.error || '主人昵称没解析出来' }
+      if (!n.ownerName && !String(target || '').trim()) return { ok: false, message: n.error || '主人昵称没解析出来' }
+      const t = await resolveTarget(target, n)
+      if (!t.ok) return { ok: false, message: t.error || '目标好友解析失败' }
+      if (!t.name) return { ok: false, message: `目标 QQ ${t.qq || ''} 没有可用的会话昵称` }
       const s = getSettings()
       const r = await exec(op, {
         hwnd: s.qqWindowHwnd,
         botName: n.botName,
-        ownerName: n.ownerName,
+        ownerName: t.name,
+        targetName: t.name,
+        targetQQ: t.qq,
         botQQ: n.botQQ,
         ownerQQ: n.ownerQQ,
       })
       if (r?.ok && !String(r.message || '').startsWith('试运行')) {
         qqLastMessage = String(r.message || '')
+        if (op === 'qq.share' || op === 'qq.assist') qqLastTarget = { qq: String(t.qq || ''), name: t.name }
         if (op === 'qq.share') shareStartedAt = Date.now()
         if (op === 'qq.shareStop') shareStartedAt = 0
         if (op === 'qq.assist') assistStartedAt = Date.now()
@@ -184,7 +225,7 @@ export default {
       shareStop: (o) => runQq('qq.shareStop', o),
       assist: (o) => runQq('qq.assist', o),
       assistStop: (o) => runQq('qq.assistStop', o),
-      status: () => ({ botQQ: botQQ(), ownerQQ: ownerQQ(), botName: nameCache.botName, ownerName: nameCache.ownerName, lastMessage: qqLastMessage }),
+      status: () => ({ botQQ: botQQ(), ownerQQ: ownerQQ(), botName: nameCache.botName, ownerName: nameCache.ownerName, lastTarget: qqLastTarget, lastMessage: qqLastMessage }),
     }
 
     /** 原生共享状态（没有帧计数，只有开始时间和自动停止倒计时）。 */
@@ -271,7 +312,7 @@ export default {
       if (!s.enabled) return ''
       const lines = ['【逛电脑总纲（操作这台电脑时必读，与按需取的手册一起看）】', guides.get('main')]
       if (!s.preferUia) lines.push('【本次设置】元素定位优先已关闭：按坐标操作（mouse.move / mouse.click），读无障碍树只用来确认界面状态。')
-      lines.push('【QQ 原生共享与远程】主人说「共享屏幕 / 让我看看屏幕」→ windows_share_screen start：在机器人自己的 QQ 客户端里点聊天工具栏「屏幕共享」，选「桌面」再「确定」，不是截图发帧。主人说「邀请我远程协助 / 让我控制电脑」→ windows_remote_assist start：点「远程协助」右侧箭头，再点「邀请对方远程协助」，等主人在 QQ 里接受。')
+      lines.push('【QQ 原生共享与远程】主人说「共享屏幕 / 让我看看屏幕」→ windows_share_screen start：在机器人自己的 QQ 客户端里点聊天工具栏「屏幕共享」，选「桌面」再「确定」，不是截图发帧。要发给机器人好友列表里的某个人，就给 target 填 QQ 号或备注/昵称；不填 = 主人。主人说「邀请我远程协助 / 让我控制电脑」→ windows_remote_assist start：点「远程协助」右侧箭头，再点「邀请对方远程协助」，等对方在 QQ 里接受；target 同上。')
       lines.push('【本次设置】远程协助会把键鼠控制权交给主人，必须先打开「允许键鼠模拟」；共享屏幕不需要键鼠开关。')
       return lines.join('\n')
     })
@@ -352,10 +393,12 @@ export default {
       // ---- v1.3.1：QQ 原生屏幕共享（机器人客户端）----
       api.defineTool({
         name: 'windows_share_screen',
-        description: '让机器人通过它自己的 QQ 客户端，向主人发起 QQ 原生「屏幕共享」（不是截图发帧）。'
-          + 'start：在机器人 QQ 的聊天工具栏点「屏幕共享」，在「选择你想共享的窗口」里选「桌面」→「确定」；stop：点 QQ 的「停止共享」；status：看是否共享中、还剩多久自动停。',
+        description: '让机器人通过它自己的 QQ 客户端，向主人或指定好友发起 QQ 原生「屏幕共享」（不是截图发帧）。'
+          + 'start：在机器人 QQ 的聊天工具栏点「屏幕共享」，在「选择你想共享的窗口」里选「桌面」→「确定」；stop：点 QQ 的「停止共享」；status：看是否共享中、还剩多久自动停。'
+          + 'target 可选：机器人好友列表里的 QQ 号或备注/昵称；不填 = 主人。',
         properties: {
           action: { type: 'string', description: 'start 开始 / stop 停止 / status 看状态' },
+          target: { type: 'string', description: '可选：目标好友的 QQ 号或备注/昵称；不填就是主人' },
         },
         required: ['action'],
         execute: async (args, ctx) => {
@@ -377,7 +420,7 @@ export default {
             return { ok: r.ok, message: r.message }
           }
           if (action === 'start') {
-            const r = await runQq('qq.share')
+            const r = await runQq('qq.share', { target: String(args.target || '') })
             return { ok: r.ok, message: r.message }
           }
           return { ok: false, message: 'action 只能是 start / stop / status' }
@@ -386,10 +429,12 @@ export default {
       // ---- v1.3.1：QQ 原生「邀请对方远程协助」----
       api.defineTool({
         name: 'windows_remote_assist',
-        description: '让机器人通过它自己的 QQ 客户端，向主人发 QQ 原生「邀请对方远程协助」：主人在 QQ 里点接受后，就能直接看这台电脑的屏幕并操作鼠标键盘。'
-          + 'start：点「远程协助」右侧箭头 →「邀请对方远程协助」；stop：尝试点 QQ 里的停止/取消按钮；status：看邀请是否已发出。需要先打开「允许键鼠模拟」。',
+        description: '让机器人通过它自己的 QQ 客户端，向主人或指定好友发 QQ 原生「邀请对方远程协助」：对方在 QQ 里点接受后，就能直接看这台电脑的屏幕并操作鼠标键盘。'
+          + 'start：点「远程协助」右侧箭头 →「邀请对方远程协助」；stop：尝试点 QQ 里的停止/取消按钮；status：看邀请是否已发出。需要先打开「允许键鼠模拟」。'
+          + 'target 可选：机器人好友列表里的 QQ 号或备注/昵称；不填 = 主人。',
         properties: {
           action: { type: 'string', description: 'start 发邀请 / stop 取消 / status 看状态' },
+          target: { type: 'string', description: '可选：目标好友的 QQ 号或备注/昵称；不填就是主人' },
         },
         required: ['action'],
         execute: async (args, ctx) => {
@@ -402,7 +447,7 @@ export default {
             return {
               ok: true,
               message: st.active
-                ? `QQ 远程协助邀请已发出（${new Date(st.startedAt).toLocaleTimeString()}），等主人在 QQ 里点接受。${st.lastMessage || ''}`
+                ? `QQ 远程协助邀请已发出（${new Date(st.startedAt).toLocaleTimeString()}），等对方在 QQ 里点接受。${st.lastMessage || ''}`
                 : `现在没有发出中的远程协助邀请。${qqLastMessage ? '上次：' + qqLastMessage : ''}`,
             }
           }
@@ -411,7 +456,7 @@ export default {
             return { ok: r.ok, message: r.message }
           }
           if (action === 'start') {
-            const r = await runQq('qq.assist')
+            const r = await runQq('qq.assist', { target: String(args.target || '') })
             return { ok: r.ok, message: r.message }
           }
           return { ok: false, message: 'action 只能是 start / stop / status' }
@@ -422,7 +467,7 @@ export default {
     // ================= /wops 命令（框架只认主人）=================
     api.command({
       name: 'wops',
-      desc: '逛电脑：ops / status / shot / qq / share 开始|停止|状态 / assist 开始|停止|状态 / confirm 批准|拒绝 <尾号>',
+      desc: '逛电脑：ops / status / shot / qq / share [QQ号或备注|开始|停止|状态] / assist [QQ号或备注|开始|停止|状态] / confirm 批准|拒绝 <尾号>',
       async run(arg, msg) {
         const [verb, ...rest] = arg.trim().split(/\s+/)
         const ownerHint = String(msg?.nickname || '').trim()
@@ -443,7 +488,7 @@ export default {
               const r = await ops.run('qq.windows', {})
               return r.message
             }
-            // ---- v1.3.1：/wops share —— 机器人 QQ 原生屏幕共享 ----
+            // ---- v1.3.1：/wops share [QQ号/备注] —— 机器人 QQ 原生屏幕共享 ----
             case 'share': {
               const sub = String(rest[0] || '').toLowerCase()
               if (sub === 'stop' || sub === '停止') {
@@ -456,12 +501,13 @@ export default {
                   ? `QQ 屏幕共享中（原生）${st.remainingMs == null ? '' : `，约 ${Math.max(0, Math.ceil(st.remainingMs / 60000))} 分钟后自动停止`}`
                   : `现在没有在共享屏幕。${qqLastMessage || ''}`
               }
-              if (msg?.kind !== 'private') return '共享屏幕只往主人私聊发起，群里不行。'
+              if (msg?.kind !== 'private') return '共享屏幕只由主人在私聊里发起，群里不行。'
               if (!getSettings().enabled) return '逛电脑总开关没开：先到面板打开「总开关」'
-              const r = await runQq('qq.share', { ownerHint })
-              return r.message
+              const target = (sub === 'start' || sub === '开始' || sub === '') ? '' : rest.join(' ').trim()
+              const r = await runQq('qq.share', { ownerHint, target })
+              return r.message + (target ? `（目标：${target}）` : '')
             }
-            // ---- v1.3.1：/wops assist —— QQ 原生「邀请对方远程协助」 ----
+            // ---- v1.3.1：/wops assist [QQ号/备注] —— QQ 原生「邀请对方远程协助」 ----
             case 'assist': {
               const sub = String(rest[0] || '').toLowerCase()
               if (sub === 'stop' || sub === '停止') {
@@ -471,13 +517,14 @@ export default {
               if (sub === 'status' || sub === '状态') {
                 const st = assistStatus()
                 return st.active
-                  ? `QQ 远程协助邀请已发出，等主人在 QQ 里接受。${qqLastMessage || ''}`
+                  ? `QQ 远程协助邀请已发出，等对方在 QQ 里接受。${qqLastMessage || ''}`
                   : `现在没有发出中的远程协助邀请。${qqLastMessage || ''}`
               }
-              if (msg?.kind !== 'private') return '远程协助邀请只在主人私聊发起，群里不行。'
+              if (msg?.kind !== 'private') return '远程协助邀请只由主人在私聊里发起，群里不行。'
               if (!getSettings().enabled) return '逛电脑总开关没开：先到面板打开「总开关」'
-              const r = await runQq('qq.assist', { ownerHint })
-              return r.message
+              const target = (sub === 'start' || sub === '开始' || sub === '') ? '' : rest.join(' ').trim()
+              const r = await runQq('qq.assist', { ownerHint, target })
+              return r.message + (target ? `（目标：${target}）` : '')
             }
             case 'confirm': {
               const [sub, tail] = rest
@@ -501,7 +548,7 @@ export default {
               return '用法：/wops confirm [批准|拒绝 <尾号>]'
             }
             case '':
-              return '用法：/wops ops|status|shot|qq|share [开始|停止|状态]|assist [开始|停止|状态]|confirm ...'
+              return '用法：/wops ops|status|shot|qq|share [QQ号或备注|开始|停止|状态]|assist [QQ号或备注|开始|停止|状态]|confirm ...'
             default:
               return `未知子命令 ${verb}`
           }
@@ -555,7 +602,7 @@ export default {
       }
       if (action === 'start') {
         if (!getSettings().enabled) return { ok: false, error: '总开关没开：先打开「总开关」再共享屏幕' }
-        const r = await runQq('qq.share')
+        const r = await runQq('qq.share', { target: String(body.target || '') })
         return { ok: r.ok, message: r.message, error: r.ok ? undefined : r.message, ...shareStatus() }
       }
       return { ok: true, ...shareStatus() }
@@ -572,7 +619,7 @@ export default {
       }
       if (action === 'start') {
         if (!getSettings().enabled) return { ok: false, error: '总开关没开：先打开「总开关」再发远程协助邀请' }
-        const r = await runQq('qq.assist')
+        const r = await runQq('qq.assist', { target: String(body.target || '') })
         return { ok: r.ok, message: r.message, error: r.ok ? undefined : r.message, ...assistStatus() }
       }
       return { ok: true, ...assistStatus() }
