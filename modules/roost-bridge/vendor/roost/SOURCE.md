@@ -1,4 +1,7 @@
-# 内置 roost 来源锁定（草稿）
+# 内置 roost 来源锁定
+
+> 本文件由 `roost-bridge` 模块维护，随包副本与上游 commit 的对应关系以这里为准。
+> 分发许可例外由上游源仓 `LICENSE-EXCEPTIONS.md` 给出，本目录的 `LICENSE-EXCEPTION.md` 是同一份正式文件的副本。
 
 ## 来源
 
@@ -55,5 +58,5 @@ roost 原版包含框架自更新能力（`src/updater.js`、`src/services/auto-
 ## 许可证
 
 roost 本体：`AGPL-3.0-only`，见 `LICENSE`。  
-本次随 `dsh-aurabot-qq-mods` 分发的额外许可：`LICENSE-EXCEPTION.md`。  
+本次随 `dsh-aurabot-qq-mods` 分发的额外许可：上游源仓 `LICENSE-EXCEPTIONS.md` 第 1 条；本目录的 `LICENSE-EXCEPTION.md` 是同一份正式文件副本。  
 第三方依赖按各自 LICENSE。
