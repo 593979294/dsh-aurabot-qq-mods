@@ -311,10 +311,16 @@ function InvokeEl($e){
 }
 function FindContact($root,$name){
   $c=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,$name)
+  $textCond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Text)
   foreach($e in $root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$c)){
     $item=$e
     for($i=0;$i -lt 5;$i++){
-      if((ClassOf $item) -like 'recent-contact-item*'){ return $item }
+      if((ClassOf $item) -like 'recent-contact-item*'){
+        # 只认会话条目的标题文本；预览里出现同名消息时不能误点。
+        $first=$item.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$textCond)
+        if($null -eq $first -or $first.Current.Name -eq $name){ return $item }
+        break
+      }
       $parent=[System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($item)
       if($null -eq $parent){ break }
       $item=$parent
@@ -322,19 +328,53 @@ function FindContact($root,$name){
   }
   return $null
 }
+function SearchContact($root,$name){
+  $edit=$null
+  $editCond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Edit)
+  foreach($e in $root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$editCond)){
+    if($e.Current.Name -eq '搜索'){ $edit=$e; break }
+  }
+  if($null -eq $edit){ return $false }
+  try{ $vp=$edit.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern) }catch{ return $false }
+  $old=''
+  try{ $old=$vp.Current.Value }catch{}
+  try{ $vp.SetValue($name) }catch{ return $false }
+  $item=$null
+  $liCond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::ListItem)
+  for($i=0;$i -lt 15;$i++){
+    Start-Sleep -Milliseconds 200
+    $hits=@()
+    foreach($e in $root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$liCond)){
+      $n=$e.Current.Name
+      if((ClassOf $e) -like 'search-result-item*' -and $n -and $n.StartsWith($name) -and $n.Contains('我的好友')){ $hits += $e }
+    }
+    if($hits.Count -eq 1){ $item=$hits[0]; break }
+    if($hits.Count -gt 1){ break }
+  }
+  $ok=$false
+  if($null -ne $item -and (InvokeEl $item)){
+    Start-Sleep -Milliseconds 1500
+    $ok=((HeaderOf $root) -eq $name)
+  }
+  try{ $vp.SetValue($old) }catch{}
+  return $ok
+}
 function EnsureChat($w,$ownerName){
   $root=[System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$w.hwnd)
   if(-not $ownerName){ return $true }
   if((HeaderOf $root) -eq $ownerName){ return $true }
-  $item=FindContact $root $ownerName
-  if($null -eq $item){ return $false }
-  $r=$item.Current.BoundingRectangle
-  if($r.Width -le 0 -or $r.Height -le 0){ return $false }
   [QqWin]::Show([IntPtr]$w.hwnd)
   Start-Sleep -Milliseconds 250
-  [QqWin]::Click((Num $r.X)+[int]((Num $r.Width)/2),(Num $r.Y)+[int]((Num $r.Height)/2))
-  Start-Sleep -Milliseconds 1200
-  return ((HeaderOf $root) -eq $ownerName)
+  $item=FindContact $root $ownerName
+  if($null -ne $item){
+    $r=$item.Current.BoundingRectangle
+    if($r.Width -le 0 -or $r.Height -le 0){ return $false }
+    [QqWin]::Click((Num $r.X)+[int]((Num $r.Width)/2),(Num $r.Y)+[int]((Num $r.Height)/2))
+    Start-Sleep -Milliseconds 1200
+    if((HeaderOf $root) -eq $ownerName){ return $true }
+  }
+  # 不在最近会话列表时，用 QQ 搜索框按名字找「我的好友」结果；只点唯一一条，重名就失败。
+  return (SearchContact $root $ownerName)
 }
 function FindPicker($pidNum){
   foreach($line in [QqWin]::List()){
@@ -362,7 +402,7 @@ function FindStopBtn($pidNum){
 `
 
   const NO_WIN = "Emit @{ ok=$false; message='没找到机器人 QQ 窗口：请确认机器人 QQ 号对应的客户端已登录，或用 qq.windows 看当前窗口、在面板填机器人昵称/窗口句柄' }; exit 0"
-  const NO_CHAT = "Emit @{ ok=$false; message='机器人 QQ 当前不是目标好友会话，而且会话列表里没找到这个好友：可能从没和 TA 聊过，请先在机器人客户端里打开目标好友私聊一次，再回来发起' }; exit 0"
+  const NO_CHAT = "Emit @{ ok=$false; message='机器人 QQ 当前不是目标好友会话，最近会话列表和 QQ 搜索都没找到这个好友：确认填的是机器人好友的 QQ 号/备注，且 QQ 搜索结果里显示「来自: 我的好友」' }; exit 0"
 
   return {
     'qq.windows': `${PREFIX}$ErrorActionPreference='Stop'
