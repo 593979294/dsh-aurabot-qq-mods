@@ -523,15 +523,15 @@ export default {
       } catch (e) {
         return { ok: false, error: e.message }
       }
-    })
+    }, { access: 'panel' })
     api.route('/status', async () => {
       const st = status()
       return { ...st, confirms: st.confirms.map((c) => ({ id: c.id.slice(-6), op: c.op, summary: c.summary, at: c.at })) }
-    })
+    }, { access: 'panel' })
     api.route('/ops', async () => {
       const s = getSettings()
       return { ok: true, ops: Object.entries(OPS).map(([id, m]) => ({ id, label: m.label, danger: m.danger })), whitelist: s.opsWhitelist }
-    })
+    }, { access: 'panel' })
     api.route('/confirm', async (req) => {
       if (req.method === 'GET') return { ok: true, confirms: safety.listConfirms().map((c) => ({ id: c.id.slice(-6), op: c.op, summary: c.summary, at: c.at })) }
       if (req.method !== 'POST') return { ok: false, error: '只支持 POST' }
@@ -542,7 +542,7 @@ export default {
       if (body.approve) { safety.approveConfirm(item.id); safety.log('confirm', `批准 ${item.op} ${item.summary}`).catch(() => {}); return { ok: true } }
       if (body.reject) { safety.rejectConfirm(item.id); return { ok: true } }
       return { ok: false, error: '需要 { approve|reject, id }' }
-    })
+    }, { access: 'panel' })
     // ---- v1.3.1：QQ 原生屏幕共享（GET 状态 / POST start|stop）----
     api.route('/share', async (req) => {
       if (req.method === 'GET') return { ok: true, ...shareStatus() }
@@ -559,7 +559,7 @@ export default {
         return { ok: r.ok, message: r.message, error: r.ok ? undefined : r.message, ...shareStatus() }
       }
       return { ok: true, ...shareStatus() }
-    })
+    }, { access: 'panel' })
     // ---- v1.3.1：QQ 原生远程协助（GET 状态 / POST start|stop）----
     api.route('/assist', async (req) => {
       if (req.method === 'GET') return { ok: true, ...assistStatus() }
@@ -576,12 +576,12 @@ export default {
         return { ok: r.ok, message: r.message, error: r.ok ? undefined : r.message, ...assistStatus() }
       }
       return { ok: true, ...assistStatus() }
-    })
-    // 诊断：列出机器人/主人 QQ 窗口（按 QQ 号解析出的昵称识别）
+    }, { access: 'panel' })
+    // 诊断：列出机器人/主人 QQ 窗口（按机器人 QQ 号识别，输出里带账号）
     api.route('/qq', async () => {
       const r = await ops.run('qq.windows', {})
       return { ok: r.ok, message: r.message, windows: r.data || [] }
-    })
+    }, { access: 'panel' })
 
     // ---- 指引提示词库：面板查看/编辑自定义指引（路由形态对齐 phone /guides）----
     api.route('/guides', async (req) => {
@@ -600,7 +600,7 @@ export default {
         } catch (e) { return { ok: false, error: e.message } }
       }
       return { ok: false }
-    })
+    }, { access: 'panel' })
 
     /** 导出的状态（工具/命令/路由共用）。 */
     function status() {
