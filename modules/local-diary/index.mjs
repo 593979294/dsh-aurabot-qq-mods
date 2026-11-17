@@ -31,7 +31,7 @@ export default {
   name: '私人日记',
   version: '1.1.0',
   api: 1,
-  description: '每天写一篇 md 私人日记到本地文件夹，写给她自己看；随插件备份一起搬家',
+  description: '给大肥鱼一本只属于她的日记本：每天晚上自己写一篇 md，不限长短、不套模板，只存本地、不发给任何人。会带入当天的聊天、心情和看过的东西，写完回流进记忆，聊天时她还能自己翻旧日记；末尾想许几个愿就许几个。面板里是一本能翻页的日记本，随插件备份一起搬家',
   defaults: {
     on: true,
     at: '23:30',
@@ -100,12 +100,14 @@ export default {
         if (text == null) continue
         const { meta, body } = parseMd(text)
         const day = meta.date && /^\d{4}-\d{2}-\d{2}$/.test(meta.date) ? meta.date : name.replace(/\.md$/i, '').slice(0, 10)
+        const wishes = readWishes(meta, body)
         found.push({
           day,
           file,
           chars: body.length,
           mood: meta.mood || '',
-          wish: clip(meta.wish || pickWish(body), 160),
+          wish: joinWishes(wishes),
+          wishes,
           at: quiet(() => statSync(file).mtimeMs) || Date.now(),
           summary: clip(body, 90),
         })
@@ -155,16 +157,25 @@ export default {
       return { rows, lines: lines.slice(-1200), moodLine, moodTag, seen }
     }
 
-    /** 从正文里挑出「愿望」那一行；没写就返回空串。写法认「愿望：」「心愿：」，前面带不带 # 标题都行。 */
-    function pickWish(text) {
+    /** 从正文里挑出所有「愿望」行；想许几个都收，没写就返回空数组。写法认「愿望：」「心愿：」，前面带不带 # 标题都行。 */
+    function pickWishes(text) {
       const re = /^[ \t]*(?:#{1,6}[ \t]*)?(?:愿望|心愿)[ \t]*[：:][ \t]*(.+)$/gm
-      let wish = ''
+      const wishes = []
       let m
       while ((m = re.exec(text))) {
-        const line = String(m[1] || '').trim()
-        if (line) wish = line
+        const line = clip(m[1], 160)
+        if (line && !wishes.includes(line)) wishes.push(line)
       }
-      return clip(wish, 160)
+      return wishes.slice(0, 30)
+    }
+    // 文件头与索引里 wish 是拼好的一句（兼容只会读单个 wish 的旧面板），wishes 是完整的数组
+    function joinWishes(wishes) { return wishes.join('；') }
+    function readWishes(meta, body) {
+      let list = []
+      if (meta.wishes) { try { const j = JSON.parse(meta.wishes); if (Array.isArray(j)) list = j.map((x) => clip(x, 160)).filter(Boolean) } catch {} }
+      if (!list.length && meta.wish) list = [clip(meta.wish, 480)]
+      if (!list.length) list = pickWishes(body)
+      return list
     }
 
     function buildPrompt(day, { rows, lines, moodLine, seen }) {
@@ -183,8 +194,8 @@ export default {
         '现在写今天的日记。这本子只有你自己看，不会发给任何人，主人也不会自动读到。',
         '想写多长就写多长，想怎么排版就怎么排版，只写一句「今天没什么好说的」也行；不用写成总结报告，也不用说漂亮话。',
         '这里只有你，捡你真正在意的写：谁说了什么让你记着了、你当时怎么想的、有什么没说出的话、今天吃到或看到的东西。',
-        '写完以后，如果今天确实有想许的愿——想做的事、想要的、想跟谁一起的——就在最后单独一行写「愿望：」接一句。',
-        '没有想许的就别写，别为了填这一行硬编一个；这一行写不写、写什么，全看你此刻想不想。',
+        '写完以后，如果今天确实有想许的愿——想做的事、想要的、想跟谁一起的——就在最后写下来，每个愿望单独一行，以「愿望：」开头接一句。',
+        '想许几个就许几个，一个、两个、五个都行；没有想许的就别写，别为了凑数硬编。写不写、写几个、写什么，全看你此刻想不想。',
         '明天你可能就记不清这些细节了，所以写给明天那个记性不好的自己看。',
       ].join('\n'))
       return parts.join('\n\n')
@@ -207,7 +218,8 @@ export default {
         while (existsSync(file)) file = join(dir, `${day}-${n++}.md`)
 
         const when = new Date()
-        const wish = pickWish(text)
+        const wishes = pickWishes(text)
+        const wish = joinWishes(wishes)
         const head = [
           '---',
           `date: ${day}`,
@@ -216,6 +228,7 @@ export default {
           `written: ${dayKey(when)} ${pad(when.getHours())}:${pad(when.getMinutes())}`,
         ]
         if (wish) head.push(`wish: ${JSON.stringify(wish)}`)
+        if (wishes.length > 1) head.push(`wishes: ${JSON.stringify(wishes)}`)
         head.push('---', '', text, '')
         const md = head.join('\n')
         writeFileSync(file, md, 'utf8')
@@ -234,6 +247,7 @@ export default {
           chars: text.length,
           mood: clip(material.moodTag, 20),
           wish,
+          wishes,
           at: Date.now(),
           summary: clip(text, 120),
         }

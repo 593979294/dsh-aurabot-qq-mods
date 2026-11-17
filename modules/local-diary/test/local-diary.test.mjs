@@ -295,7 +295,7 @@ test('没写愿望的那天，正文里不出现 wish 字段', async (t) => {
   assert.equal(status.items[0].wish, '')
 })
 
-test('愿望写法宽松：带 # 标题、用「心愿」，取最后一条', async (t) => {
+test('愿望写法宽松：带 # 标题、用「心愿」，写了几个就收几个', async (t) => {
   const root = tempRoot(t)
   const dir = join(root, '手写')
   mkdirSync(dir, { recursive: true })
@@ -315,7 +315,8 @@ test('愿望写法宽松：带 # 标题、用「心愿」，取最后一条', as
   const { inst } = boot(root, { preset: { dir } })
   const item = inst.list().find((x) => x.day === DAY)
   assert.ok(item, '应该重扫到这篇')
-  assert.equal(item.wish, '还是想多看一会儿星星。')
+  assert.deepEqual(item.wishes, ['想早点睡。', '还是想多看一会儿星星。'])
+  assert.equal(item.wish, '想早点睡。；还是想多看一会儿星星。')
 })
 
 const at = (day, hh, mm = 0) => new Date(`${day}T${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:00`)
@@ -400,4 +401,37 @@ test('昨天补写试够了不会把今天也挡住', async (t) => {
   const days = inst.list().map((x) => x.day)
   assert.equal(days.includes(yesterday), false)
   assert.equal(days.includes(DAY), true, '昨天写不出来，今天照写')
+})
+
+test('想许几个就许几个：全部进文件头、索引、记忆，重复的只记一次', async (t) => {
+  const root = tempRoot(t)
+  const added = []
+  const { api, inst } = boot(root, {
+    think: async () => '今天很满。\n\n愿望：想去看海。\n愿望：想学会弹那首《梦》。\n心愿：想去看海。\n心愿：想一起吃草莓蛋糕。',
+  })
+  const realLazy = api.lazy
+  api.lazy = (name) => (name === 'memory' ? { add: (x) => added.push(x), timeline: () => [] } : realLazy(name))
+
+  const res = await api.routes['/run']()
+  assert.equal(res.ok, true, res.message)
+  const text = readFileSync(join(inst.folder(), `${DAY}.md`), 'utf8')
+  assert.match(text, /^wishes: \["想去看海。","想学会弹那首《梦》。","想一起吃草莓蛋糕。"\]$/m)
+
+  const status = await api.routes['/status']()
+  assert.deepEqual(status.items[0].wishes, ['想去看海。', '想学会弹那首《梦》。', '想一起吃草莓蛋糕。'])
+
+  assert.equal(added.length, 1)
+  assert.ok(added[0].text.includes('想去看海。；想学会弹那首《梦》。；想一起吃草莓蛋糕。'))
+  assert.ok(added[0].tags.includes('愿望'))
+})
+
+test('旧日记只有单个 wish: 也能读成一个愿望', async (t) => {
+  const root = tempRoot(t)
+  const dir = join(root, '旧')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, `${DAY}.md`), `---\ndate: ${DAY}\nmood: "心情不错"\nwish: "想和他去看一次海。"\n---\n\n今天。\n`, 'utf8')
+  const { inst } = boot(root, { preset: { dir } })
+  const item = inst.list().find((x) => x.day === DAY)
+  assert.deepEqual(item.wishes, ['想和他去看一次海。'])
+  assert.equal(item.wish, '想和他去看一次海。')
 })

@@ -235,7 +235,12 @@ return function Panel({ toast, settings, draftSettings, setSettings, save }) {
   const curItem = items[page] || null
   const curDay = (cur && cur.day) || (curItem && curItem.day) || ''
   const ms = moodStyle((cur && cur.mood) || (curItem && curItem.mood))
-  const wish = (cur && cur.wish) || (curItem && curItem.wish) || ''
+  const wishList = (() => {
+    const arr = (cur && cur.wishes) || (curItem && curItem.wishes)
+    if (Array.isArray(arr) && arr.length) return arr
+    const one = (cur && cur.wish) || (curItem && curItem.wish) || ''
+    return one ? [one] : []
+  })()
 
   // 目录：按月份分组，order 决定新旧方向
   const railRows = (() => {
@@ -345,10 +350,10 @@ return function Panel({ toast, settings, draftSettings, setSettings, save }) {
           cur
             ? h('div', { className: 'ld-body' }, blocks(cur.body))
             : h('div', { className: 'ld-empty' }, loading ? '翻页中…' : '这一页还没打开。'),
-          wish
+          wishList.length
             ? h('div', { className: 'ld-wish' },
                 h('span', { className: 'ld-wish-k' }, '愿望'),
-                h('span', { className: 'ld-wish-t' }, wish))
+                h('div', { className: 'ld-wish-t' }, wishList.map((w, k) => h('div', { key: k }, wishList.length > 1 ? `${k + 1}. ${w}` : w))))
             : null,
         ),
         h('div', { className: 'ld-foot' },
