@@ -102,7 +102,7 @@ function makeHG ({
     getConfig: () => ({ ...merged, hongguo: merged }),
     hub: {
       runSystemTurn: async () => '{"plot":"p","score":8,"good":true,"why":"w","feeling":"f","share":"推给你","remember":"r"}',
-      sendText: async (to, text) => { sent.push({ to, text }) }
+      sendText: async (to, text) => { sent.push({ to, text }); return true }
     },
     memory: { addEvent: () => {} },
     log: { info () {}, warn () {}, debug () {}, error () {} },
@@ -268,7 +268,7 @@ describe('分享只在「真看过 + 觉得好看」时发生', () => {
       }),
       hub: {
         runSystemTurn: async () => '{"plot":"p","score":4,"good":false,"why":"w","feeling":"f","share":"还是推一下吧","remember":""}',
-        sendText: async (to, text) => { sent.push({ to, text }) }
+        sendText: async (to, text) => { sent.push({ to, text }); return true }
       },
       memory: null,
       log: { info () {}, warn () {}, debug () {}, error () {} },
