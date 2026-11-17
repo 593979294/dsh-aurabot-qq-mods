@@ -732,11 +732,13 @@ export default {
               const pending = qqPending
               const pendingId = String(tail || '').trim().toUpperCase()
               if (pending && (sub === '批准' || sub === 'approve' || sub === '确认') && (!pendingId || pending.id === pendingId)) {
+                if (msg?.kind !== 'private') return 'QQ 发起前确认只由主人在私聊里确认，群里不行。'
                 dropPending()
                 const r = await executeQqOp(pending.op, pending.n, pending.t, { confirmed: true })
                 return r.ok ? `已发起：${r.message}` : `发起失败：${r.message}`
               }
               if (pending && (sub === '拒绝' || sub === 'reject' || sub === '取消') && (!pendingId || pending.id === pendingId)) {
+                if (msg?.kind !== 'private') return 'QQ 发起前确认只由主人在私聊里确认，群里不行。'
                 dropPending()
                 return `已取消：${pending.op === 'qq.assist' ? '远程协助邀请' : '屏幕共享'}没有发起。`
               }
