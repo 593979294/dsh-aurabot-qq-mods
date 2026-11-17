@@ -43,6 +43,9 @@ const inline = (text) => {
   })
   return out
 }
+const WISH_LINE = /^[ \t]*(?:#{1,6}[ \t]*)?(?:愿望|心愿)[ \t]*[：:][ \t]*.+$/
+// 愿望行会单独显示在下方的愿望条里，正文里就不再重复（文件本身不改）
+const stripWishes = (body) => String(body || '').split(/\r?\n/).filter((l) => !WISH_LINE.test(l)).join('\n').replace(/\s+$/, '')
 const blocks = (body) => String(body || '').split(/\r?\n/).map((line, i) => {
   const t = line.trim()
   if (!t) return h('div', { key: i, style: { height: 32 } })
@@ -348,7 +351,7 @@ return function Panel({ toast, settings, draftSettings, setSettings, save }) {
             fish,
           ),
           cur
-            ? h('div', { className: 'ld-body' }, blocks(cur.body))
+            ? h('div', { className: 'ld-body' }, blocks(wishList.length ? stripWishes(cur.body) : cur.body))
             : h('div', { className: 'ld-empty' }, loading ? '翻页中…' : '这一页还没打开。'),
           wishList.length
             ? h('div', { className: 'ld-wish' },
