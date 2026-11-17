@@ -48,8 +48,8 @@ export default {
     powershellPath: '',
     preferUia: true,
     // v1.3.1：QQ 原生共享 / 远程协助
-    qqBotQQ: '', // 机器人 QQ 号；留空用插件配置里的 botQQ（本机 3046003374）
-    qqOwnerQQ: '', // 主人 QQ 号；留空用插件配置里的 ownerQQ（本机 916617067）
+    qqBotQQ: '', // 机器人 QQ 号；留空用插件配置里的 botQQ
+    qqOwnerQQ: '', // 主人 QQ 号；留空用插件配置里的 ownerQQ
     qqBotName: '', // 可选：机器人昵称兜底（OneBot 连不上时用）
     qqOwnerName: '', // 可选：主人昵称兜底
     qqWindowHwnd: 0, // 高级：直接指定机器人 QQ 窗口句柄（0=自动）
@@ -98,7 +98,7 @@ export default {
       const q = String(config().ownerQQ || '').trim()
       return /^\d{5,12}$/.test(q) ? `private:${q}` : ''
     }
-    /** 机器人/主人 QQ 号：面板显式填的优先，否则用插件配置（本机 3046003374 / 916617067）。 */
+    /** 机器人/主人 QQ 号：面板显式填的优先，否则用插件配置（botQQ / ownerQQ）。 */
     const botQQ = () => getSettings().qqBotQQ || String(config().botQQ || '').trim()
     const ownerQQ = () => getSettings().qqOwnerQQ || String(config().ownerQQ || '').trim()
 
