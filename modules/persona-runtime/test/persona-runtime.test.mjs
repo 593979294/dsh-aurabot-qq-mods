@@ -34,6 +34,34 @@ function autotelicPrefix() {
   return globalThis.aurabot?.lib?.('autotelic/prefix.js')
 }
 
+/**
+ * 插件内部那个文件在不在（`autotelic/prefix.js` 目前只在主仓 PR #503 里，beta / release 还没有）。
+ * 不在时下面「与引擎同源」的四条用例不能硬跑，得走降级断言 —— 维护者意见：
+ * 「改成拿不到就纯本地降级，并让测试在无该文件时走降级断言，或等 #503 合并后再依赖」。
+ * 注意 lib() 拿不到是**抛错**（不是返回 null），所以这里必须 try/catch。
+ */
+const HAS_HOST_PREFIX = (() => {
+  try { return Boolean(autotelicPrefix()) } catch { return false }
+})()
+
+/** 有宿主内部文件时执行、没有时跳过的用例条件。 */
+const skipNoHost = HAS_HOST_PREFIX ? {} : { skip: '宿主没有 autotelic/prefix.js（主仓 #503 未合入），改走降级断言' }
+/** 没有宿主内部文件时执行（营造降级场景）的用例条件。 */
+const skipWithHost = HAS_HOST_PREFIX ? { skip: '宿主已有 autotelic/prefix.js，降级分支由「摘掉 globalThis」那条用例覆盖' } : {}
+
+/** 降级路径的统一断言：不抛错、hash 自洽、why 如实标注「降级」。 */
+function assertDegradedPrefix(prefix) {
+  const a = prefix.version()
+  const b = prefix.version()
+  assert.equal(typeof a, 'string')
+  assert.ok(a.length >= 8, `降级 hash 仍要产出，实际：${a}`)
+  assert.equal(a, b, '同输入必须同 hash（降级实现也要自洽）')
+  assert.doesNotThrow(() => prefix.text())
+  const cmp = prefix.compare()
+  assert.equal(cmp.drift, false, '同输入重算必须自洽')
+  assert.ok(cmp.why.includes('降级'), `降级必须如实标注，实际：${cmp.why}`)
+}
+
 /** 造一个 mood.state() 形状的假状态。 */
 function moodState({ top = 'excited', nudge = 20, history = [] } = {}) {
   return {
@@ -455,7 +483,7 @@ test('readRuntimeSettings：非法预算值回落默认并 clamp', () => {
 
 // ---------- 9. 前缀与自驱引擎同源 ----------
 
-test('prefix 复用插件内部 autotelic/prefix.js：同输入同 hash', () => {
+test('prefix 复用插件内部 autotelic/prefix.js：同输入同 hash', skipNoHost, () => {
   const { hashPrefix, buildPrefix } = autotelicPrefix()
   const p = { personaSummary: '我是咕嘟', instincts: ['会学人说话'], constraints: '不许半夜说话' }
   const h1 = hashPrefix(buildPrefix(p))
@@ -465,7 +493,7 @@ test('prefix 复用插件内部 autotelic/prefix.js：同输入同 hash', () => 
   assert.ok(h1.length >= 8)
 })
 
-test('prefix 内容变化 → hash 变化（缓存失效可感知）', () => {
+test('prefix 内容变化 → hash 变化（缓存失效可感知）', skipNoHost, () => {
   const { hashPrefix, buildPrefix } = autotelicPrefix()
   const base = { personaSummary: '我是咕嘟', instincts: [], constraints: '' }
   const withInstinct = {
@@ -478,7 +506,7 @@ test('prefix 内容变化 → hash 变化（缓存失效可感知）', () => {
   assert.notEqual(a, b, '本能段加入后 hash 必须变')
 })
 
-test('前缀顺序固定：人格→本能→约束', () => {
+test('前缀顺序固定：人格→本能→约束', skipNoHost, () => {
   const { buildPrefix } = autotelicPrefix()
   const text = buildPrefix({
     personaSummary: 'PERSONA_MARK',
@@ -493,7 +521,7 @@ test('前缀顺序固定：人格→本能→约束', () => {
   assert.ok(iI < iC, '本能必须在约束之前')
 })
 
-test('模块版 createRuntimePrefix：宿主内部可用时与引擎实现同 hash', () => {
+test('模块版 createRuntimePrefix：宿主内部可用时与引擎实现同 hash', skipNoHost, () => {
   const { hashPrefix, buildPrefix } = autotelicPrefix()
   const prefix = createRuntimePrefix({ getConfig: () => ({}) })
   const mine = prefix.version()
@@ -504,6 +532,12 @@ test('模块版 createRuntimePrefix：宿主内部可用时与引擎实现同 ha
   const cmp = prefix.compare()
   assert.equal(cmp.drift, false)
   assert.equal(cmp.why, '')
+})
+
+// 宿主真的没有那个文件时（beta / release 现状、以及 CI 现状），同一个持有者必须
+// 走降级而不是抛错 —— 这正是维护者要求「拿不到就纯本地降级」的那条路径。
+test('模块版 createRuntimePrefix：宿主内部缺席时走本地降级（不抛错、hash 自洽、如实标注）', skipWithHost, () => {
+  assertDegradedPrefix(createRuntimePrefix({ getConfig: () => ({}) }))
 })
 
 test('模块版降级：宿主内部文件拿不到时前缀不抛错、走本地回退 hash 并如实标注', () => {
