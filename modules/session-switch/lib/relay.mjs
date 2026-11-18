@@ -262,8 +262,9 @@ async function groupNameOf(api, gid) {
 /**
  * 现在能带话到的聊天：已有会话 + 白名单里还没聊过的。
  * 每条只带 label / 最近活跃 / 整理过的印象 / 记着的称呼，不带任何聊天内容。
+ * withImpression 默认不开：印象是对别人的画像，只该给主人看（调用方显式传 true）。
  */
-export async function catalog(api, aliases = [], scope = '') {
+export async function catalog(api, aliases = [], scope = '', { withImpression = false } = {}) {
   const cfg = api.config()
   const { owner, privates, groups } = allowOf(cfg)
   const hub = api.core.hub
@@ -309,7 +310,7 @@ export async function catalog(api, aliases = [], scope = '') {
       sessionId: row.sessionId,
       since: row.since,
       names: aliasesOf(aliases, chatId, scope),
-      impression: impressionOf(api, chat),
+      impression: withImpression ? impressionOf(api, chat) : '',
     })
   }
   out.sort((a, b) => (b.since || 0) - (a.since || 0) || a.label.localeCompare(b.label))
@@ -546,8 +547,8 @@ export function fmtEntry(e) {
   return `${head}\n  ${body}${tail}`
 }
 
-/** 清单的一行：编号 · 名字 ·（最近聊过）· 记着的称呼 · 印象。 */
-export function fmtRow(i, row, { withImpression = true, withId = true } = {}) {
+/** 清单的一行：编号 · 名字 ·（最近聊过）· 记着的称呼 · 印象。印象默认不带（是别人的画像，只给主人）。 */
+export function fmtRow(i, row, { withImpression = false, withId = true } = {}) {
   const id = withId ? `（${row.chatId}）` : ''
   const names = row.names?.length ? ` · 你记着：${row.names.slice(0, 3).join('、')}` : ''
   const head = `${i}. ${row.label}${id}${names}`

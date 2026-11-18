@@ -47,7 +47,7 @@ const CLAMP = (v, fallback, min, max) => {
 export default {
   id: 'session-switch',
   name: '会话切换',
-  version: '1.3.0',
+  version: '1.3.1',
   api: 1,
   description: '让她把一件事带到另一个聊天：那边的她按自己的记忆和方式接住，不是把原话复制过去。认不出是谁时可以列出会话问清楚，确认过的称呼会记住。',
   category: 'social',
@@ -58,7 +58,7 @@ export default {
   defaults: {
     enabled: true,
     allowOwner: true,
-    allowOthers: true,
+    allowOthers: false,
     ownerTargets: '',
     othersTargets: '',
     mode: 'compose',
@@ -78,7 +78,7 @@ export default {
       key: 'allowOthers',
       label: '允许别人带话',
       type: 'switch',
-      hint: '关掉后群里、别人私聊里的人说的话，她不会帮着往别处带（列清单、临时起意也一起停掉）',
+      hint: '默认关：跨会话外发这条路要由主人显式打开。关着时群里、别人私聊里的人说的话，她不会帮着往别处带（列清单、临时起意也一起停掉）',
     },
     {
       key: 'ownerTargets',
@@ -127,6 +127,8 @@ export default {
 
     const ownerOf = () => String(api.config().ownerQQ || '')
     const isOwnerPrivate = (chat) => chat?.kind === 'private' && String(chat.userId || '') === ownerOf()
+    /** 出站治理的唯一目标：发到主人私聊。其它聊天不在这套门闸的范围里。 */
+    const isGoverned = (chatId) => Boolean(ownerOf()) && String(chatId) === `private:${ownerOf()}`
     const ownerTurn = (sessionId) => {
       try {
         return Boolean(sessionId && typeof hub.turnSendersAllOwner === 'function' && hub.turnSendersAllOwner(sessionId))
@@ -251,6 +253,16 @@ export default {
         return { ok: false, message: `${fromOwner ? '主人' : '别人'}可带话的范围里没有这个聊天${names}` }
       }
 
+      // 出站在主人私聊这条线上受宿主的策略门闸管：compose 会在目标会话起一轮、由那边的她直接投递，
+      // 这条投递路径绕不过去也补不了闸（turn/end 的发送不经过 outboundGuard）。
+      // 所以这里做等价收紧：往主人私聊一律只走 direct —— 它经 hub.deliver，本来就在门闸里。
+      if (mode === 'compose' && isGoverned(target.chatId)) {
+        return {
+          ok: false,
+          message: '往主人私聊这条线要过出站策略，不能让那边的会话凭空开口：换成 mode="direct" 原话带过去（会过策略）；主人想叫醒自己那边，在私聊里直接说就行。',
+        }
+      }
+
       const toldAs = hit.via === 'alias' ? String(hit.alias || '') : ''
       const targetLabel = await labelOf(api, target)
       const fromLabel = sourceLabel || (await labelOf(api, sourceChat))
@@ -340,11 +352,14 @@ export default {
       }
     }
 
-    /** 这个聊天里能带话到的清单：只列这一轮允许的范围（范围留空 = 全部能带话的会话）。 */
+    /**
+     * 这个聊天里能带话到的清单：只列这一轮允许的范围（范围留空 = 全部能带话的会话）。
+     * 印象（对别人的画像）只有主人私聊里才带：群友、别人私聊只能看到「能带到哪些聊天」的名字。
+     */
     async function reachableRows(chat, sessionId, isOwnerFixed) {
       const isOwner = isOwnerFixed === undefined ? speakingAsOwner(chat, sessionId) : Boolean(isOwnerFixed)
       const aliases = loadAliases(dir)
-      const all = await catalog(api, aliases, chat.chatId)
+      const all = await catalog(api, aliases, chat.chatId, { withImpression: isOwnerPrivate(chat) })
       const range = await rangeOf(isOwner)
       return { isOwner, rows: all.filter((r) => inRange(range.ids, r.chatId)) }
     }
@@ -363,8 +378,9 @@ export default {
       if (!rows.length) return { ok: false, message: asked?.error || '现在没有能带话到的聊天' }
 
       const options = rows.map((r) => ({ chatId: r.chatId, label: r.label, names: r.names || [] }))
-      const withId = isOwnerPrivate(sourceChat)
-      const lines = rows.map((r, i) => fmtRow(i + 1, r, { withImpression: true, withId }))
+      const ownerEyes = isOwnerPrivate(sourceChat)
+      const withId = ownerEyes
+      const lines = rows.map((r, i) => fmtRow(i + 1, r, { withImpression: ownerEyes, withId }))
       const head =
         asked?.reason === 'stale'
           ? `我记着的「${targetInput}」那个聊天现在发不过去了，要换成这里面的哪一个？`
@@ -426,7 +442,7 @@ export default {
       const tools = [
         api.defineTool({
           name: 'session_switch_tell',
-          description: '把一件事带到另一个聊天去：那边的你带着自己的记忆去理解、接着说。target 填 private:QQ号、group:群号、群名、这个聊天里记过的称呼（如「王总」），或 owner（主人的私聊）；只能发白名单里的人和群。认不出是谁就别猜：工具会自己把能带话到的清单发到聊天里让对方挑，不用你再列一遍。带不带、带什么、怎么带，自己判断，不用有求必应。',
+          description: '把一件事带到另一个聊天去：那边的你带着自己的记忆去理解、接着说。target 填 private:QQ号、group:群号、群名、这个聊天里记过的称呼（如「王总」），或 owner（主人的私聊）；只能发白名单里的人和群。往主人私聊这条线只能原话带过去（direct，会过出站策略），除非就是主人在自己的私聊里托你。认不出是谁就别猜：工具会自己把能带话到的清单发到聊天里让对方挑，不用你再列一遍。带不带、带什么、怎么带，自己判断，不用有求必应。',
           properties: {
             target: { type: 'string', description: '带到哪儿：private:QQ号、group:群号、群名、称呼，或 owner' },
             content: { type: 'string', description: `要带过去的那件事，说清楚是什么（不是逐字稿，最多 ${CONTENT_LIMIT} 字）` },
@@ -464,10 +480,10 @@ export default {
         tools.push(
           api.defineTool({
             name: 'session_switch_list',
-            description: '不确定该把话带给谁时用：列出你能带话到的聊天（可以带一点你对那边的印象），然后问清楚是哪一个再带。自己临时想找谁说话时，也用它按印象挑一个，不用问对方。清单是印象不是聊天记录，别当成聊天内容念出来。',
+            description: '不确定该把话带给谁时用：列出你能带话到的聊天，然后问清楚是哪一个再带。自己临时想找谁说话时，也用它按印象挑一个，不用问对方（印象只有主人私聊里才带；别处只有名字）。清单是印象不是聊天记录，别当成聊天内容念出来。',
             properties: {
               query: { type: 'string', description: '人名、称呼、群名或印象里的关键词；空着就列全部' },
-              with_impression: { type: 'boolean', description: '要不要带一点对那边的印象（默认要）' },
+              with_impression: { type: 'boolean', description: '要不要带一点对那边的印象（仅主人在自己私聊里生效，默认要）' },
             },
             execute: async ({ query, with_impression }) => {
               const { rows: all } = await reachableRows(chat, sessionId)
@@ -485,8 +501,9 @@ export default {
                   message: key ? `没找到和「${query}」对得上的聊天。可以不带关键词再列一次。` : '现在没有能带话到的聊天',
                 }
               }
-              const showImpression = with_impression !== false
-              const withId = isOwnerPrivate(chat)
+              const ownerEyes = isOwnerPrivate(chat)
+              const showImpression = ownerEyes && with_impression !== false
+              const withId = ownerEyes
               const lines = rows.slice(0, 20).map((r, i) => fmtRow(i + 1, r, { withImpression: showImpression, withId }))
               const tail = rows.length > 20 ? `\n……还有 ${rows.length - 20} 个没列` : ''
               return {
@@ -606,7 +623,7 @@ export default {
       aliases: ['会话列表', '转达列表'],
       desc: '列出能带话到的聊天和她的印象：/跨会话列表；按关键词找：/跨会话列表 王总',
       run: async (arg, msg) => {
-        let rows = await catalog(api, loadAliases(dir), msg?.chatId || '')
+        let rows = await catalog(api, loadAliases(dir), msg?.chatId || '', { withImpression: true })
         // 主人命令也按主人范围收窄，免得列出来的东西她其实带不过去
         const range = await rangeOf(true)
         rows = rows.filter((r) => inRange(range.ids, r.chatId))
