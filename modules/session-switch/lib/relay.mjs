@@ -378,7 +378,12 @@ async function byName(api, text, aliases, only, scope = '') {
     if (a) {
       const chat = chatOfId(a.chatId)
       if (chat && allowedChat(cfg, chat)) return { chat, via: 'alias', alias: a.name }
-      return { error: `记着的「${a.name}」那个聊天现在发不过去了（可能不在白名单或被归档），要不要重新记一条？` }
+      return {
+        error: `记着的「${a.name}」那个聊天现在发不过去了（可能不在白名单或被归档），要不要重新记一条？`,
+        reason: 'stale',
+        name: text,
+        candidates: [],
+      }
     }
   }
 
@@ -417,17 +422,25 @@ async function byName(api, text, aliases, only, scope = '') {
 
   if (hits.size === 1) return { chat: [...hits.values()][0].chat, via: 'name' }
   if (hits.size > 1) {
-    const names = [...hits.values()].map((x) => x.label).join('、')
-    return { error: `「${text}」对上了好几个：${names}。说清楚是哪一个（可以用 private:QQ号 或 group:群号）` }
+    const found = [...hits.values()]
+    return {
+      error: `「${text}」对上了好几个：${found.map((x) => x.label).join('、')}。说清楚是哪一个（可以用 private:QQ号 或 group:群号）`,
+      reason: 'ambiguous',
+      name: text,
+      candidates: found,
+    }
   }
 
   if (only === 'group') {
     const names = allowed.map((x) => `「${x.group_name}」`).join('、') || '（群列表暂时取不到）'
-    return { error: `白名单里没有「${text}」这个群。能发到的群：${names}` }
+    return { error: `白名单里没有「${text}」这个群。能发到的群：${names}`, reason: 'notgroup', name: text, candidates: [] }
   }
-  if (!groups.size && !privates.size) return { error: '白名单里还没有能发的地方，先在面板「聊天」页加上' }
+  if (!groups.size && !privates.size) return { error: '白名单里还没有能发的地方，先在面板「聊天」页加上', reason: 'empty', name: text, candidates: [] }
   return {
     error: `不认识「${text}」是谁。能带话到的：${owner ? '主人私聊、' : ''}白名单里的 ${privates.size - (owner ? 1 : 0)} 个私聊、${groups.size} 个群。可以先列出来看看，问清楚是哪一个。`,
+    reason: 'unknown',
+    name: text,
+    candidates: [],
   }
 }
 
@@ -539,4 +552,69 @@ export function fmtRow(i, row, { withImpression = true, withId = true } = {}) {
   const names = row.names?.length ? ` · 你记着：${row.names.slice(0, 3).join('、')}` : ''
   const head = `${i}. ${row.label}${id}${names}`
   return withImpression && row.impression ? `${head}\n   ${row.impression}` : head
+}
+
+// ---------- 「问清楚是哪一个」的待选状态 ----------
+
+const PENDING_NAME = 'pending.json'
+/** 清单发出去之后，等对方回话的有效期。 */
+export const PICK_TTL = 10 * 60_000
+
+export function loadPending(dir) {
+  try {
+    const all = JSON.parse(readFileSync(join(dir, PENDING_NAME), 'utf8'))
+    return all && typeof all === 'object' ? all : {}
+  } catch (error) {
+    return {}
+  }
+}
+
+export function savePending(dir, all) {
+  try {
+    writeFileSync(join(dir, PENDING_NAME), JSON.stringify(all || {}, null, 2), 'utf8')
+  } catch (error) {}
+}
+
+const CN_DIGIT = { 零: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 }
+
+/** 「三」「十二」「十」→ 数字；认不出返回 0。 */
+function cnNumber(text) {
+  const raw = String(text || '').trim()
+  if (!raw || !/^[零一二三四五六七八九十两]+$/.test(raw)) return 0
+  if (raw === '十') return 10
+  const m = /^([一二三四五六七八九两])?十([一二三四五六七八九])?$/.exec(raw)
+  if (m) return (m[1] ? CN_DIGIT[m[1]] : 1) * 10 + (m[2] ? CN_DIGIT[m[2]] : 0)
+  if (raw.length === 1) return CN_DIGIT[raw] || 0
+  return 0
+}
+
+/**
+ * 从对方的回话里认出选了清单里的哪一条：序号（1、第2个、三）、
+ * 或者名字（「王总」「大肥鱼」）。认不准就返回 null，让正常对话接着走。
+ */
+export function pickByReply(options, text) {
+  const list = Array.isArray(options) ? options : []
+  const raw = String(text || '').trim()
+  if (!raw || !list.length) return null
+
+  const num = /^(?:第\s*)?(\d{1,2})\s*(?:个|号|条|位)?\s*[.、)）:：]?\s*$/.exec(raw)
+  if (num) {
+    const i = Number(num[1])
+    if (i >= 1 && i <= list.length) return list[i - 1]
+  }
+  const cn = cnNumber(raw.replace(/^第/, '').replace(/[个号条位]$/, ''))
+  if (cn >= 1 && cn <= list.length) return list[cn - 1]
+
+  const key = raw.toLowerCase()
+  const namesOf = (o) => [o.label, o.name, ...(o.names || [])].filter(Boolean).map((n) => String(n).trim()).filter(Boolean)
+  const exact = list.filter((o) => namesOf(o).some((n) => n.toLowerCase() === key))
+  if (exact.length === 1) return exact[0]
+  // 模糊匹配只认短回复，免得「王总说他明天不来」这种整句被当成选项
+  if (raw.length > 12) return null
+  const loose = list.filter((o) => namesOf(o).some((n) => {
+    const s = n.toLowerCase()
+    return s.length > 1 && (key.includes(s) || s.includes(key))
+  }))
+  if (loose.length === 1) return loose[0]
+  return null
 }

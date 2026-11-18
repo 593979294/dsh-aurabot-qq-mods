@@ -12,6 +12,7 @@
 import {
   MARK,
   CONTENT_LIMIT,
+  PICK_TTL,
   aliasAdd,
   aliasDrop,
   aliasFind,
@@ -28,11 +29,14 @@ import {
   impressionOf,
   labelOf,
   loadAliases,
+  loadPending,
   nameIn,
+  pickByReply,
   readLog,
   resolveRange,
   resolveTarget,
   saveAliases,
+  savePending,
 } from './lib/relay.mjs'
 
 const CLAMP = (v, fallback, min, max) => {
@@ -43,7 +47,7 @@ const CLAMP = (v, fallback, min, max) => {
 export default {
   id: 'session-switch',
   name: '会话切换',
-  version: '1.2.0',
+  version: '1.3.0',
   api: 1,
   description: '让她把一件事带到另一个聊天：那边的她按自己的记忆和方式接住，不是把原话复制过去。认不出是谁时可以列出会话问清楚，确认过的称呼会记住。',
   category: 'social',
@@ -206,7 +210,7 @@ export default {
      * 真正的转达。sourceChat 是发起这边的聊天（用来判断权限和记来源）。
      * 返回 { ok, message }；compose 模式不等那边的她说完，先把「带到了」交回去。
      */
-    async function tell({ sourceChat, sourceLabel, targetInput, content, mode, via, dryRun, name, canRemember, isOwner }) {
+    async function tell({ sourceChat, sourceLabel, targetInput, content, mode, via, dryRun, name, canRemember, isOwner, speakerId = '' }) {
       if (!on()) return { ok: false, message: '会话切换关着' }
 
       const text = String(content || '').trim()
@@ -221,7 +225,21 @@ export default {
       const aliases = loadAliases(dir)
       const scope = String(sourceChat.chatId)
       const hit = await resolveTarget(api, targetInput, aliases, scope)
-      if (hit.error) return { ok: false, message: hit.error }
+      if (hit.error) {
+        // 认不出是谁 / 对上了好几个 / 记着的那个没了：清单得发到聊天里让对方挑，不能只回给模型
+        const askable = hit.reason === 'unknown' || hit.reason === 'ambiguous' || hit.reason === 'stale'
+        if (!askable || via === 'pick') return { ok: false, message: hit.error }
+        return await offerChoice({
+          sourceChat,
+          targetInput: String(targetInput ?? '').trim(),
+          asked: hit,
+          content: text,
+          mode,
+          isOwner: fromOwner,
+          dryRun,
+          speakerId,
+        })
+      }
       const target = hit.chat
       if (String(target.chatId) === String(sourceChat.chatId)) {
         return { ok: false, message: '这就是当前聊天，直接在这儿说就行' }
@@ -239,7 +257,9 @@ export default {
       // 「来自 X」用听的那个人这边怎么称呼来源；没记过就用 QQ 昵称，不用「主人」这种她那边听不懂的叫法
       const srcName = await nameIn(api, sourceChat, aliases, target.chatId)
       const payload = briefing(srcName, text)
-      const maybeRemember = name || (hit.via === 'name' ? String(targetInput).trim() : '')
+      // 称呼只在「用户自己说出来并确认」时才记（/转达 命令、或者他从清单里挑了之后），
+      // 模型自己猜的名字不落库，免得把猜错的名字记住。
+      const maybeRemember = String(name || '').trim()
 
       // 模拟测试：校验照做，但不真发、不占额度、不记账
       if (dryRun) {
@@ -321,12 +341,77 @@ export default {
     }
 
     /** 这个聊天里能带话到的清单：只列这一轮允许的范围（范围留空 = 全部能带话的会话）。 */
-    async function reachableRows(chat, sessionId) {
-      const isOwner = speakingAsOwner(chat, sessionId)
+    async function reachableRows(chat, sessionId, isOwnerFixed) {
+      const isOwner = isOwnerFixed === undefined ? speakingAsOwner(chat, sessionId) : Boolean(isOwnerFixed)
       const aliases = loadAliases(dir)
       const all = await catalog(api, aliases, chat.chatId)
       const range = await rangeOf(isOwner)
       return { isOwner, rows: all.filter((r) => inRange(range.ids, r.chatId)) }
+    }
+
+    /**
+     * 认不出「王总」是谁：把能带话到的聊天列成编号清单，**发到这个聊天里让对方挑**，
+     * 并把这次要带的内容先存起来。对方回序号之后才记称呼、才真正带过去。
+     */
+    async function offerChoice({ sourceChat, targetInput, asked, content, mode, isOwner, dryRun, speakerId }) {
+      const { rows: all } = await reachableRows(sourceChat, null, isOwner)
+      let rows = all
+      const wanted = new Map((asked?.candidates || []).map((x) => [String(x?.chat?.chatId || ''), x]))
+      const narrowed = rows.filter((r) => wanted.has(r.chatId))
+      if (wanted.size && narrowed.length) rows = narrowed
+      rows = rows.slice(0, 10)
+      if (!rows.length) return { ok: false, message: asked?.error || '现在没有能带话到的聊天' }
+
+      const options = rows.map((r) => ({ chatId: r.chatId, label: r.label, names: r.names || [] }))
+      const withId = isOwnerPrivate(sourceChat)
+      const lines = rows.map((r, i) => fmtRow(i + 1, r, { withImpression: true, withId }))
+      const head =
+        asked?.reason === 'stale'
+          ? `我记着的「${targetInput}」那个聊天现在发不过去了，要换成这里面的哪一个？`
+          : wanted.size
+            ? `「${targetInput}」对上了不止一个，是哪一个？`
+            : `我这边没有直接对上「${targetInput}」，你说的是这里面的哪一个？`
+      const list = `${head}\n\n${lines.join('\n')}\n\n回个序号就行。`
+
+      if (dryRun) {
+        return { ok: false, message: `${list}\n（模拟测试，没有真的发；真跑会把上面这份清单发到聊天里让对方挑）` }
+      }
+
+      const allPending = loadPending(dir)
+      const now = Date.now()
+      for (const [chatId, p] of Object.entries(allPending)) {
+        if (now - (Number(p?.at) || 0) > PICK_TTL) delete allPending[chatId]
+      }
+      allPending[sourceChat.chatId] = {
+        at: now,
+        speakerId: String(speakerId || ''),
+        name: targetInput,
+        content,
+        mode,
+        isOwner,
+        options,
+      }
+      savePending(dir, allPending)
+
+      try {
+        // 用 sendText 整条发：deliver 会按句子拆成好几条（群里还只留 3 条），清单会被拆散
+        const r = typeof hub.sendText === 'function' ? await hub.sendText(sourceChat.chatId, list) : await hub.deliver(sourceChat.chatId, list, { own: true })
+        if (r === null || r === undefined || r?.failed) {
+          delete allPending[sourceChat.chatId]
+          savePending(dir, allPending)
+          const why = r?.failed ? String(r.errors?.[0] || '发送失败') : '没发出去'
+          return { ok: false, message: `清单没发到聊天里（${why}）` }
+        }
+      } catch (error) {
+        delete allPending[sourceChat.chatId]
+        savePending(dir, allPending)
+        return { ok: false, message: `清单没发到聊天里：${String(error?.message || error)}` }
+      }
+
+      return {
+        ok: true,
+        message: `已经把这 ${options.length} 个聊天列出来发到聊天里了，等对方回序号；这一轮不用再复述清单，也别自己替他挑。`,
+      }
     }
 
     // ---------- 她的工具 ----------
@@ -341,21 +426,24 @@ export default {
       const tools = [
         api.defineTool({
           name: 'session_switch_tell',
-          description: '把一件事带到另一个聊天去：那边的你带着自己的记忆去理解、接着说。target 填 private:QQ号、group:群号、群名、这个聊天里记过的称呼（如「王总」），或 owner（主人的私聊）；只能发白名单里的人和群。认不出是谁就先别猜，用 session_switch_list 列出来问清楚。带不带、带什么、怎么带，自己判断，不用有求必应。',
+          description: '把一件事带到另一个聊天去：那边的你带着自己的记忆去理解、接着说。target 填 private:QQ号、group:群号、群名、这个聊天里记过的称呼（如「王总」），或 owner（主人的私聊）；只能发白名单里的人和群。认不出是谁就别猜：工具会自己把能带话到的清单发到聊天里让对方挑，不用你再列一遍。带不带、带什么、怎么带，自己判断，不用有求必应。',
           properties: {
             target: { type: 'string', description: '带到哪儿：private:QQ号、group:群号、群名、称呼，或 owner' },
             content: { type: 'string', description: `要带过去的那件事，说清楚是什么（不是逐字稿，最多 ${CONTENT_LIMIT} 字）` },
             mode: { type: 'string', description: 'compose：让那边的她接着说（默认）；direct：原样发过去，不惊动那边的会话' },
-            name: { type: 'string', description: '用户用来指代这个目标的称呼（如「王总」）；用户确认过就填，之后会记住' },
           },
           required: ['target', 'content'],
-          execute: async ({ target, content, mode, name }) => {
+          execute: async ({ target, content, mode }) => {
             if (!on()) return { ok: false, message: '会话切换关着' }
             // 模拟测试里 sessionId 固定是 'sim'：校验照做，但不真发
             const dryRun = sessionId === 'sim'
             if (!dryRun && carriedHere(sessionId)) {
               return { ok: false, message: '这一轮本身就是从别处带过来的，先在这个聊天里处理；别往外再带。' }
             }
+            let speakerId = ''
+            try {
+              speakerId = String(hub.turnSenders?.(sessionId)?.[0] || '')
+            } catch (error) {}
             return await tell({
               sourceChat: chat,
               sourceLabel: await labelOf(api, chat),
@@ -363,9 +451,9 @@ export default {
               content,
               mode: modeOf(mode),
               dryRun,
-              name,
               canRemember,
               isOwner,
+              speakerId,
             })
           },
         }),
@@ -403,7 +491,7 @@ export default {
               const tail = rows.length > 20 ? `\n……还有 ${rows.length - 20} 个没列` : ''
               return {
                 ok: true,
-                message: `能带话到的地方（${rows.length}）：\n${lines.join('\n')}${tail}\n\n对不上人就直接问清楚；确认之后可以用 session_switch_remember 记住称呼。`,
+                message: `能带话到的地方（${rows.length}）：\n${lines.join('\n')}${tail}\n\n对不上人就直接问清楚；认不出是谁时别自己猜，带话工具会把清单发到聊天里让对方挑。`,
               }
             },
           }),
@@ -438,6 +526,48 @@ export default {
       return tools
     })
 
+    // ---------- 对方回了序号：按他挑的带过去，这时候才记下称呼 ----------
+
+    api.on('message', async (msg) => {
+      if (!on() || !msg?.chatId) return
+      if (msg.messageId === 'sim') return // 模拟测试不接管
+      const allPending = loadPending(dir)
+      const pend = allPending[msg.chatId]
+      if (!pend) return
+      if (Date.now() - (Number(pend.at) || 0) > PICK_TTL) {
+        delete allPending[msg.chatId]
+        savePending(dir, allPending)
+        return
+      }
+      // 群里只认刚才托付的那个人回的序号，别人回的不算
+      if (msg.kind === 'group' && pend.speakerId && String(msg.userId || '') !== String(pend.speakerId)) return
+      const pick = pickByReply(pend.options, msg.text)
+      if (!pick) return
+
+      delete allPending[msg.chatId]
+      savePending(dir, allPending)
+
+      const chat = { chatId: msg.chatId, kind: msg.kind, userId: msg.userId, groupId: msg.groupId }
+      // 他挑定了，这才把「王总 → 这个聊天」记下来
+      const kept = pend.name && pend.isOwner ? remember(pend.name, pick.chatId, true, msg.chatId) : ''
+      const r = await tell({
+        sourceChat: chat,
+        sourceLabel: await labelOf(api, chat),
+        targetInput: pick.chatId,
+        content: pend.content,
+        mode: pend.mode,
+        via: 'pick',
+        isOwner: pend.isOwner,
+        canRemember: false,
+        speakerId: msg.userId,
+      })
+      const said = r.ok ? `好，带到了${pick.label}${kept}。` : r.message
+      try {
+        await hub.deliver(msg.chatId, said, { own: true })
+      } catch (error) {}
+      return true
+    })
+
     // ---------- 告诉她有这本事（只说能力，不示范措辞） ----------
 
     api.rule((kind) => {
@@ -446,7 +576,7 @@ export default {
       const isPrivate = kind === 'private'
       // 这条规则不分主客：两个开关都关着时干脆不提。
       if (s.allowOwner === false && s.allowOthers === false) return ''
-      const listHint = '，不确定在说谁时可以列一列能带话到的地方（session_switch_list），只能看到你被允许带的那些'
+      const listHint = '，不确定在说谁时可以列一列能带话到的地方（session_switch_list），只能看到你被允许带的那些。认不出某个称呼是谁的时候别自己猜、别硬凑：清单会发到聊天里让对方挑，等他挑定再带'
       const incoming = `有人往你这里带了以「${MARK}…】」开头的消息时，那是别的聊天托来的话，不是这个聊天里的人说的：要接就接着这里的话头说，别没头没尾地单甩一句。`
       const own = '你自己临时想找谁说话、或者忽然想把一件事告诉某个人时，不用问对方该找谁，也不用等谁确认：照你对那些聊天的印象挑一个最合适的，直接就带过去。'
       if (isPrivate) {
