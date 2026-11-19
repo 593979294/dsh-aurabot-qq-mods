@@ -17,7 +17,9 @@ function makeApi(overrides = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'nickname-test-'))
   const tools = []
   const routes = new Map()
-  let settings = { enabled: true, allowSelfName: true, socialLearn: true, injectContext: true, maxNamesPerPerson: 6, panelRemote: false }
+  // 这里显式把 socialLearn 打开，模拟主人自己在面板里打开后的行为；
+  // 默认值是 false，由下面的「默认值」用例单独断言。
+  let settings = { ...mod.defaults, socialLearn: true }
   const api = {
     dataDir: () => dir,
     config: () => ({ ownerQQ: OWNER, security: { trustedProxy: '' } }),
@@ -30,7 +32,7 @@ function makeApi(overrides = {}) {
     context() {},
     command() {},
     on() {},
-    route: (path, fn) => routes.set(path, fn),
+    route: (path, fn, options) => routes.set(path, { fn, options }),
     onebot: async (action) => {
       if (action !== 'get_group_member_list') return []
       return [
@@ -143,22 +145,35 @@ test('面板接口默认只认本机，打开设置才放远程', async () => {
   const remote = { socket: { remoteAddress: '192.168.1.9' }, headers: {} }
   const local = { socket: { remoteAddress: '127.0.0.1' }, headers: {} }
 
-  const denied = await h.routes.get('/list')(remote)
+  const denied = await h.routes.get('/list').fn(remote)
   assert.equal(denied.ok, false)
   assert.match(denied.message, /本机/)
 
-  const allowed = await h.routes.get('/list')(local)
+  const allowed = await h.routes.get('/list').fn(local)
   assert.equal(allowed.ok, true)
 
   h.setSettings({ panelRemote: true })
-  const remoteOk = await h.routes.get('/list')(remote)
+  const remoteOk = await h.routes.get('/list').fn(remote)
   assert.equal(remoteOk.ok, true)
+})
+
+test('四条面板路由都声明成 panel，交给宿主的闸先拦', () => {
+  const h = makeApi()
+  for (const path of ['/list', '/set', '/remove', '/forget']) {
+    assert.ok(h.routes.has(path), `缺路由 ${path}`)
+    assert.deepEqual(h.routes.get(path).options, { access: 'panel' }, `${path} 没带 access: panel`)
+  }
+})
+
+test('默认值：群友写称呼本默认关、能力里没有 network', () => {
+  assert.equal(mod.defaults.socialLearn, false)
+  assert.equal(mod.defaults.panelRemote, false)
 })
 
 test('面板写接口同样受本机限制', async () => {
   const h = makeApi()
   const remote = { socket: { remoteAddress: '10.0.0.8' }, headers: {} }
-  const r = await h.routes.get('/set')(remote)
+  const r = await h.routes.get('/set').fn(remote)
   assert.equal(r.ok, false)
 })
 
@@ -178,7 +193,7 @@ test('老数据里的原话（evidence）读一次就被洗掉', async () => {
     },
   }), 'utf8')
 
-  const r = await h.routes.get('/list')({ socket: { remoteAddress: '127.0.0.1' }, headers: {} })
+  const r = await h.routes.get('/list').fn({ socket: { remoteAddress: '127.0.0.1' }, headers: {} })
   assert.equal(r.ok, true)
   const saved = readFileSync(file, 'utf8')
   assert.doesNotMatch(saved, /evidence/)

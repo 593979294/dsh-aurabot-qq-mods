@@ -15,7 +15,7 @@ const describe = (person, withQQ = true) => {
 export default {
   id: 'nickname-memory',
   name: '昵称记忆',
-  version: '1.2.0',
+  version: '1.2.1',
   api: 1,
   panel: 'panel.js',
   description: '她会记住大家怎么称呼一个人（也能自己给对方起个叫法），以后就用这个称呼叫对方；新叫法会顶掉旧的。',
@@ -24,7 +24,7 @@ export default {
   defaults: {
     enabled: true,
     allowSelfName: true,
-    socialLearn: true,
+    socialLearn: false,
     injectContext: true,
     maxNamesPerPerson: 6,
     panelRemote: false,
@@ -36,7 +36,7 @@ export default {
       key: 'socialLearn',
       label: '允许群友教她叫法',
       type: 'switch',
-      hint: '关掉以后，只有主人能往称呼本里记东西；群友说的叫法她还听得见，但不落库',
+      hint: '默认关：跨会话的长期数据由主人决定。关着时只有主人能往称呼本里记东西；群友说的叫法她还听得见，但不落库',
     },
     { key: 'injectContext', label: '把称呼带进对话', type: 'switch', hint: '说话的人有记过的称呼时，提示她用这个称呼' },
     {
@@ -332,8 +332,9 @@ export default {
       updated: p.updated,
     }))
 
-    // 插件对 /ext/<模块>/* 不做管理面闸，这几条接口又是「能读能写称呼本」的，
-    // 所以模块自己守一道：默认只认本机回环，远程要显式打开设置。
+    // 这几条接口能读能写整本称呼本，所以声明成面板接口（access: 'panel'），
+    // 让宿主的管理面闸（security.panelRemoteAccess）先拦一道；模块自己的本机判断
+    // 只是第二道，不再当唯一一道。
     const loopback = (ip) => {
       const s = String(ip || '').replace(/^::ffff:/i, '').replace(/^\[|\]$/g, '')
       return s === '::1' || s === '127.0.0.1' || /^127\./.test(s)
@@ -342,7 +343,7 @@ export default {
       const sock = String(req?.socket?.remoteAddress || req?.connection?.remoteAddress || '')
         .replace(/^::ffff:/i, '')
         .replace(/^\[|\]$/g, '')
-      if (!sock) return true // 进程内直调（面板/测试）
+      if (!sock) return true // 进程内直调（面板/测试）；网络请求由宿主的 panel 闸负责
       if (!loopback(sock)) return false
       const trusted = String(api.config()?.security?.trustedProxy || '').split(/[,，]/).map((x) => x.trim()).filter(Boolean)
       if (!trusted.length || !trusted.includes(sock)) return true
@@ -352,8 +353,9 @@ export default {
     }
     const remoteDenied = { ok: false, message: '这个接口只接受本机访问（要在远程用，得先打开设置里的「允许非本机访问」）' }
     const gated = (fn) => async (req) => (settings().panelRemote === true || localReq(req) ? fn(req) : remoteDenied)
+    const PANEL = { access: 'panel' }
 
-    api.route('/list', gated(() => ({ ok: true, people: panelRows() })))
+    api.route('/list', gated(() => ({ ok: true, people: panelRows() })), PANEL)
 
     api.route('/set', gated(async (req) => {
       const b = await bodyOf(req)
@@ -368,7 +370,7 @@ export default {
         message: r.renamed ? `以后叫「${name}」（原来叫「${r.previous}」）` : `以后叫「${name}」`,
         people: panelRows(),
       }
-    }))
+    }), PANEL)
 
     api.route('/remove', gated(async (req) => {
       const b = await bodyOf(req)
@@ -378,7 +380,7 @@ export default {
       if (!forgetName(store(), qq, name)) return { ok: false, message: '没记过这个叫法' }
       save()
       return { ok: true, message: `删了「${name}」`, people: panelRows() }
-    }))
+    }), PANEL)
 
     api.route('/forget', gated(async (req) => {
       const b = await bodyOf(req)
@@ -387,7 +389,7 @@ export default {
       if (!forgetPerson(store(), qq)) return { ok: false, message: '没记过这个人' }
       save()
       return { ok: true, message: '这个人的叫法全忘了', people: panelRows() }
-    }))
+    }), PANEL)
 
     // ---- 主人命令 ----
 
