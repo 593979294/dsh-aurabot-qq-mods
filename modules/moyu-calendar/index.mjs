@@ -2,7 +2,7 @@
 // 入口只放设置、定时和发送。搜狗、RSS、文章和图片在 lib/。
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { downloadImage, pruneCache, readCache, writeCache } from './lib/image.mjs'
-import { decideTick, initialState, parseTargets } from './lib/schedule.mjs'
+import { decideTick, initialState, matchBareCommand, parseCommandAliases, parseTargets, splitLegacyTargets } from './lib/schedule.mjs'
 import { resolveCalendar } from './lib/source.mjs'
 import { beijing } from './lib/time.mjs'
 
@@ -25,24 +25,28 @@ export function createModule({ fetchImpl, now = () => Date.now(), browserOf, sle
   return {
     id: 'moyu-calendar',
     name: '摸鱼人日历',
-    version: '1.0.0',
+    version: '1.0.3',
     api: 1,
     description: DESCRIPTION,
     defaults: {
       daily: true,
       time: '08:00',
       deadline: '12:00',
-      targets: '',
+      privateChats: '',
+      groupChats: '',
       rssUrl: '',
       caption: '来源：公众号 摸鱼人日历',
+      commands: '摸鱼日历\n摸鱼\n摸鱼人日历',
     },
     settings: [
       { key: 'daily', label: '每天自动发送', type: 'switch' },
       { key: 'time', label: '开始时间（北京时间）', type: 'text', hint: '24小时制 HH:mm，默认 08:00。到点后开始找今天的日历。首次安装如果已经过了这个时间，从明天开始。' },
       { key: 'deadline', label: '截止时间（北京时间）', type: 'text', hint: '默认 12:00，要晚于开始时间。到点仍没有今天的文章就记为今日无更新，不再重试。已经下到的图还会补发给没收到的聊天。' },
-      { key: 'targets', label: '接收聊天', type: 'textarea', hint: '留空发给主人私聊；一行一个 private:QQ号 或 group:群号。手动命令回复当前聊天。' },
+      { key: 'privateChats', label: '私聊接收', type: 'textarea', hint: '一行一个 QQ 号，不用写 private:。留空发给主人。手动命令仍回复当前聊天。' },
+      { key: 'groupChats', label: '群聊接收', type: 'textarea', hint: '一行一个群号，不用写 group:。留空则不发到群。' },
       { key: 'rssUrl', label: 'RSS 地址（可选）', type: 'text', hint: '自建 we-mp-rss / wechat2rss 订阅「摸鱼人日历」的地址。填了就优先用，失败再走搜狗和逛网页。' },
       { key: 'caption', label: '图片附言', type: 'text', hint: '跟在图片后面。留空则只发图。默认注明来源。' },
+      { key: 'commands', label: '发送指令', type: 'textarea', hint: '一行一个。直接发「摸鱼人日历」或 /摸鱼人日历 都会发图。最多 20 个。/moyu 一直可用；后面加「状态」只看任务、不发图。' },
     ],
     async setup(api) {
       const clock = () => beijing(new Date(now()))
@@ -70,6 +74,15 @@ export function createModule({ fetchImpl, now = () => Date.now(), browserOf, sle
           // 读坏了就按空记录继续，不把损坏内容再写回去；下一次成功任务会写成新记录。
           state = {}
           api.log.warn('无法读取摸鱼日历任务记录，先按空记录继续', error.message)
+        }
+      }
+      const legacyTargets = String(api.settings().targets || '').trim()
+      if (legacyTargets) {
+        const split = splitLegacyTargets(legacyTargets)
+        if (!split.privateChats && !split.groupChats) api.log.warn('原来的接收聊天没有可用号码，已忽略')
+        else api.log.info('已把原来的接收聊天拆成私聊和群号')
+        try { await api.saveSettings({ ...split, targets: '' }) } catch (error) {
+          api.log.warn('拆分接收聊天失败', error.message)
         }
       }
 
@@ -164,7 +177,8 @@ export function createModule({ fetchImpl, now = () => Date.now(), browserOf, sle
             await deliver(msg.chatId, card)
             lastError = ''
           })
-          return '今天的摸鱼人日历已发到当前聊天。'
+          // 图已经发到当前聊天。空字符串宿主不会再跟一条文字。
+          return ''
         } catch (error) {
           return `摸鱼日历没取到：${error.message}`
         }
@@ -204,7 +218,7 @@ export function createModule({ fetchImpl, now = () => Date.now(), browserOf, sle
           return
         }
         let chats = []
-        try { chats = parseTargets(settings.targets, cfg.ownerQQ) } catch (error) {
+        try { chats = parseTargets(settings.privateChats, settings.groupChats, cfg.ownerQQ) } catch (error) {
           lastError = error.message
           api.log.warn('摸鱼日历接收聊天配置不对', error.message)
           return
@@ -257,11 +271,35 @@ export function createModule({ fetchImpl, now = () => Date.now(), browserOf, sle
         }
       }
 
+      // 宿主注册时会拷走这个数组的引用，之后改设置，下一条命令就能读到新触发词。
+      const aliases = new Proxy([], {
+        get(_target, prop) {
+          const live = parseCommandAliases(api.settings().commands)
+          if (prop === Symbol.iterator) return live[Symbol.iterator].bind(live)
+          if (prop === 'length') return live.length
+          if (typeof prop === 'string' && /^(?:0|[1-9]\d*)$/.test(prop)) return live[Number(prop)]
+          const value = live[prop]
+          return typeof value === 'function' ? value.bind(live) : value
+        },
+      })
       api.command({
         name: 'moyu',
-        aliases: ['摸鱼日历', '摸鱼'],
-        desc: '发送今天的摸鱼人日历；/moyu 状态 查看定时任务',
+        aliases,
+        desc: '发送今天的摸鱼人日历。触发词在设置里改，带不带斜杠都行；/moyu 状态 查看定时任务',
         run: command,
+      })
+      // 不带斜杠的整句触发词。斜杠形式仍走上面的命令，这里跳过，避免发两次。
+      api.on('message', async (msg) => {
+        if (stopped || !api.isOwner?.(msg.userId)) return false
+        const hit = matchBareCommand(msg.text, parseCommandAliases(api.settings().commands))
+        if (!hit) return false
+        const reply = await command(hit.arg, msg)
+        if (reply) {
+          try { await api.sendText(msg.chatId, reply) } catch (error) {
+            api.log.warn('摸鱼日历回复失败', error.message)
+          }
+        }
+        return true
       })
       api.route('/status', () => ({ ok: true, ...status() }))
       api.every(60000, () => { tick().catch(error => api.log.warn('摸鱼日历定时任务出错', error.message)) }, '摸鱼人日历')

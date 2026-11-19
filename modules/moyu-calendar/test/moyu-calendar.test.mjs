@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { ARTICLE_EXPR, decodeBasic, imagesFromHtml, pickCalendarImage, readArticle } from '../lib/article.mjs'
 import { detectMime, downloadImage, originalImageUrl, pruneCache, readCache, writeCache } from '../lib/image.mjs'
 import { assertPublicHttp, calendarFromRss, findToday, parseFeed } from '../lib/rss.mjs'
-import { decideTick, initialState, parseTargets, RETRY_INTERVAL_MS } from '../lib/schedule.mjs'
+import { decideTick, initialState, matchBareCommand, parseCommandAliases, parseTargets, splitLegacyTargets, RETRY_INTERVAL_MS } from '../lib/schedule.mjs'
 import { locateArticle, matchToday, parseLinkPage, parseResults, searchPageUrl } from '../lib/sogou.mjs'
 import { BROWSER_HINT, resolveCalendar } from '../lib/source.mjs'
 import { beijing, titleMatches } from '../lib/time.mjs'
@@ -259,9 +259,17 @@ test('定时判断：未到点、重试间隔、截止放弃、有图仍补发',
   assert.equal(decideTick({ ...base, settings: { ...settings, time: '8点' } }).action, 'error')
   assert.equal(initialState({ date: STAMP.date, time: '10:00' }, settings).firstSkip, STAMP.date)
   assert.equal(initialState({ date: STAMP.date, time: '07:00' }, settings).firstSkip, '')
-  assert.deepEqual(parseTargets('', '10000'), ['private:10000'])
-  assert.deepEqual(parseTargets('group:200，private:10001\nprivate:10001', ''), ['group:200', 'private:10001'])
-  assert.throws(() => parseTargets('everybody', ''), /接收聊天/)
+  assert.deepEqual(parseCommandAliases('摸鱼日历\n/摸鱼\n摸鱼人日历，摸鱼人日历 /帮助'), ['摸鱼日历', '摸鱼', '摸鱼人日历'])
+  assert.deepEqual(matchBareCommand('摸鱼人日历', ['摸鱼', '摸鱼人日历']), { arg: '' })
+  assert.deepEqual(matchBareCommand('摸鱼人日历状态', ['摸鱼', '摸鱼人日历']), { arg: '状态' })
+  assert.equal(matchBareCommand('/摸鱼人日历', ['摸鱼人日历']), null)
+  assert.equal(matchBareCommand('今天摸鱼人日历真好', ['摸鱼人日历']), null)
+  assert.deepEqual(parseCommandAliases('状态 moyu'), [])
+  assert.deepEqual(parseTargets('', '', '10000'), ['private:10000'])
+  assert.deepEqual(parseTargets('10001\n10001', '200', ''), ['private:10001', 'group:200'])
+  assert.deepEqual(parseTargets('', '200', '10000'), ['private:10000', 'group:200'])
+  assert.deepEqual(splitLegacyTargets('group:200，private:10001'), { privateChats: '10001', groupChats: '200' })
+  assert.throws(() => parseTargets('everybody', '', ''), /私聊 QQ 号/)
 })
 
 test('来源：RSS 成功就不再开浏览器；没有浏览器时说明白', async () => {
@@ -324,12 +332,13 @@ function makeApi(dataRoot, { settings: extra = {}, config = {}, sendSegments, se
   let disposed = null
   const api = {
     settings: () => ({
-      daily: true, time: '08:00', deadline: '12:00', targets: 'private:10001', rssUrl: '', caption: '来源：公众号 摸鱼人日历', ...extra,
+      daily: true, time: '08:00', deadline: '12:00', privateChats: '10001', groupChats: '', rssUrl: '', caption: '来源：公众号 摸鱼人日历', ...extra,
     }),
     config: () => ({ enabled: true, dryRun: false, ownerQQ: '10000', ...config }),
     dataDir: (...parts) => join(dataRoot, ...parts),
     log: { info() {}, warn() {}, error() {} },
     command() {},
+    on() {},
     route(path, fn) { routes[path] = fn },
     every() {},
     onDispose(fn) { disposed = fn },
@@ -359,7 +368,7 @@ test('定时：RSS 图只下一次，失败的聊天半小时后补发', async (
     browserOf: () => { throw new Error('RSS 成功时不该用浏览器') },
   })
   const { api, sent } = makeApi(dataRoot, {
-    settings: { rssUrl: 'https://8.8.8.8/moyu', targets: 'private:10001\ngroup:200', caption: '来源：公众号 摸鱼人日历' },
+    settings: { rssUrl: 'https://8.8.8.8/moyu', privateChats: '10001', groupChats: '200', caption: '来源：公众号 摸鱼人日历' },
     sendSegments: async (chatId) => {
       if (chatId === 'group:200' && failGroup) throw new Error('发送失败')
       sent.push({ chatId, type: 'image' })
@@ -487,4 +496,39 @@ test('命令：没有逛网页时说清楚；卸载后不再发送', async () =>
   const again = await running.tick()
   assert.equal(again, undefined)
   assert.deepEqual(sent, [])
+})
+
+test('发图成功不再回确认句，触发词跟着设置变', async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'moyu-quiet-'))
+  await writeCache(dataRoot, '2026-11-19', PNG, 'image/png')
+  const extra = { commands: '摸鱼人日历', caption: '' }
+  const mod = createModule({ now: () => Date.parse('2026-11-19T20:40:00+08:00') })
+  const { api, sent } = makeApi(dataRoot, { settings: extra })
+  let command = null
+  api.command = spec => { command = spec }
+  await mod.setup(api)
+  assert.deepEqual([...command.aliases], ['摸鱼人日历'])
+  extra.commands = '摸鱼人日历\n摸鱼办'
+  assert.deepEqual([...command.aliases], ['摸鱼人日历', '摸鱼办'])
+  const reply = await command.run('', { chatId: 'private:10000' })
+  assert.equal(reply, '')
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0].type, 'image')
+})
+
+test('不带斜杠的整句触发词会发图，别人说则不管', async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'moyu-bare-'))
+  await writeCache(dataRoot, '2026-11-19', PNG, 'image/png')
+  const mod = createModule({ now: () => Date.parse('2026-11-19T20:50:00+08:00') })
+  const { api, sent } = makeApi(dataRoot, { settings: { commands: '摸鱼人日历', caption: '' } })
+  let onMessage = null
+  api.on = (event, fn) => { if (event === 'message') onMessage = fn }
+  api.isOwner = (userId) => userId === '10000'
+  await mod.setup(api)
+  const taken = await onMessage({ text: '摸鱼人日历', userId: '10000', chatId: 'private:10000' })
+  assert.equal(taken, true)
+  assert.equal(sent.filter(item => item.type === 'image').length, 1)
+  const ignored = await onMessage({ text: '摸鱼人日历', userId: '10001', chatId: 'group:200' })
+  assert.equal(ignored, false)
+  assert.equal(sent.filter(item => item.type === 'image').length, 1)
 })
