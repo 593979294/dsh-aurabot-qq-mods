@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import mod from '../index.mjs'
@@ -333,4 +333,18 @@ test('说说自动打印记录触发来源和说说 ID', async () => {
   assert.equal(history[0].trigger.type, 'moment')
   assert.match(history[0].trigger.reason, /说说 #m-42 发布/)
   assert.equal(history[0].trigger.momentId, 'm-42')
+})
+
+test('设置里的备份目录生效，一次打印一个文件', async () => {
+  const { commands, settings, dir } = await boot()
+  settings.printer = { name: '预览机', transport: 'preview', paperWidthMm: 58 }
+  const custom = await mkdtemp(join(tmpdir(), 'receipt-custom-'))
+  settings.backupDir = custom
+
+  await commands.get('小票').run('每日简报')
+  const files = (await readdir(custom)).filter((f) => f.startsWith('receipt-'))
+  assert.equal(files.length, 1)
+
+  const raw = JSON.parse(await readFile(join(dir, 'state.json'), 'utf8'))
+  assert.equal(raw.history[0].backup, join(custom, files[0]))
 })

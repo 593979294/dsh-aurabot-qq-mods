@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openStore } from '../lib/store.mjs'
@@ -123,4 +123,34 @@ test('落盘后重新打开还能读回来', async () => {
   assert.equal(again.history(5).length, 1)
   const raw = JSON.parse(await readFile(join(dir, 'state.json'), 'utf8'))
   assert.equal(raw.version, 1)
+})
+
+test('自定义备份目录：一次打印一个文件，不动目录里别的文件', async () => {
+  const dir = await tempDir()
+  const custom = await mkdtemp(join(tmpdir(), 'receipt-backup-'))
+  await writeFile(join(custom, 'keep.txt'), '我的笔记')
+  const store = openStore(dir)
+  store.addHistory({ template: '今日总结', text: '第一张', trigger: { type: 'schedule', reason: '每天 18:00' } }, { backupDir: custom })
+  store.addHistory({ template: '今日总结', text: '第二张', trigger: { type: 'schedule', reason: '每天 18:00' } }, { backupDir: custom })
+
+  const files = await readdir(custom)
+  const mine = files.filter((f) => f.startsWith('receipt-'))
+  assert.equal(mine.length, 2)
+  assert.ok(files.includes('keep.txt'))
+  const contents = await Promise.all(mine.map((f) => readFile(join(custom, f), 'utf8')))
+  assert.ok(contents.some((t) => t.includes('第一张')))
+  assert.ok(contents.some((t) => t.includes('第二张')))
+  assert.ok(store.history(2).every((e) => e.backup.startsWith(custom)))
+})
+
+test('备份目录不可写时退回默认目录并记下原因', async () => {
+  const dir = await tempDir()
+  const blocker = join(dir, 'blocked')
+  await writeFile(blocker, 'not a dir')
+  const store = openStore(dir)
+  const item = store.addHistory({ template: 'A', text: '正文', trigger: { type: 'command' } }, { backupDir: blocker })
+  assert.match(item.backup, /^backups\//)
+  assert.match(item.backupError, /不可写/)
+  const saved = await readFile(join(dir, item.backup), 'utf8')
+  assert.match(saved, /正文/)
 })

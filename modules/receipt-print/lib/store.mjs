@@ -1,6 +1,6 @@
 // 本机状态：模板、打印记录、定时去重标记。都放在 modules-data/receipt-print/。
 import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync, readdirSync, unlinkSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, isAbsolute } from 'node:path'
 
 const MAX_TEMPLATES = 30
 const MAX_HISTORY = 30
@@ -67,6 +67,7 @@ export function normalizeHistoryEntry(raw = {}) {
       momentId: String(trigger.momentId || '').slice(0, 80),
     },
     backup: String(raw.backup || ''),
+    backupError: String(raw.backupError || ''),
   }
 }
 
@@ -77,13 +78,20 @@ function safeName(name) {
 function stamp(at) {
   const d = new Date(at)
   const pad = (n, w = 2) => String(n).padStart(w, '0')
-  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+  // 带毫秒，保证同一秒内连打两张也是两个独立文件
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}${pad(d.getMilliseconds(), 3)}`
 }
 
-function writeBackup(dir, entry) {
-  const backups = join(dir, 'backups')
-  mkdirSync(backups, { recursive: true })
-  const file = `${stamp(entry.at)}-${safeName(entry.template)}.txt`
+function resolveBackupTarget(dir, customDir) {
+  const target = String(customDir || '').trim()
+  if (!target) return join(dir, 'backups')
+  // 相对路径按模块数据目录解析，绝对路径（如 D:\小票备份）原样使用
+  return isAbsolute(target) ? target : join(dir, target)
+}
+
+function writeBackup(dir, entry, customDir = '') {
+  const target = resolveBackupTarget(dir, customDir)
+  const file = `receipt-${stamp(entry.at)}-${safeName(entry.template)}.txt`
   const lines = [
     `时间：${new Date(entry.at).toLocaleString('zh-CN', { hour12: false })}`,
     `来源：${entry.template || '未知'}`,
@@ -98,17 +106,33 @@ function writeBackup(dir, entry) {
     entry.text || '（这次没有记录正文）',
     '',
   ]
-  writeFileSync(join(backups, file), lines.join('\n'), 'utf8')
-  return `backups/${file}`
+  const body = lines.join('\n')
+
+  try {
+    mkdirSync(target, { recursive: true })
+    writeFileSync(join(target, file), body, 'utf8')
+    pruneBackups(target)
+    return { path: String(customDir || '').trim() ? join(target, file) : join('backups', file) }
+  } catch (error) {
+    // 自定义目录不可写时退回模块数据目录，别让打印记录丢失
+    const fallback = join(dir, 'backups')
+    mkdirSync(fallback, { recursive: true })
+    writeFileSync(join(fallback, file), body, 'utf8')
+    pruneBackups(fallback)
+    return {
+      path: join('backups', file),
+      error: `备份目录不可写（${target}）：${error.message}`,
+    }
+  }
 }
 
-function pruneBackups(dir) {
+// 只清理本模块生成的 receipt-*.txt，用户自己放在同一目录的文件不动。
+function pruneBackups(target) {
   try {
-    const backups = join(dir, 'backups')
-    if (!existsSync(backups)) return
-    const files = readdirSync(backups).filter((f) => f.endsWith('.txt')).sort()
+    if (!existsSync(target)) return
+    const files = readdirSync(target).filter((f) => /^receipt-\d{8}-\d{9}-.*\.txt$/.test(f)).sort()
     for (const old of files.slice(0, Math.max(0, files.length - MAX_BACKUPS))) {
-      try { unlinkSync(join(backups, old)) } catch { /* 删不掉就算了 */ }
+      try { unlinkSync(join(target, old)) } catch { /* 删不掉就算了 */ }
     }
   } catch { /* 备份清理失败不影响打印 */ }
 }
@@ -172,17 +196,19 @@ export function openStore(dir) {
       save()
       return template
     },
-    addHistory(entry) {
+    addHistory(entry, options = {}) {
       const item = normalizeHistoryEntry({ at: Date.now(), ...entry })
       if (item.text) {
         try {
-          item.backup = writeBackup(dir, item)
-          pruneBackups(dir)
+          const saved = writeBackup(dir, item, options.backupDir)
+          item.backup = saved.path
+          if (saved.error) item.backupError = saved.error
         } catch { /* 备份失败不影响打印记录 */ }
       }
       state.history.unshift(item)
       state.history = state.history.slice(0, MAX_HISTORY)
       save()
+      return item
     },
     history(limit = 10) {
       return state.history.slice(0, Math.max(1, Number(limit) || 10))

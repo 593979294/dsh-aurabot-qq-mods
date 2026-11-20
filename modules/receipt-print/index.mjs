@@ -40,6 +40,7 @@ const DEFAULTS = {
   showHeader: true,
   fun: true,
   reportErrors: true,
+  backupDir: '',
   footer: '',
   qrText: '',
   timeoutMs: 8000,
@@ -117,6 +118,7 @@ function normalizeSettings(raw = {}) {
     showHeader: settings.showHeader !== false,
     fun: settings.fun !== false,
     reportErrors: settings.reportErrors !== false,
+    backupDir: String(settings.backupDir || '').trim().slice(0, 500),
     momentAuto: settings.momentAuto !== false,
     momentIncludeSelf: settings.momentIncludeSelf === true,
     momentImages: settings.momentImages !== false,
@@ -163,9 +165,9 @@ async function readBody(req) {
 export default {
   id: 'receipt-print',
   name: '小票打印',
-  version: '0.7.0',
+  version: '0.8.0',
   api: 1,
-  description: '把模板和提示词变成热敏小票：定时或随时触发，纸宽按毫米自适应排版，配图缩放调色后打印并自动切纸；每次打印在本机保存正文与触发来源备份；内置 ESC/POS 指令表和字节解码，可查打印机状态并把返回字节翻译成中文；打印失败或打印机报错会主动私聊主人。支持 Windows USB 队列、网口 9100、CUPS 和预览。',
+  description: '把模板和提示词变成热敏小票：定时或随时触发，纸宽按毫米自适应排版，配图缩放调色后打印并自动切纸；每次打印在本机保存正文与触发来源备份，备份目录可自定义；内置 ESC/POS 指令表和字节解码，可查打印机状态并把返回字节翻译成中文；打印失败或打印机报错会主动私聊主人。支持 Windows USB 队列、网口 9100、CUPS 和预览。',
   defaults: DEFAULTS,
   settings: [
     { key: 'enabled', label: '启用', type: 'switch', hint: '关掉后定时任务不再触发，命令仍会提示已关闭' },
@@ -178,6 +180,7 @@ export default {
     { key: 'showHeader', label: '打印页眉', type: 'switch', hint: '显示模板名、日期时间和分隔线' },
     { key: 'fun', label: '每日彩蛋', type: 'switch', hint: '模板底部加幸运数字、幸运色、关键词和小图案，同一天重打内容不变' },
     { key: 'reportErrors', label: '出错私聊主人', type: 'switch', hint: '打印失败或打印机返回错误状态时，主动私聊主人账号' },
+    { key: 'backupDir', label: '备份目录', type: 'text', placeholder: '留空 = modules-data/receipt-print/backups；可粘贴绝对路径', hint: '每次打印写一个 receipt-*.txt；目录不可写时自动退回默认目录' },
     { key: 'footer', label: '全局页脚', type: 'text', placeholder: '可留空；支持 {date} 等占位符' },
     { key: 'qrText', label: '二维码内容', type: 'text', placeholder: '留空不打印；支持 {date} 等占位符' },
     { key: 'timeoutMs', label: '打印超时（毫秒）', type: 'number', min: 1000, max: 30000, step: 500 },
@@ -204,6 +207,18 @@ export default {
     store.seedSummary(SEED_SUMMARY)
 
     const settingsNow = () => normalizeSettings(api.settings())
+
+    // 每次打印都记一条，并按设置把正文写到备份目录（一次一个文件）。
+    function recordPrint(entry) {
+      try {
+        const item = store.addHistory(entry, { backupDir: settingsNow().backupDir })
+        if (item?.backupError) log.warn?.(`小票备份：${item.backupError}`)
+        return item
+      } catch (error) {
+        log.warn?.(`写打印记录失败：${error.message}`)
+        return null
+      }
+    }
 
     // ---------- 错误主动汇报 ----------
     const reported = new Map()
@@ -317,7 +332,7 @@ export default {
           dataDir: api.dataDir(),
         })
 
-        store.addHistory({
+        recordPrint({
           template: template.name,
           printer: printer.name,
           transport: printer.transport,
@@ -367,7 +382,7 @@ export default {
         feed: 3,
       })
       const result = await sendBytes(printer, bytes, { timeoutMs: settings.timeoutMs, dataDir: api.dataDir() })
-      store.addHistory({
+      recordPrint({
         template: '直接打印', printer: printer.name, transport: printer.transport,
         ok: result.ok === true, error: result.error || '', chars: preview.length, preview: false,
         text: preview,
@@ -463,7 +478,7 @@ export default {
       })
       const result = await sendBytes(printer, bytes, { timeoutMs: settings.timeoutMs, dataDir: api.dataDir() })
       const momentId = String(row?.id ?? row?.tid ?? '')
-      store.addHistory({
+      recordPrint({
         template: '说说',
         printer: printer.name,
         transport: printer.transport,
@@ -602,7 +617,7 @@ export default {
       }
 
       const result = await sendBytes(printer, bytes, { timeoutMs: settings.timeoutMs, dataDir: api.dataDir() })
-      store.addHistory({
+      recordPrint({
         template: customHex ? '自检（自定义指令）' : '自检',
         printer: printer.name,
         transport: printer.transport,
