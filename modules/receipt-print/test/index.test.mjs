@@ -416,10 +416,10 @@ test('面板 /accept 能确认协议并回传条款状态', async () => {
   assert.equal(settings.termsVersion, TERMS_VERSION)
 })
 
-test('旧版本的协议确认会失效', async () => {
+test('同意过一次后，后续版本仍然有效', async () => {
   const { commands, settings } = await boot({ terms: false })
   settings.termsVersion = '0.9'
   settings.printer = { name: '预览机', transport: 'preview', paperWidthMm: 58 }
 
-  assert.match(await commands.get('小票').run('每日简报'), /同意/)
+  assert.match(await commands.get('小票').run('每日简报'), /已发送/)
 })

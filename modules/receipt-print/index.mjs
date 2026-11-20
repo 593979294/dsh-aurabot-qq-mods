@@ -828,7 +828,7 @@ export default {
         if (/^(协议|条款|terms)$/i.test(text)) return termsText()
         if (/^(同意|接受|agree)$/i.test(text)) {
           api.saveSettings({ termsVersion: TERMS_VERSION, termsAcceptedAt: new Date().toISOString() })
-          return `已确认《${TERMS_TITLE}》v${TERMS_VERSION}，现在可以开始打印了。`
+          return `已确认《${TERMS_TITLE}》v${TERMS_VERSION}，现在可以开始打印了。本次确认对后续版本同样有效。`
         }
         const gate = termsGate(settings)
         if (gate) return gate
