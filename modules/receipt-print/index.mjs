@@ -2,6 +2,7 @@
 // 本文件只做接线，排版/传输/存储都在 lib/。
 import { openStore } from './lib/store.mjs'
 import { normalizePrinter, sendBytes, queryStatus, TRANSPORT_LABELS } from './lib/transport.mjs'
+import { renderDriverStatus } from './lib/win-status.mjs'
 import { buildReceiptBytes } from './lib/escpos.mjs'
 import { decodeEscpos, decodeStatusBytes, searchCommands } from './lib/escpos-decode.mjs'
 import { buildLines, buildPrompt, cleanModelText, previewText, formatDate } from './lib/templates.mjs'
@@ -148,7 +149,7 @@ async function readBody(req) {
 export default {
   id: 'receipt-print',
   name: '小票打印',
-  version: '0.5.0',
+  version: '0.6.0',
   api: 1,
   description: '把模板和提示词变成热敏小票：定时或随时触发，纸宽按毫米自适应排版，配图缩放调色后打印并自动切纸；内置 ESC/POS 指令表和字节解码，可查打印机状态并把返回字节翻译成中文；打印失败或打印机报错会主动私聊主人。支持 Windows USB 队列、网口 9100、CUPS 和预览。',
   defaults: DEFAULTS,
@@ -226,6 +227,18 @@ export default {
       return cleanModelText(text, { maxChars: settingsNow().maxChars })
     }
 
+    /** 失败时补一条 Windows 驱动状态，方便判断是卡纸还是根本没联机。 */
+    async function failureDetail(printer, reason) {
+      let detail = `打印机：${printer.name}\n原因：${reason || '未知错误'}`
+      if (printer.transport === 'windows') {
+        try {
+          const status = await queryStatus(printer, { timeoutMs: 6000 })
+          if (status?.driver) detail += `\n${renderDriverStatus(status.driver, printer.name)}`
+        } catch { /* 状态读不到就只报原始错误 */ }
+      }
+      return detail
+    }
+
     /**
      * 生成并打印一个模板。preview=true 时只返回版面文字，不碰打印机。
      * 返回 { ok, message, preview?, lines? }
@@ -301,7 +314,7 @@ export default {
         })
 
         if (!result.ok) {
-          reportError('打印失败', `模板：${template.name}\n打印机：${printer.name}\n原因：${result.error || '未知错误'}`)
+          await reportError('打印失败', await failureDetail(printer, result.error))
           return { ok: false, message: `打印失败：${result.error || '未知错误'}`, preview: text }
         }
         return { ok: true, message: `已发送到「${printer.name}」（${TRANSPORT_LABELS[printer.transport] || printer.transport}）` }
@@ -343,7 +356,7 @@ export default {
         ok: result.ok === true, error: result.error || '', chars: preview.length, preview: false,
       })
       if (!result.ok) {
-        reportError('直接打印失败', `打印机：${printer.name}\n原因：${result.error || '未知错误'}`)
+        await reportError('直接打印失败', await failureDetail(printer, result.error))
       }
       return result.ok
         ? { ok: true, message: `已发送到「${printer.name}」` }
@@ -574,7 +587,7 @@ export default {
         preview: false,
       })
       if (!result.ok) {
-        reportError('自检失败', `打印机：${printer.name}\n原因：${result.error || '未知错误'}`)
+        await reportError('自检失败', await failureDetail(printer, result.error))
         return { ok: false, message: `自检失败：${result.error || '未知错误'}` }
       }
       return {
@@ -595,6 +608,13 @@ export default {
       if (!result.ok) {
         reportError('状态查询失败', `打印机：${printer.name}\n原因：${result.error || '未知错误'}`)
         return { ok: false, message: `状态查询失败：${result.error || '未知错误'}` }
+      }
+      if (result.driver) {
+        const text = renderDriverStatus(result.driver, printer.name)
+        if (result.driver.problems.length) {
+          reportError('打印机状态异常', `打印机：${printer.name}\n${text}`)
+        }
+        return { ok: true, driver: result.driver, message: text }
       }
       const bytes = Buffer.isBuffer(result.bytes) ? result.bytes : Buffer.from(result.bytes || [])
       if (!bytes.length) {

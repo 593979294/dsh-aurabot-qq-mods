@@ -95,8 +95,8 @@ test('网口状态查询：发出 DLE EOT，读回 4 个状态字节', async () 
   assert.deepEqual([...received[0]], [...statusQueryBytes()])
 })
 
-test('单向通道不假装能读状态', async () => {
-  const result = await queryStatus(normalizePrinter({ transport: 'windows', target: 'POS-58' }))
+test('CUPS 只能发送，状态查询明确说不支持', async () => {
+  const result = await queryStatus(normalizePrinter({ transport: 'cups', target: 'POS-58' }))
   assert.equal(result.ok, false)
   assert.equal(result.supported, false)
   assert.ok(result.error.includes('只能发'))

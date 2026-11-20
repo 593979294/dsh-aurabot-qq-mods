@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process'
 import { writeFile, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { normalizePaperMm, normalizeEffectiveMm, DEFAULT_PAPER_MM } from './paper.mjs'
+import { queryWindowsStatus } from './win-status.mjs'
 
 export const TRANSPORTS = ['windows', 'tcp', 'cups', 'preview']
 
@@ -90,23 +91,32 @@ export function statusQueryBytes(types = [1, 2, 3, 4]) {
 }
 
 /**
- * 查询打印机状态。只有网口 9100 是双向的；Windows 队列和 CUPS 只能单向发送。
- * 返回 { ok, supported, bytes, error }，解码交给调用方。
+ * 查询打印机状态。
+ *   windows  读驱动通过 Bidi 上报的状态（离线/缺纸/卡纸/开盖），属驱动视角
+ *   tcp      9100 双向回读，能拿到实时传感器状态
+ *   cups     只能单向发送
+ * 返回 { ok, supported, driver?, bytes?, error? }，字节解码交给调用方。
  */
 export function queryStatus(printer, options = {}) {
   const timeoutMs = options.timeoutMs || 3000
   const waitMs = options.waitMs || 600
   const connectImpl = options.connectImpl || connect
+  if (!printer) return Promise.resolve({ ok: false, supported: false, error: '还没配置打印机' })
+  if (printer.transport === 'preview') {
+    return Promise.resolve({ ok: false, supported: false, error: '预览模式没有真实设备，读不到状态' })
+  }
+  if (printer.transport === 'windows') {
+    return queryWindowsStatus(printer, {
+      timeoutMs: Math.max(timeoutMs, 6000),
+      spawnImpl: options.spawnImpl,
+    })
+  }
   return new Promise((resolve) => {
-    if (!printer) return resolve({ ok: false, supported: false, error: '还没配置打印机' })
-    if (printer.transport === 'preview') {
-      return resolve({ ok: false, supported: false, error: '预览模式没有真实设备，读不到状态' })
-    }
     if (printer.transport !== 'tcp') {
       return resolve({
         ok: false,
         supported: false,
-        error: `${TRANSPORT_LABELS[printer.transport] || printer.transport}只能发送、不能读取，状态查询需要网口 9100 直连`,
+        error: `${TRANSPORT_LABELS[printer.transport] || printer.transport}只能发送、不能读取，状态查询需要网口 9100 直连或串口`,
       })
     }
     const { host, port } = parseTcpTarget(printer)
