@@ -33,7 +33,7 @@ sha256sum -c SOURCE.sha256
 清单自身 sha256：
 
 ```text
-1ab2a9d33df35dba9e1847668ebefab3dc68c6de589c3c3414d1fc8c899c643b
+14e3e50c948713bd901af8ab7e2f6a3fcce649bd2fa6f4ab08a6e766e4d09cc1
 ```
 
 校验通过才说明随包源码与锁定的 1.1.7 发版一致。
