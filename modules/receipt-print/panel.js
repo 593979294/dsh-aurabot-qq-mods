@@ -41,6 +41,9 @@ return function Panel({ settings, toast }) {
   const [text, setText] = useState('')
   const [pform, setPform] = useState({ name: '', transport: 'windows', target: '', paperWidthMm: 58 })
   const [live, setLive] = useState(null)
+  const [diag, setDiag] = useState('')
+  const [hex, setHex] = useState('1B 40 1B 61 01 1D 56 01')
+  const [decoded, setDecoded] = useState('')
 
   const reload = async () => {
     const r = await call('/templates').catch(() => null)
@@ -213,6 +216,37 @@ return function Panel({ settings, toast }) {
         h(ui.Btn, { onClick: savePrinter }, '保存'),
         h(ui.Btn, { disabled: busy === 'test', onClick: testPrinter }, busy === 'test' ? '发送中…' : '保存并自检'),
       ),
+    ),
+
+    h(ui.Card, { title: '打印机诊断' },
+      h('p', { className: 'ab-note' }, '状态回读需要网口 9100 直连；Windows 队列和 CUPS 只能发不能读。解码框可以贴发送的指令，也可以贴打印机返回的十六进制。'),
+      h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
+        h(ui.Btn, {
+          disabled: busy === 'status',
+          onClick: async () => {
+            setBusy('status')
+            const r = await call('/status', {}).catch(() => null)
+            setBusy('')
+            setDiag(r?.message || '查询失败')
+          },
+        }, busy === 'status' ? '查询中…' : '查询打印机状态'),
+      ),
+      diag && h('pre', { className: 'ab-small', style: { whiteSpace: 'pre-wrap', marginTop: 10, padding: 10, border: '1px solid rgba(128,128,128,.25)', borderRadius: 8 } }, diag),
+      h('div', { style: { display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' } },
+        h('input', {
+          style: { ...field, flex: '1 1 240px' },
+          placeholder: '十六进制，例如 1B 40 1B 61 01',
+          value: hex,
+          onChange: (e) => setHex(e.target.value),
+        }),
+        h(ui.Btn, {
+          onClick: async () => {
+            const r = await call('/decode', { hex }).catch(() => null)
+            setDecoded(r?.message || '解码失败')
+          },
+        }, '解码'),
+      ),
+      decoded && h('pre', { className: 'ab-small', style: { whiteSpace: 'pre-wrap', marginTop: 10, padding: 10, border: '1px solid rgba(128,128,128,.25)', borderRadius: 8 } }, decoded),
     ),
 
     h(ui.Card, { title: '说说自动打印' },

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer } from 'node:net'
 import { EventEmitter } from 'node:events'
-import { normalizePrinter, parseTcpTarget, windowsArgs, sendBytes, WINDOWS_SCRIPT } from '../lib/transport.mjs'
+import { normalizePrinter, parseTcpTarget, windowsArgs, sendBytes, WINDOWS_SCRIPT, queryStatus, statusQueryBytes } from '../lib/transport.mjs'
 
 function fakeSpawn(captured) {
   return (command, args, options) => {
@@ -74,6 +74,32 @@ test('TCP：连不上会报错而不是卡住', async () => {
   const result = await sendBytes(printer, Buffer.from('x'), { timeoutMs: 800 })
   assert.equal(result.ok, false)
   assert.ok(result.error)
+})
+
+test('网口状态查询：发出 DLE EOT，读回 4 个状态字节', async () => {
+  const received = []
+  const server = createServer((socket) => {
+    socket.on('data', (chunk) => {
+      received.push(chunk)
+      socket.write(Buffer.from([0x00, 0x00, 0x00, 0x40]))
+    })
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const port = server.address().port
+  const printer = normalizePrinter({ name: 'lan', transport: 'tcp', target: `127.0.0.1:${port}` })
+  const result = await queryStatus(printer, { timeoutMs: 1000, waitMs: 200 })
+  server.close()
+  assert.equal(result.ok, true)
+  assert.equal(result.supported, true)
+  assert.deepEqual([...result.bytes], [0x00, 0x00, 0x00, 0x40])
+  assert.deepEqual([...received[0]], [...statusQueryBytes()])
+})
+
+test('单向通道不假装能读状态', async () => {
+  const result = await queryStatus(normalizePrinter({ transport: 'windows', target: 'POS-58' }))
+  assert.equal(result.ok, false)
+  assert.equal(result.supported, false)
+  assert.ok(result.error.includes('只能发'))
 })
 
 test('CUPS：调用 lp -o raw', async () => {

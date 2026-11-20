@@ -13,12 +13,13 @@ function bodyReq(payload) {
   }
 }
 
-async function boot({ diary = null } = {}) {
+async function boot({ diary = null, config = null, sendText = null } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'receipt-index-'))
   const settings = {}
   const commands = new Map()
   const routes = new Map()
   const ticks = new Map()
+  const sent = []
   const api = {
     id: 'receipt-print',
     settings: () => ({ ...settings }),
@@ -28,12 +29,17 @@ async function boot({ diary = null } = {}) {
     route: (path, fn) => routes.set(path, fn),
     every: (ms, fn, name) => ticks.set(name || String(ms), fn),
     use: (id) => (id === 'diary' ? diary : null),
+    config: () => config || {},
+    sendText: async (target, text) => {
+      sent.push({ target, text })
+      if (sendText) await sendText(target, text)
+    },
     log: { info() {}, warn() {}, error() {}, debug() {} },
     ask: async () => '今天适合打印小票。\n第二行',
     think: async () => '想好了，今天适合打印小票。',
   }
   const exports = mod.setup(api)
-  return { dir, settings, commands, routes, ticks, exports }
+  return { dir, settings, commands, routes, ticks, exports, sent }
 }
 
 test('启动后自动种下「每日简报」和「今日总结」', async () => {
@@ -256,4 +262,36 @@ test('说说：配图会按纸宽做成位图后再打印', async () => {
   const history = routes.get('/history')().history
   assert.equal(history.length, 1)
   assert.equal(history[0].images, 1)
+})
+
+test('/小票 解码 能读懂发出去的指令', async () => {
+  const { commands } = await boot()
+  const text = await commands.get('小票').run('解码 1B 40 1B 61 01 1D 56 01')
+  assert.match(text, /初始化打印机/)
+  assert.match(text, /居中/)
+  assert.match(text, /半切/)
+})
+
+test('/小票 指令 能查指令表', async () => {
+  const { commands } = await boot()
+  const text = await commands.get('小票').run('指令 切纸')
+  assert.match(text, /GS V/)
+})
+
+test('/小票 状态 在预览模式下说明读不到', async () => {
+  const { settings, commands } = await boot()
+  settings.printer = { name: 'demo', transport: 'preview', paperWidthMm: 58 }
+  const text = await commands.get('小票').run('状态')
+  assert.match(text, /预览模式/)
+})
+
+test('打印失败会私聊主人', async () => {
+  const { settings, commands, sent } = await boot({ config: { ownerQQ: '10001' } })
+  settings.printer = { name: 'lan', transport: 'tcp', target: '127.0.0.1:1', paperWidthMm: 58 }
+  const text = await commands.get('小票').run('每日简报')
+  assert.match(text, /打印失败/)
+  await new Promise((resolve) => setTimeout(resolve, 100))
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0].target, 'private:10001')
+  assert.match(sent[0].text, /打印失败/)
 })

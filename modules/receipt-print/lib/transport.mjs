@@ -84,6 +84,70 @@ function tcpSend(printer, bytes, timeoutMs, connectImpl) {
   })
 }
 
+// DLE EOT 1..4：打印机状态 / 脱机状态 / 错误状态 / 纸张传感器
+export function statusQueryBytes(types = [1, 2, 3, 4]) {
+  return Buffer.concat(types.map((type) => Buffer.from([0x10, 0x04, type])))
+}
+
+/**
+ * 查询打印机状态。只有网口 9100 是双向的；Windows 队列和 CUPS 只能单向发送。
+ * 返回 { ok, supported, bytes, error }，解码交给调用方。
+ */
+export function queryStatus(printer, options = {}) {
+  const timeoutMs = options.timeoutMs || 3000
+  const waitMs = options.waitMs || 600
+  const connectImpl = options.connectImpl || connect
+  return new Promise((resolve) => {
+    if (!printer) return resolve({ ok: false, supported: false, error: '还没配置打印机' })
+    if (printer.transport === 'preview') {
+      return resolve({ ok: false, supported: false, error: '预览模式没有真实设备，读不到状态' })
+    }
+    if (printer.transport !== 'tcp') {
+      return resolve({
+        ok: false,
+        supported: false,
+        error: `${TRANSPORT_LABELS[printer.transport] || printer.transport}只能发送、不能读取，状态查询需要网口 9100 直连`,
+      })
+    }
+    const { host, port } = parseTcpTarget(printer)
+    if (!host) return resolve({ ok: false, supported: false, error: '没有填打印机 IP' })
+
+    let socket
+    try {
+      socket = connectImpl({ host, port })
+    } catch (error) {
+      return resolve({ ok: false, supported: true, error: `连接失败：${error.message}` })
+    }
+
+    const chunks = []
+    let done = false
+    let readTimer = null
+    const finish = (result) => {
+      if (done) return
+      done = true
+      clearTimeout(connectTimer)
+      if (readTimer) clearTimeout(readTimer)
+      try { socket.destroy() } catch { /* 已经关了 */ }
+      resolve(result)
+    }
+    const connectTimer = setTimeout(
+      () => finish({ ok: false, supported: true, error: `连接超时（${host}:${port}）` }),
+      timeoutMs,
+    )
+
+    socket.on('connect', () => {
+      socket.write(statusQueryBytes())
+      readTimer = setTimeout(
+        () => finish({ ok: true, supported: true, bytes: Buffer.concat(chunks) }),
+        Math.max(200, waitMs),
+      )
+    })
+    socket.on('data', (chunk) => chunks.push(chunk))
+    socket.on('error', (error) => finish({ ok: false, supported: true, error: `连接失败：${error.message}` }))
+    socket.on('close', () => finish({ ok: true, supported: true, bytes: Buffer.concat(chunks) }))
+  })
+}
+
 function cupsSend(printer, bytes, timeoutMs, spawnImpl) {
   return new Promise((resolve) => {
     if (!printer.target) return resolve({ ok: false, error: '没有填 CUPS 队列名' })

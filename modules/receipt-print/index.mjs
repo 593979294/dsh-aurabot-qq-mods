@@ -1,8 +1,9 @@
 // 小票打印：模板 + 提示词 → 模型生成 → ESC/POS → 热敏打印机。
 // 本文件只做接线，排版/传输/存储都在 lib/。
 import { openStore } from './lib/store.mjs'
-import { normalizePrinter, sendBytes, TRANSPORT_LABELS } from './lib/transport.mjs'
+import { normalizePrinter, sendBytes, queryStatus, TRANSPORT_LABELS } from './lib/transport.mjs'
 import { buildReceiptBytes } from './lib/escpos.mjs'
+import { decodeEscpos, decodeStatusBytes, searchCommands } from './lib/escpos-decode.mjs'
 import { buildLines, buildPrompt, cleanModelText, previewText, formatDate } from './lib/templates.mjs'
 import { resolvePaper, parseHexPayload } from './lib/paper.mjs'
 import { tick } from './lib/scheduler.mjs'
@@ -23,6 +24,7 @@ const DEFAULTS = {
   maxChars: 1200,
   showHeader: true,
   fun: true,
+  reportErrors: true,
   footer: '',
   qrText: '',
   timeoutMs: 8000,
@@ -99,6 +101,7 @@ function normalizeSettings(raw = {}) {
     timeoutMs: Math.max(1000, Math.min(30000, Number(settings.timeoutMs) || DEFAULTS.timeoutMs)),
     showHeader: settings.showHeader !== false,
     fun: settings.fun !== false,
+    reportErrors: settings.reportErrors !== false,
     momentAuto: settings.momentAuto !== false,
     momentIncludeSelf: settings.momentIncludeSelf === true,
     momentImages: settings.momentImages !== false,
@@ -145,9 +148,9 @@ async function readBody(req) {
 export default {
   id: 'receipt-print',
   name: '小票打印',
-  version: '0.4.2',
+  version: '0.5.0',
   api: 1,
-  description: '把模板和提示词变成热敏小票：可定时生成或随时触发；纸宽按毫米设置并自适应排版，支持一键 ESC/POS 自检（指令可替换）、Windows USB 打印队列、网口 9100 和 CUPS；她每次发说说会自动排版打印（配图按纸宽缩放），打完自动切纸；没接打印机时可先预览版面。',
+  description: '把模板和提示词变成热敏小票：定时或随时触发，纸宽按毫米自适应排版，配图缩放调色后打印并自动切纸；内置 ESC/POS 指令表和字节解码，可查打印机状态并把返回字节翻译成中文；打印失败或打印机报错会主动私聊主人。支持 Windows USB 队列、网口 9100、CUPS 和预览。',
   defaults: DEFAULTS,
   settings: [
     { key: 'enabled', label: '启用', type: 'switch', hint: '关掉后定时任务不再触发，命令仍会提示已关闭' },
@@ -159,6 +162,7 @@ export default {
     { key: 'maxChars', label: '正文最大字数', type: 'number', min: 100, max: 4000, step: 100, hint: '模型输出超长会被截断' },
     { key: 'showHeader', label: '打印页眉', type: 'switch', hint: '显示模板名、日期时间和分隔线' },
     { key: 'fun', label: '每日彩蛋', type: 'switch', hint: '模板底部加幸运数字、幸运色、关键词和小图案，同一天重打内容不变' },
+    { key: 'reportErrors', label: '出错私聊主人', type: 'switch', hint: '打印失败或打印机返回错误状态时，主动私聊主人账号' },
     { key: 'footer', label: '全局页脚', type: 'text', placeholder: '可留空；支持 {date} 等占位符' },
     { key: 'qrText', label: '二维码内容', type: 'text', placeholder: '留空不打印；支持 {date} 等占位符' },
     { key: 'timeoutMs', label: '打印超时（毫秒）', type: 'number', min: 1000, max: 30000, step: 500 },
@@ -185,6 +189,35 @@ export default {
     store.seedSummary(SEED_SUMMARY)
 
     const settingsNow = () => normalizeSettings(api.settings())
+
+    // ---------- 错误主动汇报 ----------
+    const reported = new Map()
+    function ownerChat() {
+      const config = typeof api.config === 'function' ? (api.config() || {}) : {}
+      const owner = config.ownerQQ || config.owner || ''
+      return owner ? `private:${owner}` : ''
+    }
+
+    async function reportError(title, detail = '') {
+      if (settingsNow().reportErrors === false) return
+      const target = ownerChat()
+      if (!target) {
+        log.warn?.(`没有配置主人 QQ，错误未汇报：${title}`)
+        return
+      }
+      const text = `【小票打印】${title}${detail ? `\n${detail}` : ''}`.slice(0, 900)
+      const key = text.slice(0, 200)
+      const now = Date.now()
+      if (now - (reported.get(key) || 0) < 10 * 60 * 1000) return
+      reported.set(key, now)
+      try {
+        if (typeof api.sendText === 'function') await api.sendText(target, text)
+        else if (typeof api.send === 'function') await api.send(target, text)
+        else log.warn?.('宿主 API 不支持主动发消息，错误只写日志')
+      } catch (error) {
+        log.warn?.(`错误汇报发送失败：${error.message}`)
+      }
+    }
 
     async function generate(template, prompt) {
       const text = template.engine === 'think' && typeof api.think === 'function'
@@ -267,7 +300,10 @@ export default {
           preview: false,
         })
 
-        if (!result.ok) return { ok: false, message: `打印失败：${result.error || '未知错误'}`, preview: text }
+        if (!result.ok) {
+          reportError('打印失败', `模板：${template.name}\n打印机：${printer.name}\n原因：${result.error || '未知错误'}`)
+          return { ok: false, message: `打印失败：${result.error || '未知错误'}`, preview: text }
+        }
         return { ok: true, message: `已发送到「${printer.name}」（${TRANSPORT_LABELS[printer.transport] || printer.transport}）` }
       } finally {
         running.delete(template.id)
@@ -306,6 +342,9 @@ export default {
         template: '直接打印', printer: printer.name, transport: printer.transport,
         ok: result.ok === true, error: result.error || '', chars: preview.length, preview: false,
       })
+      if (!result.ok) {
+        reportError('直接打印失败', `打印机：${printer.name}\n原因：${result.error || '未知错误'}`)
+      }
       return result.ok
         ? { ok: true, message: `已发送到「${printer.name}」` }
         : { ok: false, message: `打印失败：${result.error || '未知错误'}`, preview }
@@ -402,7 +441,10 @@ export default {
         images: images.length,
         preview: false,
       })
-      if (!result.ok) log.warn?.(`说说小票打印失败：${result.error || '未知错误'}`)
+      if (!result.ok) {
+        log.warn?.(`说说小票打印失败：${result.error || '未知错误'}`)
+        reportError('说说小票打印失败', `打印机：${printer.name}\n原因：${result.error || '未知错误'}`)
+      }
     }
 
     // diary 是内置模块；没有就说说明宿主不支持，静默跳过。
@@ -531,12 +573,52 @@ export default {
         chars: customHex ? customHex.length : paper.columns,
         preview: false,
       })
-      if (!result.ok) return { ok: false, message: `自检失败：${result.error || '未知错误'}` }
+      if (!result.ok) {
+        reportError('自检失败', `打印机：${printer.name}\n原因：${result.error || '未知错误'}`)
+        return { ok: false, message: `自检失败：${result.error || '未知错误'}` }
+      }
       return {
         ok: true,
         message: customHex
           ? `已把自定义自检指令（${bytes.length} 字节）发到「${printer.name}」`
           : `自检页已发到「${printer.name}」（${paper.paperMm}mm / ${paper.columns} 列）`,
+      }
+    }
+
+    // ---------- 状态查询与指令解码 ----------
+    async function printerStatus() {
+      const settings = settingsNow()
+      const printer = currentPrinter(settings)
+      if (!printer) return { ok: false, message: printerList() }
+      const result = await queryStatus(printer, { timeoutMs: settings.timeoutMs })
+      if (!result.supported) return { ok: false, message: result.error }
+      if (!result.ok) {
+        reportError('状态查询失败', `打印机：${printer.name}\n原因：${result.error || '未知错误'}`)
+        return { ok: false, message: `状态查询失败：${result.error || '未知错误'}` }
+      }
+      const bytes = Buffer.isBuffer(result.bytes) ? result.bytes : Buffer.from(result.bytes || [])
+      if (!bytes.length) {
+        return {
+          ok: true,
+          message: `打印机「${printer.name}」没有返回状态。可能不支持 DLE EOT，或固件把回传关了。`,
+        }
+      }
+      const decoded = decodeStatusBytes(bytes)
+      if (decoded.errors.length) {
+        reportError('打印机返回错误', `打印机：${printer.name}\n${decoded.text}`)
+      }
+      return { ok: true, status: decoded, message: decoded.text }
+    }
+
+    function replyDecode(text) {
+      const parsed = parseHexPayload(text)
+      if (!parsed.ok) return { ok: false, message: `十六进制有问题：${parsed.error}` }
+      if (!parsed.bytes.length) return { ok: false, message: '用法：/小票 解码 1B 40 1B 61 01' }
+      const decoded = decodeEscpos(parsed.bytes, { encoding: settingsNow().encoding })
+      return {
+        ok: true,
+        decoded,
+        message: `共 ${decoded.total} 字节，拆成 ${decoded.entries.length} 段：\n${decoded.lines.join('\n')}`,
       }
     }
 
@@ -570,16 +652,29 @@ export default {
     api.command({
       name: '小票',
       aliases: ['打印小票', 'receipt'],
-      desc: '模板小票：/小票 看列表，/小票 名称 生成打印，/小票 预览 名称 只看版面，/小票 加 名称 | 提示词',
+      desc: '模板小票：/小票 看列表，/小票 名称 生成打印，/小票 预览 名称 只看版面，/小票 加 名称 | 提示词，/小票 状态 查打印机，/小票 解码 1B 40 解读指令',
       async run(arg) {
         const text = String(arg || '').trim()
         const settings = settingsNow()
         if (!text || text === '列表') {
           const printerName = settings.printer?.name || '未配置'
-          return [templateList(), '', `打印机：${printerName}`, '用法：/小票 名称 · /小票 预览 名称 · /小票 自检'].join('\n')
+          return [
+            templateList(),
+            '',
+            `打印机：${printerName}`,
+            '用法：/小票 名称 · /小票 预览 名称 · /小票 自检',
+            '/小票 状态 查打印机返回 · /小票 解码 1B 40 解读指令 · /小票 指令 [关键词] 查指令表',
+          ].join('\n')
         }
         if (text === '测试' || text === '自检') {
           return (await selfTest()).message
+        }
+        if (text === '状态') return (await printerStatus()).message
+        if (text.startsWith('解码')) return replyDecode(text.replace(/^解码\s*/, '')).message
+        if (text.startsWith('指令')) {
+          const keyword = text.replace(/^指令\s*/, '').trim()
+          const rows = searchCommands(keyword)
+          return [`共 ${rows.length} 条 ESC/POS 指令：`, ...rows.slice(0, 60)].join('\n')
         }
         if (text.startsWith('预览')) {
           const name = text.replace(/^预览\s*/, '').trim()
@@ -622,10 +717,11 @@ export default {
 
     api.command({
       name: '打印机',
-      desc: '看小票打印机；/打印机 自检 打自检页',
+      desc: '看小票打印机；/打印机 自检 打自检页，/打印机 状态 查返回',
       async run(arg) {
         const text = String(arg || '').trim()
         if (/^(测试|自检)/.test(text)) return (await selfTest()).message
+        if (/^状态/.test(text)) return (await printerStatus()).message
         const settings = settingsNow()
         const paper = resolvePaper({ paperWidthMm: settings.paperWidthMm, effectiveWidthMm: settings.effectiveWidthMm })
         const selfTestLabel = settings.selfTestHex ? '自定义指令' : '内置 ESC/POS 自检页'
@@ -634,6 +730,7 @@ export default {
           '',
           `纸宽：${paper.paperMm}mm · 有效：${paper.effectiveMm}mm · 每行 ${paper.columns} 列`,
           `编码：${settings.encoding} · 切纸：${settings.cut} · 自检：${selfTestLabel}`,
+          '状态回读需要网口 9100 直连；Windows 队列和 CUPS 只能发不能读。',
           '去面板「小票打印」里改打印机和纸宽。',
         ].join('\n')
       },
@@ -692,6 +789,36 @@ export default {
     })
 
     api.route('/test', async () => selfTest())
+
+    api.route('/status', async () => {
+      const result = await printerStatus()
+      return {
+        ...result,
+        status: result.status
+          ? {
+            ...result.status,
+            results: result.status.results.map((item) => ({ ...item })),
+          }
+          : null,
+      }
+    })
+
+    api.route('/decode', async (req) => {
+      const body = await readBody(req)
+      const result = replyDecode(body.hex || body.text || '')
+      return {
+        ...result,
+        decoded: result.decoded
+          ? { ...result.decoded, entries: result.decoded.entries.map((entry) => ({ ...entry, cmd: undefined })) }
+          : null,
+      }
+    })
+
+    api.route('/commands', (req) => {
+      const url = new URL(req.url || '/', 'http://localhost')
+      const rows = searchCommands(url.searchParams.get('q') || '')
+      return { ok: true, total: rows.length, rows: rows.slice(0, 200) }
+    })
 
     api.route('/history', () => ({
       ok: true,
