@@ -78,7 +78,7 @@ function safeName(name) {
 function stamp(at) {
   const d = new Date(at)
   const pad = (n, w = 2) => String(n).padStart(w, '0')
-  // 带毫秒，保证同一秒内连打两张也是两个独立文件
+  // 带毫秒，减少同一秒内连打两张时的重名；仍重名时由 uniqueName 补序号
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}${pad(d.getMilliseconds(), 3)}`
 }
 
@@ -89,9 +89,19 @@ function resolveBackupTarget(dir, customDir) {
   return isAbsolute(target) ? target : join(dir, target)
 }
 
+// 同一毫秒连打两张时时间戳会相同，这里补序号，避免后一张覆盖前一张。
+function uniqueName(target, base) {
+  if (!existsSync(join(target, base))) return base
+  const stem = base.replace(/\.txt$/, '')
+  for (let i = 2; ; i += 1) {
+    const next = `${stem}-${i}.txt`
+    if (!existsSync(join(target, next))) return next
+  }
+}
+
 function writeBackup(dir, entry, customDir = '') {
   const target = resolveBackupTarget(dir, customDir)
-  const file = `receipt-${stamp(entry.at)}-${safeName(entry.template)}.txt`
+  const base = `receipt-${stamp(entry.at)}-${safeName(entry.template)}.txt`
   const lines = [
     `时间：${new Date(entry.at).toLocaleString('zh-CN', { hour12: false })}`,
     `来源：${entry.template || '未知'}`,
@@ -110,6 +120,7 @@ function writeBackup(dir, entry, customDir = '') {
 
   try {
     mkdirSync(target, { recursive: true })
+    const file = uniqueName(target, base)
     writeFileSync(join(target, file), body, 'utf8')
     pruneBackups(target)
     return { path: String(customDir || '').trim() ? join(target, file) : join('backups', file) }
@@ -117,6 +128,7 @@ function writeBackup(dir, entry, customDir = '') {
     // 自定义目录不可写时退回模块数据目录，别让打印记录丢失
     const fallback = join(dir, 'backups')
     mkdirSync(fallback, { recursive: true })
+    const file = uniqueName(fallback, base)
     writeFileSync(join(fallback, file), body, 'utf8')
     pruneBackups(fallback)
     return {

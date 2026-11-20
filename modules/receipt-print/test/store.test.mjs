@@ -143,6 +143,21 @@ test('自定义备份目录：一次打印一个文件，不动目录里别的�
   assert.ok(store.history(2).every((e) => e.backup.startsWith(custom)))
 })
 
+test('同一毫秒连打两张也会各自留一份备份', async () => {
+  const dir = await tempDir()
+  const custom = await mkdtemp(join(tmpdir(), 'receipt-backup-'))
+  const store = openStore(dir)
+  const at = new Date(2026, 10, 20, 10, 0, 0, 123).getTime()
+  store.addHistory({ at, template: '今日总结', text: '同一毫秒 A' }, { backupDir: custom })
+  store.addHistory({ at, template: '今日总结', text: '同一毫秒 B' }, { backupDir: custom })
+
+  const mine = (await readdir(custom)).filter((f) => f.startsWith('receipt-'))
+  assert.equal(mine.length, 2)
+  const contents = await Promise.all(mine.map((f) => readFile(join(custom, f), 'utf8')))
+  assert.ok(contents.some((t) => t.includes('同一毫秒 A')))
+  assert.ok(contents.some((t) => t.includes('同一毫秒 B')))
+})
+
 test('备份目录不可写时退回默认目录并记下原因', async () => {
   const dir = await tempDir()
   const blocker = join(dir, 'blocked')
