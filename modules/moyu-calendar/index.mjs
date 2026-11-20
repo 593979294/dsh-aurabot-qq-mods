@@ -25,7 +25,7 @@ export function createModule({ fetchImpl, now = () => Date.now(), browserOf, sle
   return {
     id: 'moyu-calendar',
     name: '摸鱼人日历',
-    version: '1.0.3',
+    version: '1.0.4',
     api: 1,
     description: DESCRIPTION,
     defaults: {
@@ -126,10 +126,19 @@ export function createModule({ fetchImpl, now = () => Date.now(), browserOf, sle
 
       async function deliver(chatId, card) {
         const image = card.bytes.toString('base64')
-        await api.sendSegments(chatId, [{ type: 'image', data: { file: `base64://${image}` } }], '摸鱼人日历')
+        // 宿主发送失败或总开关关掉时返回 null，不抛错。没判断的话会被记成已发送，当天不再补发。
+        const sent = await api.sendSegments(chatId, [{ type: 'image', data: { file: `base64://${image}` } }], '摸鱼人日历')
+        if (!sent) throw new Error('日历图没有发出去，稍后重试')
+        if (sent.queued === true) {
+          api.log.info('摸鱼日历图片已排队，连上后再补发', chatId)
+          return
+        }
         const caption = String(api.settings().caption ?? '').trim().slice(0, 200)
         if (!caption) return
-        try { await api.sendText(chatId, caption) } catch (error) {
+        try {
+          const text = await api.sendText(chatId, caption)
+          if (!text) api.log.warn('摸鱼日历附言没有发出去', chatId)
+        } catch (error) {
           api.log.warn('摸鱼日历附言发送失败', chatId, error.message)
         }
       }

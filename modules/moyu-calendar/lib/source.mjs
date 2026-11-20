@@ -5,7 +5,7 @@ import { calendarFromRss } from './rss.mjs'
 import { locateArticle } from './sogou.mjs'
 import { ACCOUNT, beijing, titleMatches } from './time.mjs'
 
-export const BROWSER_HINT = '请安装并开启逛网页 browser-ops，或配置 RSS 地址'
+export const BROWSER_HINT = '没装或没打开「逛网页」（browser-ops）。请到模块市场安装它，并在它的面板打开总开关；开了站点白名单时加入 mp.weixin.qq.com。也可以改填 RSS 地址，这样就不需要浏览器。'
 
 function browserHint(message) {
   const text = String(message || '')

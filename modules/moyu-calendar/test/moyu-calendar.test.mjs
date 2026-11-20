@@ -343,7 +343,7 @@ function makeApi(dataRoot, { settings: extra = {}, config = {}, sendSegments, se
     every() {},
     onDispose(fn) { disposed = fn },
     use: () => null,
-    sendSegments: sendSegments || (async (chatId, segments) => { sent.push({ chatId, type: 'image', file: segments[0].data.file }) }),
+    sendSegments: sendSegments || (async (chatId, segments) => { sent.push({ chatId, type: 'image', file: segments[0].data.file }); return { message_id: '1' } }),
     sendText: sendText || (async (chatId, text) => { sent.push({ chatId, type: 'text', text }) }),
   }
   return { api, sent, routes, dispose: () => disposed?.() }
@@ -372,6 +372,7 @@ test('定时：RSS 图只下一次，失败的聊天半小时后补发', async (
     sendSegments: async (chatId) => {
       if (chatId === 'group:200' && failGroup) throw new Error('发送失败')
       sent.push({ chatId, type: 'image' })
+      return { message_id: '1' }
     },
   })
   let command = null
@@ -484,7 +485,7 @@ test('命令：没有逛网页时说清楚；卸载后不再发送', async () =>
   })
   const liveApi = makeApi(liveRoot, {
     settings: { rssUrl: 'https://8.8.8.8/moyu' },
-    sendSegments: async (chatId) => { sent.push(chatId) },
+    sendSegments: async (chatId) => { sent.push(chatId); return { message_id: '1' } },
   })
   const running = await live.setup(liveApi.api)
   current = Date.parse('2026-11-19T08:10:00+08:00')
@@ -531,4 +532,40 @@ test('不带斜杠的整句触发词会发图，别人说则不管', async () =>
   const ignored = await onMessage({ text: '摸鱼人日历', userId: '10001', chatId: 'group:200' })
   assert.equal(ignored, false)
   assert.equal(sent.filter(item => item.type === 'image').length, 1)
+})
+
+test('图片发送返回 null 时不记为已发送，已入队则记下', async () => {
+  const noneRoot = mkdtempSync(join(tmpdir(), 'moyu-null-'))
+  await writeCache(noneRoot, '2026-11-19', PNG, 'image/png')
+  let current = Date.parse('2026-11-19T07:00:00+08:00')
+  const none = createModule({ now: () => current })
+  const noneApi = makeApi(noneRoot, {
+    settings: { caption: '附言' },
+    sendSegments: async () => null,
+  })
+  const texts = []
+  noneApi.api.sendText = async (_chatId, text) => { texts.push(text); return { message_id: 't' } }
+  const noneRun = await none.setup(noneApi.api)
+  current = Date.parse('2026-11-19T08:10:00+08:00')
+  await noneRun.tick()
+  assert.deepEqual(noneRun.status().state.sent, [])
+  assert.match(noneRun.status().lastError, /没有发出去/)
+  assert.equal(texts.length, 0)
+
+  const queuedRoot = mkdtempSync(join(tmpdir(), 'moyu-queued-'))
+  await writeCache(queuedRoot, '2026-11-19', PNG, 'image/png')
+  current = Date.parse('2026-11-19T07:00:00+08:00')
+  const queued = createModule({ now: () => current })
+  const queuedApi = makeApi(queuedRoot, {
+    settings: { caption: '附言' },
+    sendSegments: async () => ({ queued: true, queuedId: 'q1' }),
+  })
+  const queuedTexts = []
+  queuedApi.api.sendText = async () => { queuedTexts.push('x'); return { message_id: 't' } }
+  const queuedRun = await queued.setup(queuedApi.api)
+  current = Date.parse('2026-11-19T08:10:00+08:00')
+  await queuedRun.tick()
+  assert.deepEqual(queuedRun.status().state.sent, ['private:10001'])
+  assert.equal(queuedRun.status().state.completed, '2026-11-19')
+  assert.equal(queuedTexts.length, 0)
 })
