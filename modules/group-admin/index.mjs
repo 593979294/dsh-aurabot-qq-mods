@@ -221,8 +221,10 @@ export default {
         },
         required: ['action'],
         execute: async ({ action, group_id, user_id, minutes, text }) => {
-          // 这一轮里主人（或白名单里的人）说过话才行；谁都不能拿群管对付主人
-          const senderOk = hub.turnHasOwner(sessionId) || (typeof hub.turnSenders === 'function' && hub.turnSenders(sessionId).some((qq) => isAdmin(qq)))
+          // 这一轮说话的人里要有主人（或白名单里的人），而且这一轮只能有他们：
+          // 主人和群友同轮合并时，群友不能借主人的话拿到群管权限；谁都不能拿群管对付主人
+          const senders = typeof hub.turnSenders === 'function' ? hub.turnSenders(sessionId) || [] : []
+          const senderOk = senders.length > 0 && senders.every((qq) => isAdmin(qq))
           if (!senderOk) return { ok: false, message: '只有主人和群管白名单能让我做群管操作' }
           const gid = Number(group_id || (chat.kind === 'group' ? chat.groupId : 0))
           const whole = action === 'wholeban' || action === 'wholeoff'

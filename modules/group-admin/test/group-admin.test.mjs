@@ -1,4 +1,4 @@
-﻿// 群管模块的离线测试：不连 QQ、不写文件、不起 PowerShell。
+// 群管模块的离线测试：不连 QQ、不写文件、不起 PowerShell。
 // 跑法：AURABOT_PLUGIN_DIR=<插件源码> node --import ./scripts/plugin-env.mjs --test modules/group-admin/test/group-admin.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -183,6 +183,38 @@ test('工具执行时也会挡住非主人', async () => {
   api.core.hub.turnHasOwner = () => false
   api.core.hub.turnSenders = () => ['10000009']
   const tool = toolFrom(tools, { chat: { kind: 'group', groupId: GROUP }, level: 'group', sessionId: 's2' })[0]
+  const r = await tool.execute({ action: 'wholeban' })
+  assert.equal(r.ok, false)
+})
+
+test('群友和主人同一轮被合并：不能借主人的话调群管', async () => {
+  const { api, tools, calls } = fakeApi()
+  plugin.setup(api)
+  api.core.hub.turnHasOwner = () => true // 这一轮确实有主人说过话
+  api.core.hub.turnSenders = () => [OWNER, '10000010'] // 但还有群友
+  const tool = toolFrom(tools, { chat: { kind: 'group', groupId: GROUP }, level: 'group', sessionId: 's3' })[0]
+  const r = await tool.execute({ action: 'wholeban' })
+  assert.equal(r.ok, false, '同一轮里有非白名单的人，就不能放行')
+  assert.equal(calls.filter((c) => c.action === 'set_group_whole_ban').length, 0)
+})
+
+test('只有一个人说话、而且是白名单里的人：放行', async () => {
+  const { api, tools, calls } = fakeApi({ extraWhitelist: '10000011' })
+  plugin.setup(api)
+  api.core.hub.turnHasOwner = () => false
+  api.core.hub.turnSenders = () => ['10000011']
+  const tool = toolFrom(tools, { chat: { kind: 'group', groupId: GROUP }, level: 'group', sessionId: 's4' })[0]
+  const r = await tool.execute({ action: 'wholeban' })
+  assert.equal(r.ok, true)
+  assert.equal(calls.filter((c) => c.action === 'set_group_whole_ban').length, 1)
+})
+
+test('这一轮没人说话（空名单）：不放行', async () => {
+  const { api, tools } = fakeApi()
+  plugin.setup(api)
+  api.core.hub.turnHasOwner = () => true
+  api.core.hub.turnSenders = () => []
+  const tool = toolFrom(tools, { chat: { kind: 'group', groupId: GROUP }, level: 'group', sessionId: 's5' })[0]
   const r = await tool.execute({ action: 'wholeban' })
   assert.equal(r.ok, false)
 })
