@@ -13,11 +13,12 @@ function bodyReq(payload) {
   }
 }
 
-async function boot() {
+async function boot({ diary = null } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'receipt-index-'))
   const settings = {}
   const commands = new Map()
   const routes = new Map()
+  const ticks = new Map()
   const api = {
     id: 'receipt-print',
     settings: () => ({ ...settings }),
@@ -25,13 +26,14 @@ async function boot() {
     dataDir: (...parts) => (parts.length ? join(dir, ...parts) : dir),
     command: (def) => commands.set(def.name, def),
     route: (path, fn) => routes.set(path, fn),
-    every: () => {},
+    every: (ms, fn, name) => ticks.set(name || String(ms), fn),
+    use: (id) => (id === 'diary' ? diary : null),
     log: { info() {}, warn() {}, error() {}, debug() {} },
     ask: async () => '今天适合打印小票。\n第二行',
     think: async () => '想好了，今天适合打印小票。',
   }
   const exports = mod.setup(api)
-  return { dir, settings, commands, routes, exports }
+  return { dir, settings, commands, routes, ticks, exports }
 }
 
 test('启动后自动种下「每日简报」模板', async () => {
@@ -173,4 +175,66 @@ test('/自检：自定义指令会替换内置自检页，非法时拒绝发送'
   settings.selfTestHex = '1B 40 1B 61 01'
   const ok = await commands.get('自检').run('')
   assert.match(ok, /自定义自检指令（5 字节）/)
+})
+
+test('说说：首次启动只记水位，不补打旧说说', async () => {
+  const diary = { entries: [{ at: Date.now() - 60000, text: '很久以前的说说' }], async history() { return this.entries.slice() } }
+  const { settings, exports, routes } = await boot({ diary })
+  settings.printer = { name: '预览机', transport: 'preview' }
+  await exports.checkMoments()
+  assert.equal(routes.get('/history')().history.length, 0)
+})
+
+test('说说：新的公开说说自动打印并推进水位', async () => {
+  const base = Date.now() - 60000
+  const diary = { entries: [{ at: base, text: '旧说说' }], async history() { return this.entries.slice() } }
+  const { settings, exports, routes } = await boot({ diary })
+  settings.printer = { name: '预览机', transport: 'preview' }
+  await exports.checkMoments()
+
+  diary.entries.push({ at: base + 10000, text: '新说说：今天风很大' })
+  await exports.checkMoments()
+  const history = routes.get('/history')().history
+  assert.equal(history.length, 1)
+  assert.equal(history[0].template, '说说')
+  assert.ok(history[0].ok)
+
+  await exports.checkMoments()
+  assert.equal(routes.get('/history')().history.length, 1, '同一个说说不会重复打印')
+})
+
+test('说说：默认跳过仅自己可见的', async () => {
+  const base = Date.now() - 60000
+  const diary = { entries: [{ at: base, text: '旧说说' }], async history() { return this.entries.slice() } }
+  const { settings, exports, routes } = await boot({ diary })
+  settings.printer = { name: '预览机', transport: 'preview' }
+  await exports.checkMoments()
+
+  diary.entries.push({ at: base + 10000, text: '只给自己看', visibility: 'self' })
+  await exports.checkMoments()
+  assert.equal(routes.get('/history')().history.length, 0)
+
+  diary.entries.push({ at: base + 20000, text: '公开的', visibility: 'public' })
+  await exports.checkMoments()
+  assert.equal(routes.get('/history')().history.length, 1)
+  assert.equal(routes.get('/history')().history[0].template, '说说')
+})
+
+test('说说：配图会按纸宽做成位图后再打印', async () => {
+  const { PNG } = (await import('pngjs')).default
+  const png = new PNG({ width: 2, height: 2 })
+  png.data.fill(255)
+  const dataUrl = 'data:image/png;base64,' + PNG.sync.write(png).toString('base64')
+
+  const base = Date.now() - 60000
+  const diary = { entries: [{ at: base, text: '旧说说' }], async history() { return this.entries.slice() } }
+  const { settings, exports, routes } = await boot({ diary })
+  settings.printer = { name: '预览机', transport: 'preview' }
+  await exports.checkMoments()
+
+  diary.entries.push({ at: base + 10000, text: '带图说说', images: [dataUrl] })
+  await exports.checkMoments()
+  const history = routes.get('/history')().history
+  assert.equal(history.length, 1)
+  assert.equal(history[0].images, 1)
 })

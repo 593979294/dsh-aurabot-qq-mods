@@ -39,6 +39,24 @@ test('打印记录最多保留 30 条，新的在前', async () => {
   assert.equal(history[0].template, 't34')
 })
 
+test('说说水位只前进不后退，并记住是否已初始化', async () => {
+  const dir = await tempDir()
+  const store = openStore(dir)
+  assert.equal(store.momentSeeded(), false)
+  assert.equal(store.momentLast(), 0)
+
+  store.markMoment(2000, { seeded: true })
+  assert.equal(store.momentLast(), 2000)
+  assert.equal(store.momentSeeded(), true)
+
+  store.markMoment(1000)
+  assert.equal(store.momentLast(), 2000, '旧时间不能把水位拉回去')
+
+  const again = openStore(dir)
+  assert.equal(again.momentLast(), 2000)
+  assert.equal(again.momentSeeded(), true)
+})
+
 test('落盘后重新打开还能读回来', async () => {
   const dir = await tempDir()
   const store = openStore(dir)

@@ -48,7 +48,7 @@ export function normalizeTemplate(raw = {}) {
 export function openStore(dir) {
   mkdirSync(dir, { recursive: true })
   const file = join(dir, 'state.json')
-  let state = { version: 1, seeded: false, templates: [], history: [], lastRun: {} }
+  let state = { version: 1, seeded: false, templates: [], history: [], lastRun: {}, moment: { lastAt: 0 } }
   if (existsSync(file)) {
     try {
       const loaded = JSON.parse(readFileSync(file, 'utf8'))
@@ -58,6 +58,9 @@ export function openStore(dir) {
         templates: Array.isArray(loaded.templates) ? loaded.templates.map(normalizeTemplate) : [],
         history: Array.isArray(loaded.history) ? loaded.history.slice(0, MAX_HISTORY) : [],
         lastRun: loaded.lastRun && typeof loaded.lastRun === 'object' ? loaded.lastRun : {},
+        moment: loaded.moment && typeof loaded.moment === 'object'
+          ? { lastAt: Number(loaded.moment.lastAt) || 0, seeded: loaded.moment.seeded === true }
+          : { lastAt: 0, seeded: false },
       }
     } catch {
       // 状态文件坏了就重新开始，不让模块起不来
@@ -112,6 +115,16 @@ export function openStore(dir) {
     lastRun(id) { return state.lastRun[id] || '' },
     markRun(id, date) {
       state.lastRun[id] = date
+      save()
+    },
+    momentLast() { return Number(state.moment?.lastAt) || 0 },
+    momentSeeded() { return state.moment?.seeded === true },
+    markMoment(at, { seeded = false } = {}) {
+      const stamps = state.moment || { lastAt: 0, seeded: false }
+      const nextAt = Math.max(stamps.lastAt || 0, Number(at) || 0)
+      const nextSeeded = seeded || stamps.seeded === true
+      if (nextAt === (stamps.lastAt || 0) && nextSeeded === (stamps.seeded === true)) return
+      state.moment = { lastAt: nextAt, seeded: nextSeeded }
       save()
     },
     seed(template) {

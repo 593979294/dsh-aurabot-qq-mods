@@ -6,6 +6,11 @@ import { buildReceiptBytes } from './lib/escpos.mjs'
 import { buildLines, buildPrompt, cleanModelText, previewText, formatDate } from './lib/templates.mjs'
 import { resolvePaper, parseHexPayload } from './lib/paper.mjs'
 import { tick } from './lib/scheduler.mjs'
+import { imageRaster } from './lib/image.mjs'
+import { pickNewMoments, extractImageSources, timeOf } from './lib/moments.mjs'
+import { readFile } from 'node:fs/promises'
+
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
 const DEFAULTS = {
   enabled: true,
@@ -20,6 +25,12 @@ const DEFAULTS = {
   footer: '',
   qrText: '',
   timeoutMs: 8000,
+  momentAuto: true,
+  momentIncludeSelf: false,
+  momentImages: true,
+  momentMaxImages: 3,
+  imageMaxHeightMm: 100,
+  imageDither: true,
 }
 
 const SEED_TEMPLATE = {
@@ -72,6 +83,15 @@ function normalizeSettings(raw = {}) {
     maxChars: Math.max(100, Math.min(4000, Number(settings.maxChars) || DEFAULTS.maxChars)),
     timeoutMs: Math.max(1000, Math.min(30000, Number(settings.timeoutMs) || DEFAULTS.timeoutMs)),
     showHeader: settings.showHeader !== false,
+    momentAuto: settings.momentAuto !== false,
+    momentIncludeSelf: settings.momentIncludeSelf === true,
+    momentImages: settings.momentImages !== false,
+    momentMaxImages: (() => {
+      const n = Number(settings.momentMaxImages)
+      return Number.isFinite(n) ? Math.max(0, Math.min(9, Math.round(n))) : DEFAULTS.momentMaxImages
+    })(),
+    imageMaxHeightMm: Math.max(20, Math.min(200, Number(settings.imageMaxHeightMm) || DEFAULTS.imageMaxHeightMm)),
+    imageDither: settings.imageDither !== false,
   }
 }
 
@@ -104,9 +124,9 @@ async function readBody(req) {
 export default {
   id: 'receipt-print',
   name: '小票打印',
-  version: '0.3.0',
+  version: '0.4.0',
   api: 1,
-  description: '把模板和提示词变成热敏小票：可定时生成或随时触发；纸宽按毫米设置并自适应排版，支持一键 ESC/POS 自检（指令可替换）、Windows USB 打印队列、网口 9100 和 CUPS；没接打印机时可先预览版面。',
+  description: '把模板和提示词变成热敏小票：可定时生成或随时触发；纸宽按毫米设置并自适应排版，支持一键 ESC/POS 自检（指令可替换）、Windows USB 打印队列、网口 9100 和 CUPS；她每次发说说会自动排版打印（配图按纸宽缩放），打完自动切纸；没接打印机时可先预览版面。',
   defaults: DEFAULTS,
   settings: [
     { key: 'enabled', label: '启用', type: 'switch', hint: '关掉后定时任务不再触发，命令仍会提示已关闭' },
@@ -120,6 +140,12 @@ export default {
     { key: 'footer', label: '全局页脚', type: 'text', placeholder: '可留空；支持 {date} 等占位符' },
     { key: 'qrText', label: '二维码内容', type: 'text', placeholder: '留空不打印；支持 {date} 等占位符' },
     { key: 'timeoutMs', label: '打印超时（毫秒）', type: 'number', min: 1000, max: 30000, step: 500 },
+    { key: 'momentAuto', label: '说说自动打印', type: 'switch', hint: '她每次发空间说说后，自动排版打印成小票' },
+    { key: 'momentIncludeSelf', label: '连仅自己可见的也说打印', type: 'switch', hint: '默认只打印公开发布的说说' },
+    { key: 'momentImages', label: '打印说说配图', type: 'switch', hint: '图片会按有效纸宽缩放，再转成黑白位图' },
+    { key: 'momentMaxImages', label: '每条说说最多打印几张图', type: 'number', min: 0, max: 9, step: 1 },
+    { key: 'imageMaxHeightMm', label: '图片最大高度（mm）', type: 'number', min: 20, max: 200, step: 10, hint: '太高的图会整体缩小，避免一张图打太久' },
+    { key: 'imageDither', label: '图片抖动', type: 'switch', hint: '开=照片层次更自然；关=纯黑白阈值，适合文字截图' },
   ],
   panel: 'panel.js',
 
@@ -256,6 +282,134 @@ export default {
         : { ok: false, message: `打印失败：${result.error || '未知错误'}`, preview }
     }
 
+    // ---------- 说说自动打印 ----------
+    async function loadImageBuffer(source) {
+      const text = String(source || '').trim()
+      if (!text) throw new Error('图片地址是空的')
+      if (/^data:image\//i.test(text)) {
+        const comma = text.indexOf(',')
+        if (comma < 0) throw new Error('图片 data URL 不完整')
+        return Buffer.from(text.slice(comma + 1), 'base64')
+      }
+      let buffer
+      if (/^https?:\/\//i.test(text)) {
+        const response = await fetch(text, {
+          signal: AbortSignal.timeout(10000),
+          headers: { 'user-agent': 'Mozilla/5.0 (compatible; AurabotReceipt/1.0)' },
+        })
+        if (!response.ok) throw new Error(`下载图片失败：HTTP ${response.status}`)
+        buffer = Buffer.from(await response.arrayBuffer())
+      } else {
+        buffer = await readFile(text.replace(/^file:\/\//i, ''))
+      }
+      if (buffer.length > MAX_IMAGE_BYTES) throw new Error('图片太大（最多 8MB）')
+      return buffer
+    }
+
+    // 把说说配图按有效纸宽缩放，转成 ESC/POS 光栅位图；单张失败不影响其他图。
+    async function buildMomentImages(row, paper, settings) {
+      if (!settings.momentImages || !settings.momentMaxImages) return []
+      const sources = extractImageSources(row).slice(0, settings.momentMaxImages)
+      const images = []
+      for (const source of sources) {
+        try {
+          const buffer = await loadImageBuffer(source)
+          images.push(imageRaster(buffer, {
+            maxWidthDots: paper.dots,
+            maxHeightDots: Math.round(settings.imageMaxHeightMm * 8),
+            dither: settings.imageDither,
+          }))
+        } catch (error) {
+          log.warn?.(`说说配图跳过：${error.message}`)
+        }
+      }
+      return images
+    }
+
+    async function printMoment(row) {
+      const settings = settingsNow()
+      const printer = currentPrinter(settings)
+      const paper = paperFor(settings, printer, null)
+      const body = String(row?.text || '').trim()
+      const images = await buildMomentImages(row, paper, settings)
+      if (!body && !images.length) return
+      if (!printer) {
+        log.warn?.('收到新说说，但还没配置打印机，先不打印')
+        return
+      }
+      const now = new Date(timeOf(row.at) || Date.now())
+      const { lines, qr } = buildLines({
+        template: { name: '说说' },
+        body,
+        width: paper.columns,
+        paperMm: paper.paperMm,
+        effectiveMm: paper.effectiveMm,
+        showHeader: settings.showHeader,
+        footer: settings.footer,
+        qr: settings.qrText,
+        now,
+      })
+      const bytes = buildReceiptBytes(lines, {
+        encoding: printer.encoding || settings.encoding,
+        cut: printer.cut || settings.cut,
+        columns: paper.columns,
+        qr,
+        images,
+        feed: 3,
+      })
+      const result = await sendBytes(printer, bytes, { timeoutMs: settings.timeoutMs, dataDir: api.dataDir() })
+      store.addHistory({
+        template: '说说',
+        printer: printer.name,
+        transport: printer.transport,
+        ok: result.ok === true,
+        error: result.error || '',
+        chars: body.length,
+        images: images.length,
+        preview: false,
+      })
+      if (!result.ok) log.warn?.(`说说小票打印失败：${result.error || '未知错误'}`)
+    }
+
+    // diary 是内置模块；没有就说说明宿主不支持，静默跳过。
+    let momentsBusy = false
+    async function checkMoments() {
+      if (momentsBusy) return
+      momentsBusy = true
+      try {
+        await scanMoments()
+      } finally {
+        momentsBusy = false
+      }
+    }
+
+    async function scanMoments() {
+      const settings = settingsNow()
+      if (settings.enabled === false || !settings.momentAuto) return
+      const diary = typeof api.use === 'function' ? api.use('diary') : null
+      if (!diary || typeof diary.history !== 'function') return
+      let list
+      try {
+        list = await diary.history()
+      } catch (error) {
+        log.warn?.(`读说说失败：${error.message}`)
+        return
+      }
+      const { rows, watermark } = pickNewMoments(list, store.momentLast(), {
+        includeSelf: settings.momentIncludeSelf,
+      })
+      // 第一次启动只记下当前位置，避免把以前的说说全打一遍。
+      if (!store.momentSeeded()) {
+        store.markMoment(watermark, { seeded: true })
+        return
+      }
+      for (const row of rows) {
+        store.markMoment(timeOf(row.at ?? row.time ?? row.createdAt))
+        await printMoment(row)
+      }
+      store.markMoment(watermark)
+    }
+
     function templateLine(template) {
       const schedule = template.schedule?.enabled
         ? ` · ${template.schedule.time}${template.schedule.days?.length ? `（周${template.schedule.days.map((d) => '日一二三四五六'[d]).join('')}）` : ' · 每天'}`
@@ -368,6 +522,15 @@ export default {
       })
       if (due.length) log.info?.(`定时小票触发 ${due.length} 个`)
     }, '小票打印定时')
+
+    // 轮询内置 diary 模块的动态，有新说说就自动打一张（打印完照常切纸）。
+    api.every(30 * 1000, async () => {
+      try {
+        await checkMoments()
+      } catch (error) {
+        log.warn?.(`说说自动打印出错：${error.message}`)
+      }
+    }, '说说自动打印')
 
     // ---------- 命令（主人） ----------
     api.command({
@@ -536,6 +699,7 @@ export default {
       runTemplate,
       printRaw,
       templates: () => store.templates(),
+      checkMoments,
     }
   },
 }

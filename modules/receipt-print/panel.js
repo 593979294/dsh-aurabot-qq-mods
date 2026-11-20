@@ -125,6 +125,12 @@ return function Panel({ settings, toast }) {
     setSchedule({ days: days.includes(day) ? days.filter((d) => d !== day) : [...days, day].sort() })
   }
 
+  const patchSettings = async (patch) => {
+    const r = await call('/settings', { patch }).catch(() => null)
+    if (!r?.ok) return toast('保存失败')
+    setLive(r.settings)
+  }
+
   return h('div', null,
     h(ui.Card, { title: '模板' },
       h('p', { className: 'ab-note' }, '模板 = 名称 + 提示词。可以手动触发，也可以按时间自动生成打印；提示词支持 {date} {weekday} {time} {width} 占位符。'),
@@ -207,6 +213,29 @@ return function Panel({ settings, toast }) {
         h(ui.Btn, { onClick: savePrinter }, '保存'),
         h(ui.Btn, { disabled: busy === 'test', onClick: testPrinter }, busy === 'test' ? '发送中…' : '保存并自检'),
       ),
+    ),
+
+    h(ui.Card, { title: '说说自动打印' },
+      h('p', { className: 'ab-note' }, '她每次发空间说说后，自动按当前纸宽排版打印；配图会缩放成适合热敏纸的黑白位图，打印完自动切纸。默认只打公开发布的说说。'),
+      h('div', { style: { display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' } },
+        h('label', null, h('input', {
+          type: 'checkbox',
+          checked: live?.momentAuto !== false,
+          onChange: (e) => patchSettings({ momentAuto: e.target.checked }),
+        }), ' 发说说自动打印'),
+        h('label', null, h('input', {
+          type: 'checkbox',
+          checked: live?.momentImages !== false,
+          onChange: (e) => patchSettings({ momentImages: e.target.checked }),
+        }), ' 打印配图'),
+        h('label', null, h('input', {
+          type: 'checkbox',
+          checked: live?.momentIncludeSelf === true,
+          onChange: (e) => patchSettings({ momentIncludeSelf: e.target.checked }),
+        }), ' 连仅自己可见的也打'),
+      ),
+      h('p', { className: 'ab-small ab-muted', style: { marginTop: 8 } },
+        '配图数量、图片最大高度、抖动等细项在「设置」页。'),
     ),
 
     h(ui.Card, { title: '快速预览' },
