@@ -1,17 +1,17 @@
 # 内置 roost 来源锁定
 
 > 本文件由 `roost-bridge` 模块维护，随包副本与上游 commit 的对应关系以这里为准。
-> 分发许可例外由上游源仓 `LICENSE-EXCEPTIONS.md` 给出，本目录的 `LICENSE-EXCEPTION.md` 是同一份正式文件的副本。
+> 分发许可例外由上游源仓 `LICENSE-EXCEPTIONS.md` 给出，覆盖本项目任意版本的未修改源码副本；本目录的 `LICENSE-EXCEPTION.md` 是同一份正式文件的副本。
 
 ## 来源
 
 | 项 | 值 |
 |---|---|
 | 上游仓库 | `https://github.com/tdcq9594/qq-bot-roost` |
-| 版本 | `1.1.5` |
-| commit | `64382086cb735a56a63cca64700231ba694a4123` |
-| 提交信息 | `chore(release): 1.1.5` |
-| 本地发版源 | `douluo/bot` @ 上述 commit |
+| 版本 | `1.1.7` |
+| commit | `69320e90eb1778c1ae3b65cc1657376419a9e6fa` |
+| 提交信息 | `v1.1.7 — 长期运行更省内存，扫码登录新增「手动检查」` |
+| 来源 | GitHub 官方 release tarball `v1.1.7`（tag 指向上述 commit） |
 | 随包路径 | `modules/roost-bridge/lib/vendor/roost/` |
 | 文件数 | 147（不含本文件、`SOURCE.sha256`、`LICENSE-EXCEPTION.md`） |
 
@@ -33,10 +33,10 @@ sha256sum -c SOURCE.sha256
 清单自身 sha256：
 
 ```text
-d51134506d0845e0e9522971eebe9cc3dba1ac70f692f62d0c5d164b0349d7ef
+1ab2a9d33df35dba9e1847668ebefab3dc68c6de589c3c3414d1fc8c899c643b
 ```
 
-校验通过才说明随包源码与锁定的 1.1.5 发版一致。
+校验通过才说明随包源码与锁定的 1.1.7 发版一致。
 
 ## 自更新说明
 

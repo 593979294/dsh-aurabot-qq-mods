@@ -4,7 +4,7 @@
 
 ## 它做什么
 
-大肥鱼本来只认 OneBot v11（正向 WS + HTTP action），roost 本来只走官方接口。roost 里已实现的 **OneBot 兼容层** 把两边接起来：官方事件翻成 OneBot 事件、OneBot action 翻成官方 API。这个模块是那座桥的**配置向导 + 兼容说明**，不改大肥鱼、不改 roost 的源码。配套 roost 框架也由本人开发（`tdcq9594/qq-bot-roost`，package.json 署名「倦飞之鸟」），这里随包附带的是其 1.1.5 发版原样副本。roost 是**模块自带、启动时整体复制到数据目录运行**的——不联网下载、不改框架源码。
+大肥鱼本来只认 OneBot v11（正向 WS + HTTP action），roost 本来只走官方接口。roost 里已实现的 **OneBot 兼容层** 把两边接起来：官方事件翻成 OneBot 事件、OneBot action 翻成官方 API。这个模块是那座桥的**配置向导 + 兼容说明**，不改大肥鱼、不改 roost 的源码。配套 roost 框架也由本人开发（`tdcq9594/qq-bot-roost`，package.json 署名「倦飞之鸟」），这里随包附带的是其 1.1.7 发版原样副本。roost 是**模块自带、启动时整体复制到数据目录运行**的——不联网下载、不改框架源码。
 
 链路：`QQ 官方 → roost（官方接口）→ OneBot 兼容层 → 大肥鱼（零改动）`
 
@@ -66,7 +66,7 @@
 
 审核者重点看这几条，这里如实写清楚：
 
-- **下载与联网边界如实说明**：模块胶水本身不下载、不执行远端代码：内置 roost 与 `ws` / `silk-wasm` 已作为普通文件打包在 `lib/vendor/roost/`，启动前只在本机整份复制到数据目录；模块自身对外的请求只有 `127.0.0.1` 上 roost 面板 API（含透传扫码），扫码协议由 roost 访问 `q.qq.com`，模块不接触。随包 roost 框架保留原版自更新能力：上游默认每 6 小时只**检查**新版本；本模块每次启动前会把运行配置的 `update.autoApply` 硬写回 `false`，只保留面板手动确认的更新路径，绝不在模块侧自动下载安装。用户手动确认时才由 roost 访问 `github.com` / `raw.githubusercontent.com` / `api.github.com` / `gitee.com`；发语音等场景还可能按 roost 面板配置的 npm 源（默认 `registry.npmjs.org`）装 `silk-wasm` / `@ffmpeg-installer`。这是内嵌框架的行为，不是模块胶水发起的。这份内置副本锁定 roost 1.1.5 / commit `64382086…`，逐文件校验见 `lib/vendor/roost/SOURCE.md` + `SOURCE.sha256`，与发版逐字节一致、没有打补丁。模块胶水为 MIT，随包 roost 为 AGPL-3.0-only（许可证见 `lib/vendor/roost/LICENSE`），分发例外由 roost 上游源仓 `LICENSE-EXCEPTIONS.md` 正式给出，随包副本见 `lib/vendor/roost/LICENSE-EXCEPTION.md`，依赖各自带 LICENSE。停用 / 卸载模块会延迟自动恢复网关（热重载不触发），但 DSH 进程直接退出无法保证，面板同时强提示先手动恢复。
+- **下载与联网边界如实说明**：模块胶水本身不下载、不执行远端代码：内置 roost 与 `ws` / `silk-wasm` 已作为普通文件打包在 `lib/vendor/roost/`，启动前只在本机整份复制到数据目录；模块自身对外的请求只有 `127.0.0.1` 上 roost 面板 API（含透传扫码），扫码协议由 roost 访问 `q.qq.com`，模块不接触。随包 roost 框架保留原版自更新能力：上游默认每 6 小时只**检查**新版本；本模块每次启动前会把运行配置的 `update.autoApply` 硬写回 `false`，只保留面板手动确认的更新路径，绝不在模块侧自动下载安装。用户手动确认时才由 roost 访问 `github.com` / `raw.githubusercontent.com` / `api.github.com` / `gitee.com`；发语音等场景还可能按 roost 面板配置的 npm 源（默认 `registry.npmjs.org`）装 `silk-wasm` / `@ffmpeg-installer`。这是内嵌框架的行为，不是模块胶水发起的。这份内置副本的来源锁定是 roost 1.1.7 / commit `69320e90…`（只用于审计随包版本，不限制许可例外范围），逐文件校验见 `lib/vendor/roost/SOURCE.md` + `SOURCE.sha256`，与发版逐字节一致、没有打补丁。模块胶水为 MIT，随包 roost 为 AGPL-3.0-only（许可证见 `lib/vendor/roost/LICENSE`），分发例外由 roost 上游源仓 `LICENSE-EXCEPTIONS.md` 正式给出、覆盖任意版本的未修改副本，随包副本见 `lib/vendor/roost/LICENSE-EXCEPTION.md`，依赖各自带 LICENSE。停用 / 卸载模块会延迟自动恢复网关（热重载不触发），但 DSH 进程直接退出无法保证，面板同时强提示先手动恢复。
 - **凭据处理**：AppSecret、机器人 Token、roost 面板 accessKey、兼容层 token **只存本进程内存**，不写进模块数据目录、不回显明文（面板只显示「已暂存」）。唯一落盘的是 roost 自己 `config/bots/*.json` 里那份——那是 roost 的地盘。
 - **不外发隐私**：不读取、不上传大肥鱼的聊天内容、记忆、Cookie。模块只调本机 roost 面板 API。
 - **权限面**：所有面板接口带 `access: 'panel'`，复用宿主的回环 / 可信代理 / Host / CSRF 闸；模块不注册 QQ 命令，也不向模型注册工具，权限面只剩面板。扫码拿到的凭证先暂存内存，等 roost 停稳后写进配置并回读校验，不落模块数据目录、不回显明文。
