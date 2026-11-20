@@ -2,6 +2,14 @@
 const { useState, useEffect } = React
 
 const WEEK = ['日', '一', '二', '三', '四', '五', '六']
+const TRIGGER_LABELS = {
+  command: '命令',
+  panel: '面板',
+  schedule: '定时',
+  moment: '说说',
+  selftest: '自检',
+  unknown: '未知',
+}
 const TRANSPORTS = [
   ['windows', 'Windows 打印队列（USB）'],
   ['tcp', '网口 / WiFi（9100）'],
@@ -286,8 +294,13 @@ return function Panel({ settings, toast }) {
 
     h(ui.Card, { title: '最近打印' },
       !history.length && h('p', { className: 'ab-muted' }, '还没有记录。'),
-      history.map((entry, i) => h('div', { key: i, className: 'ab-small', style: { padding: '4px 0', borderTop: '1px solid rgba(128,128,128,.15)' } },
-        `${entry.time} · ${entry.template} · ${entry.printer || '预览'} · ${entry.ok ? '成功' : '失败'}${entry.error ? '：' + entry.error : ''}`)),
+      history.map((entry, i) => h('div', { key: i, className: 'ab-small', style: { padding: '6px 0', borderTop: '1px solid rgba(128,128,128,.15)' } },
+        `${entry.time} · ${entry.template} · ${(TRIGGER_LABELS[entry.trigger?.type] || '未知')}${entry.trigger?.reason ? `（${entry.trigger.reason}）` : ''} · ${entry.printer || '预览'} · ${entry.ok ? '成功' : '失败'}${entry.error ? '：' + entry.error : ''}`,
+        entry.text && h('details', { style: { marginTop: 4 } },
+          h('summary', { style: { cursor: 'pointer', opacity: .7 } }, '查看备份内容'),
+          h('pre', { style: { whiteSpace: 'pre-wrap', margin: '6px 0 0', padding: 8, border: '1px solid rgba(128,128,128,.2)', borderRadius: 6 } }, entry.text),
+          entry.backup && h('div', { style: { opacity: .6, marginTop: 4 } }, `文件：${entry.backup}`),
+        ))),
     ),
   )
 }

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import mod from '../index.mjs'
@@ -294,4 +294,43 @@ test('打印失败会私聊主人', async () => {
   assert.equal(sent.length, 1)
   assert.equal(sent[0].target, 'private:10001')
   assert.match(sent[0].text, /打印失败/)
+})
+
+test('/小票 记录 显示触发类型、原因和备份正文', async () => {
+  const { settings, commands, dir } = await boot()
+  settings.printer = { name: '预览机', transport: 'preview', paperWidthMm: 58 }
+  await commands.get('小票').run('每日简报')
+
+  const list = await commands.get('小票').run('记录')
+  assert.match(list, /命令（命令 \/小票 每日简报）/)
+  assert.match(list, /成功/)
+
+  const detail = await commands.get('小票').run('记录 1')
+  assert.match(detail, /触发：命令（命令 \/小票 每日简报）/)
+  assert.match(detail, /备份：backups\//)
+  assert.match(detail, /今天适合打印小票/)
+
+  const raw = JSON.parse(await readFile(join(dir, 'state.json'), 'utf8'))
+  assert.equal(raw.history[0].trigger.type, 'command')
+  assert.ok(raw.history[0].text.includes('今天适合打印小票'))
+  const backup = await readFile(join(dir, raw.history[0].backup), 'utf8')
+  assert.match(backup, /触发类型：command/)
+})
+
+test('说说自动打印记录触发来源和说说 ID', async () => {
+  const diary = {
+    entries: [{ id: 'old', at: Date.now() - 60000, text: '很久以前', images: [] }],
+    async history() { return this.entries.slice() },
+  }
+  const { settings, exports, routes } = await boot({ diary })
+  settings.printer = { name: '预览机', transport: 'preview', paperWidthMm: 58 }
+  await exports.checkMoments()
+  diary.entries.push({ id: 'm-42', at: Date.now(), text: '刚发的说说', images: [] })
+  await exports.checkMoments()
+
+  const history = routes.get('/history')().history
+  assert.equal(history.length, 1)
+  assert.equal(history[0].trigger.type, 'moment')
+  assert.match(history[0].trigger.reason, /说说 #m-42 发布/)
+  assert.equal(history[0].trigger.momentId, 'm-42')
 })

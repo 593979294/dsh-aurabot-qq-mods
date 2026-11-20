@@ -1,9 +1,12 @@
 // 本机状态：模板、打印记录、定时去重标记。都放在 modules-data/receipt-print/。
-import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync, readdirSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 
 const MAX_TEMPLATES = 30
 const MAX_HISTORY = 30
+const MAX_BACKUPS = 200
+const MAX_TEXT = 8000
+const TRIGGER_TYPES = ['command', 'panel', 'schedule', 'moment', 'selftest', 'unknown']
 
 export function newId() {
   return `tpl-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
@@ -45,6 +48,71 @@ export function normalizeTemplate(raw = {}) {
   }
 }
 
+export function normalizeHistoryEntry(raw = {}) {
+  const trigger = raw.trigger && typeof raw.trigger === 'object' ? raw.trigger : {}
+  return {
+    at: Number(raw.at) || Date.now(),
+    template: String(raw.template || '').slice(0, 40),
+    printer: String(raw.printer || '').slice(0, 80),
+    transport: String(raw.transport || '').slice(0, 20),
+    ok: raw.ok === true,
+    error: String(raw.error || '').slice(0, 500),
+    chars: Number(raw.chars) || 0,
+    images: Number(raw.images) || 0,
+    preview: raw.preview === true,
+    text: String(raw.text || '').slice(0, MAX_TEXT),
+    trigger: {
+      type: TRIGGER_TYPES.includes(trigger.type) ? trigger.type : 'unknown',
+      reason: String(trigger.reason || '').slice(0, 200),
+      momentId: String(trigger.momentId || '').slice(0, 80),
+    },
+    backup: String(raw.backup || ''),
+  }
+}
+
+function safeName(name) {
+  return String(name || 'receipt').replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 24) || 'receipt'
+}
+
+function stamp(at) {
+  const d = new Date(at)
+  const pad = (n, w = 2) => String(n).padStart(w, '0')
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+}
+
+function writeBackup(dir, entry) {
+  const backups = join(dir, 'backups')
+  mkdirSync(backups, { recursive: true })
+  const file = `${stamp(entry.at)}-${safeName(entry.template)}.txt`
+  const lines = [
+    `时间：${new Date(entry.at).toLocaleString('zh-CN', { hour12: false })}`,
+    `来源：${entry.template || '未知'}`,
+    `触发类型：${entry.trigger.type}`,
+    `触发原因：${entry.trigger.reason || '未记录'}`,
+    ...(entry.trigger.momentId ? [`说说 ID：${entry.trigger.momentId}`] : []),
+    `打印机：${entry.printer || '未配置'}（${entry.transport || '预览'}）`,
+    `结果：${entry.ok ? '成功' : '失败'}${entry.error ? ` / ${entry.error}` : ''}`,
+    `字数：${entry.chars}${entry.images ? ` · 图片：${entry.images} 张` : ''}`,
+    '',
+    '-'.repeat(24),
+    entry.text || '（这次没有记录正文）',
+    '',
+  ]
+  writeFileSync(join(backups, file), lines.join('\n'), 'utf8')
+  return `backups/${file}`
+}
+
+function pruneBackups(dir) {
+  try {
+    const backups = join(dir, 'backups')
+    if (!existsSync(backups)) return
+    const files = readdirSync(backups).filter((f) => f.endsWith('.txt')).sort()
+    for (const old of files.slice(0, Math.max(0, files.length - MAX_BACKUPS))) {
+      try { unlinkSync(join(backups, old)) } catch { /* 删不掉就算了 */ }
+    }
+  } catch { /* 备份清理失败不影响打印 */ }
+}
+
 export function openStore(dir) {
   mkdirSync(dir, { recursive: true })
   const file = join(dir, 'state.json')
@@ -56,7 +124,7 @@ export function openStore(dir) {
         ...state,
         ...loaded,
         templates: Array.isArray(loaded.templates) ? loaded.templates.map(normalizeTemplate) : [],
-        history: Array.isArray(loaded.history) ? loaded.history.slice(0, MAX_HISTORY) : [],
+        history: Array.isArray(loaded.history) ? loaded.history.slice(0, MAX_HISTORY).map(normalizeHistoryEntry) : [],
         lastRun: loaded.lastRun && typeof loaded.lastRun === 'object' ? loaded.lastRun : {},
         moment: loaded.moment && typeof loaded.moment === 'object'
           ? { lastAt: Number(loaded.moment.lastAt) || 0, seeded: loaded.moment.seeded === true }
@@ -105,7 +173,14 @@ export function openStore(dir) {
       return template
     },
     addHistory(entry) {
-      state.history.unshift({ at: Date.now(), ...entry })
+      const item = normalizeHistoryEntry({ at: Date.now(), ...entry })
+      if (item.text) {
+        try {
+          item.backup = writeBackup(dir, item)
+          pruneBackups(dir)
+        } catch { /* 备份失败不影响打印记录 */ }
+      }
+      state.history.unshift(item)
       state.history = state.history.slice(0, MAX_HISTORY)
       save()
     },

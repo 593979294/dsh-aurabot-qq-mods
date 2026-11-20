@@ -14,6 +14,20 @@ import { readFile } from 'node:fs/promises'
 
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
+const TRIGGER_LABELS = {
+  command: '命令',
+  panel: '面板',
+  schedule: '定时',
+  moment: '说说',
+  selftest: '自检',
+  unknown: '未知',
+}
+
+function triggerText(trigger = {}) {
+  const label = TRIGGER_LABELS[trigger.type] || '未知'
+  return trigger.reason ? `${label}（${trigger.reason}）` : label
+}
+
 const DEFAULTS = {
   enabled: true,
   printer: null,
@@ -149,9 +163,9 @@ async function readBody(req) {
 export default {
   id: 'receipt-print',
   name: '小票打印',
-  version: '0.6.0',
+  version: '0.7.0',
   api: 1,
-  description: '把模板和提示词变成热敏小票：定时或随时触发，纸宽按毫米自适应排版，配图缩放调色后打印并自动切纸；内置 ESC/POS 指令表和字节解码，可查打印机状态并把返回字节翻译成中文；打印失败或打印机报错会主动私聊主人。支持 Windows USB 队列、网口 9100、CUPS 和预览。',
+  description: '把模板和提示词变成热敏小票：定时或随时触发，纸宽按毫米自适应排版，配图缩放调色后打印并自动切纸；每次打印在本机保存正文与触发来源备份；内置 ESC/POS 指令表和字节解码，可查打印机状态并把返回字节翻译成中文；打印失败或打印机报错会主动私聊主人。支持 Windows USB 队列、网口 9100、CUPS 和预览。',
   defaults: DEFAULTS,
   settings: [
     { key: 'enabled', label: '启用', type: 'switch', hint: '关掉后定时任务不再触发，命令仍会提示已关闭' },
@@ -310,6 +324,8 @@ export default {
           ok: result.ok === true,
           error: result.error || '',
           chars: text.length,
+          text,
+          trigger: options.trigger || { type: 'unknown', reason: '' },
           preview: false,
         })
 
@@ -354,6 +370,8 @@ export default {
       store.addHistory({
         template: '直接打印', printer: printer.name, transport: printer.transport,
         ok: result.ok === true, error: result.error || '', chars: preview.length, preview: false,
+        text: preview,
+        trigger: { type: 'command', reason: '命令 /打印' },
       })
       if (!result.ok) {
         await reportError('直接打印失败', await failureDetail(printer, result.error))
@@ -444,6 +462,7 @@ export default {
         feed: 3,
       })
       const result = await sendBytes(printer, bytes, { timeoutMs: settings.timeoutMs, dataDir: api.dataDir() })
+      const momentId = String(row?.id ?? row?.tid ?? '')
       store.addHistory({
         template: '说说',
         printer: printer.name,
@@ -452,6 +471,12 @@ export default {
         error: result.error || '',
         chars: body.length,
         images: images.length,
+        text: previewText(lines),
+        trigger: {
+          type: 'moment',
+          reason: `说说${momentId ? ` #${momentId}` : ''} 发布`,
+          momentId,
+        },
         preview: false,
       })
       if (!result.ok) {
@@ -530,7 +555,7 @@ export default {
      * 一键自检：默认发内置 ESC/POS 自检页（纸宽、列数、编码、中文、刻度尺、二维码、切纸）。
      * 打印机或全局设置了 selfTestHex 时，原样发送那段十六进制指令。
      */
-    async function selfTest() {
+    async function selfTest(options = {}) {
       const settings = settingsNow()
       const printer = currentPrinter(settings)
       if (!printer) return { ok: false, message: printerList() }
@@ -584,6 +609,10 @@ export default {
         ok: result.ok === true,
         error: result.error || '',
         chars: customHex ? customHex.length : paper.columns,
+        text: customHex
+          ? `自定义自检指令：\n${customHex}`
+          : `内置自检页\n纸宽：${paper.paperMm}mm · 有效：${paper.effectiveMm}mm · 每行 ${paper.columns} 列\n编码：${settings.encoding} · 切纸：${settings.cut}`,
+        trigger: options.trigger || { type: 'command', reason: '自检' },
         preview: false,
       })
       if (!result.ok) {
@@ -652,7 +681,11 @@ export default {
         lastRun: (id) => store.lastRun(id),
         run: async (template) => {
           store.markRun(template.id, formatDate(new Date()).date)
-          const result = await runTemplate(template)
+          const schedule = template.schedule || {}
+          const days = Array.isArray(schedule.days) && schedule.days.length ? `周${schedule.days.join('、')}` : '每天'
+          const result = await runTemplate(template, {
+            trigger: { type: 'schedule', reason: `${days} ${schedule.time || ''}`.trim() },
+          })
           if (!result.ok) log.warn?.(`定时小票「${template.name}」失败：${result.message}`)
         },
       })
@@ -667,6 +700,43 @@ export default {
         log.warn?.(`说说自动打印出错：${error.message}`)
       }
     }, '说说自动打印')
+
+    // ---------- 打印记录与备份 ----------
+    function recordTime(at) {
+      return new Date(at).toLocaleString('zh-CN', { hour12: false })
+    }
+
+    function showHistory(arg) {
+      const key = String(arg || '').trim()
+      const rows = store.history(30)
+      if (!rows.length) return '还没有打印记录。'
+      const index = Number(key)
+      if (Number.isInteger(index) && index >= 1) {
+        const entry = rows[index - 1]
+        if (!entry) return `只有 ${rows.length} 条记录。用 /小票 记录 看列表。`
+        return [
+          `${index}. ${recordTime(entry.at)} · ${entry.template}`,
+          `触发：${triggerText(entry.trigger)}`,
+          entry.trigger.momentId ? `说说 ID：${entry.trigger.momentId}` : '',
+          `打印机：${entry.printer || '未配置'}（${TRANSPORT_LABELS[entry.transport] || entry.transport || '预览'}）`,
+          `结果：${entry.ok ? '成功' : `失败：${entry.error || '未知错误'}`}`,
+          `字数：${entry.chars}${entry.images ? ` · 图片：${entry.images} 张` : ''}`,
+          entry.backup ? `备份：${entry.backup}` : '备份：未写入',
+          '',
+          entry.text || '（这次没有记录正文）',
+        ].filter(Boolean).join('\n')
+      }
+      const filtered = key
+        ? rows.filter((e) => e.template.includes(key) || (e.trigger?.reason || '').includes(key))
+        : rows.slice(0, 10)
+      if (!filtered.length) return `没有匹配「${key}」的记录。`
+      return [
+        `最近 ${Math.min(filtered.length, 10)} 条打印记录：`,
+        ...filtered.slice(0, 10).map((e, i) => `${i + 1}. ${recordTime(e.at)} · ${e.template} · ${triggerText(e.trigger)} · ${e.ok ? '成功' : '失败'}`),
+        '',
+        '用 /小票 记录 序号 看正文和备份文件。',
+      ].join('\n')
+    }
 
     // ---------- 命令（主人） ----------
     api.command({
@@ -683,8 +753,11 @@ export default {
             '',
             `打印机：${printerName}`,
             '用法：/小票 名称 · /小票 预览 名称 · /小票 自检',
-            '/小票 状态 查打印机返回 · /小票 解码 1B 40 解读指令 · /小票 指令 [关键词] 查指令表',
+            '/小票 记录 [序号] 看打印备份 · /小票 状态 查打印机返回 · /小票 解码 1B 40 解读指令 · /小票 指令 [关键词] 查指令表',
           ].join('\n')
+        }
+        if (text === '记录' || text.startsWith('记录 ')) {
+          return showHistory(text.replace(/^记录\s*/, ''))
         }
         if (text === '测试' || text === '自检') {
           return (await selfTest()).message
@@ -720,7 +793,9 @@ export default {
         if (!template) {
           return `没有「${text}」这个模板。\n${templateList()}\n\n如果只是想打印一段文字，用 /打印 内容`
         }
-        const result = await runTemplate(template)
+        const result = await runTemplate(template, {
+          trigger: { type: 'command', reason: `命令 /小票 ${template.name}` },
+        })
         return result.ok ? result.message : `${result.message}${result.preview ? `\n\n${result.preview}` : ''}`
       },
     })
@@ -804,11 +879,14 @@ export default {
       const body = await readBody(req)
       const template = store.get(body.id || body.name)
       if (!template) return { ok: false, message: '没找到这个模板' }
-      const result = await runTemplate(template, { preview: body.preview === true })
+      const result = await runTemplate(template, {
+        preview: body.preview === true,
+        trigger: { type: 'panel', reason: body.preview === true ? '面板预览' : '面板手动打印' },
+      })
       return result
     })
 
-    api.route('/test', async () => selfTest())
+    api.route('/test', async () => selfTest({ trigger: { type: 'panel', reason: '面板自检' } }))
 
     api.route('/status', async () => {
       const result = await printerStatus()

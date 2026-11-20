@@ -84,6 +84,32 @@ test('说说水位只前进不后退，并记住是否已初始化', async () =>
   assert.equal(again.momentSeeded(), true)
 })
 
+test('每次打印写备份文件并记录触发来源', async () => {
+  const dir = await tempDir()
+  const store = openStore(dir)
+  store.addHistory({
+    template: '今日总结',
+    ok: true,
+    text: '今天的第一行\n第二行',
+    trigger: { type: 'schedule', reason: '每天 18:00' },
+  })
+  const entry = store.history(1)[0]
+  assert.equal(entry.trigger.type, 'schedule')
+  assert.match(entry.backup, /^backups\//)
+  const saved = await readFile(join(dir, entry.backup), 'utf8')
+  assert.match(saved, /触发类型：schedule/)
+  assert.match(saved, /触发原因：每天 18:00/)
+  assert.match(saved, /今天的第一行/)
+})
+
+test('未知触发类型归到 unknown，正文过长会截断', async () => {
+  const store = openStore(await tempDir())
+  store.addHistory({ template: '旧记录', text: 'x'.repeat(9000), trigger: { type: 'whatever' } })
+  const entry = store.history(1)[0]
+  assert.equal(entry.trigger.type, 'unknown')
+  assert.equal(entry.text.length, 8000)
+})
+
 test('落盘后重新打开还能读回来', async () => {
   const dir = await tempDir()
   const store = openStore(dir)
