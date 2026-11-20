@@ -126,6 +126,12 @@ test('说说自动打印默认开启', async () => {
   assert.equal(res.settings.momentImages, true)
 })
 
+test('每日彩蛋默认开启', async () => {
+  const { routes } = await boot()
+  const res = await routes.get('/settings')(bodyReq({}))
+  assert.equal(res.settings.fun, true)
+})
+
 test('纸宽 mm 会换算成每行列数', async () => {
   const { routes, settings } = await boot()
   settings.paperWidthMm = 80
