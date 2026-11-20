@@ -348,3 +348,25 @@ test('设置里的备份目录生效，一次打印一个文件', async () => {
   const raw = JSON.parse(await readFile(join(dir, 'state.json'), 'utf8'))
   assert.equal(raw.history[0].backup, join(custom, files[0]))
 })
+
+test('/小票 校准 出校准页并留备份', async () => {
+  const { commands, settings, dir } = await boot()
+  settings.printer = { name: '预览机', transport: 'preview', paperWidthMm: 58 }
+
+  const text = await commands.get('小票').run('校准')
+  assert.match(text, /校准页/)
+
+  const raw = JSON.parse(await readFile(join(dir, 'state.json'), 'utf8'))
+  assert.equal(raw.history[0].template, '校准页')
+  assert.equal(raw.history[0].trigger.type, 'command')
+  assert.match(raw.history[0].text, /\] 48mm/)
+})
+
+test('面板 /calibrate 也能打印校准页', async () => {
+  const { routes, settings } = await boot()
+  settings.printer = { name: '预览机', transport: 'preview', paperWidthMm: 58 }
+
+  const result = await routes.get('/calibrate')({})
+  assert.equal(result.ok, true)
+  assert.match(result.message, /48mm/)
+})

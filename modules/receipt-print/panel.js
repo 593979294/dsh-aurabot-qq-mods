@@ -223,6 +223,15 @@ return function Panel({ settings, toast }) {
       h('div', { style: { display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' } },
         h(ui.Btn, { onClick: savePrinter }, '保存'),
         h(ui.Btn, { disabled: busy === 'test', onClick: testPrinter }, busy === 'test' ? '发送中…' : '保存并自检'),
+        h(ui.Btn, {
+          disabled: busy === 'calibrate',
+          onClick: async () => {
+            setBusy('calibrate')
+            const r = await call('/calibrate', {}).catch(() => null)
+            setBusy('')
+            toast(r?.message || '校准页发送失败')
+          },
+        }, busy === 'calibrate' ? '发送中…' : '打印校准页'),
       ),
     ),
 

@@ -11,6 +11,7 @@ import { tick } from './lib/scheduler.mjs'
 import { imageRaster } from './lib/image.mjs'
 import { pickNewMoments, extractImageSources, timeOf } from './lib/moments.mjs'
 import { readFile } from 'node:fs/promises'
+import { buildCalibration } from './lib/calibrate.mjs'
 
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
@@ -20,6 +21,7 @@ const TRIGGER_LABELS = {
   schedule: '定时',
   moment: '说说',
   selftest: '自检',
+  calibrate: '校准',
   unknown: '未知',
 }
 
@@ -165,9 +167,9 @@ async function readBody(req) {
 export default {
   id: 'receipt-print',
   name: '小票打印',
-  version: '0.8.0',
+  version: '0.9.0',
   api: 1,
-  description: '把模板和提示词变成热敏小票：定时或随时触发，纸宽按毫米自适应排版，配图缩放调色后打印并自动切纸；每次打印在本机保存正文与触发来源备份，备份目录可自定义；内置 ESC/POS 指令表和字节解码，可查打印机状态并把返回字节翻译成中文；打印失败或打印机报错会主动私聊主人。支持 Windows USB 队列、网口 9100、CUPS 和预览。',
+  description: '把模板和提示词变成热敏小票：定时或随时触发，纸宽按毫米自适应排版，配图缩放调色后打印并自动切纸；支持真机校准页，量出实际有效宽度并检查图片切边；每次打印在本机保存正文与触发来源备份，备份目录可自定义；内置 ESC/POS 指令表和字节解码，可查打印机状态并把返回字节翻译成中文；打印失败或打印机报错会主动私聊主人。支持 Windows USB 队列、网口 9100、CUPS 和预览。',
   defaults: DEFAULTS,
   settings: [
     { key: 'enabled', label: '启用', type: 'switch', hint: '关掉后定时任务不再触发，命令仍会提示已关闭' },
@@ -642,6 +644,52 @@ export default {
       }
     }
 
+    /**
+     * 真机校准页：按毫米打印候选行量出实际有效宽度，末尾再打一个等于当前
+     * 有效宽度的方框，用来看图片会不会被切边。
+     */
+    async function printCalibration(options = {}) {
+      const settings = settingsNow()
+      if (settings.enabled === false) return { ok: false, message: '小票打印已关闭，先去面板打开' }
+      const printer = currentPrinter(settings)
+      if (!printer) return { ok: false, message: printerList() }
+
+      const paper = paperFor(settings, printer, null)
+      const { lines, images } = buildCalibration({
+        paperWidthMm: paper.paperMm,
+        effectiveWidthMm: paper.effectiveMm,
+        columns: paper.columns,
+      })
+      const text = previewText(lines)
+      const bytes = buildReceiptBytes(lines, {
+        encoding: printer.encoding || settings.encoding,
+        cut: printer.cut || settings.cut,
+        columns: paper.columns,
+        images,
+        feed: 4,
+      })
+      const result = await sendBytes(printer, bytes, { timeoutMs: settings.timeoutMs, dataDir: api.dataDir() })
+      recordPrint({
+        template: '校准页',
+        printer: printer.name,
+        transport: printer.transport,
+        ok: result.ok === true,
+        error: result.error || '',
+        chars: text.length,
+        text,
+        trigger: options.trigger || { type: 'command', reason: '校准页' },
+        preview: false,
+      })
+      if (!result.ok) {
+        await reportError('校准页打印失败', await failureDetail(printer, result.error))
+        return { ok: false, message: `校准页打印失败：${result.error || '未知错误'}` }
+      }
+      return {
+        ok: true,
+        message: `校准页已发到「${printer.name}」（${paper.paperMm}mm / 有效 ${paper.effectiveMm}mm / ${paper.columns} 列）。找出末尾 ] 和 mm 在同一行的最长一条，把那个数字填到「有效宽度」。`,
+      }
+    }
+
     // ---------- 状态查询与指令解码 ----------
     async function printerStatus() {
       const settings = settingsNow()
@@ -767,7 +815,7 @@ export default {
             templateList(),
             '',
             `打印机：${printerName}`,
-            '用法：/小票 名称 · /小票 预览 名称 · /小票 自检',
+            '用法：/小票 名称 · /小票 预览 名称 · /小票 自检 · /小票 校准',
             '/小票 记录 [序号] 看打印备份 · /小票 状态 查打印机返回 · /小票 解码 1B 40 解读指令 · /小票 指令 [关键词] 查指令表',
           ].join('\n')
         }
@@ -776,6 +824,9 @@ export default {
         }
         if (text === '测试' || text === '自检') {
           return (await selfTest()).message
+        }
+        if (text === '校准' || text === '校准页') {
+          return (await printCalibration()).message
         }
         if (text === '状态') return (await printerStatus()).message
         if (text.startsWith('解码')) return replyDecode(text.replace(/^解码\s*/, '')).message
@@ -827,10 +878,11 @@ export default {
 
     api.command({
       name: '打印机',
-      desc: '看小票打印机；/打印机 自检 打自检页，/打印机 状态 查返回',
+      desc: '看小票打印机；/打印机 自检 打自检页，/打印机 校准 打校准页，/打印机 状态 查返回',
       async run(arg) {
         const text = String(arg || '').trim()
         if (/^(测试|自检)/.test(text)) return (await selfTest()).message
+        if (/^校准/.test(text)) return (await printCalibration()).message
         if (/^状态/.test(text)) return (await printerStatus()).message
         const settings = settingsNow()
         const paper = resolvePaper({ paperWidthMm: settings.paperWidthMm, effectiveWidthMm: settings.effectiveWidthMm })
@@ -902,6 +954,8 @@ export default {
     })
 
     api.route('/test', async () => selfTest({ trigger: { type: 'panel', reason: '面板自检' } }))
+
+    api.route('/calibrate', async () => printCalibration({ trigger: { type: 'panel', reason: '面板校准页' } }))
 
     api.route('/status', async () => {
       const result = await printerStatus()
