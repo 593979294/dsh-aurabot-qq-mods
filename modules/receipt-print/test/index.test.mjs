@@ -113,6 +113,13 @@ test('面板接口：保存打印机设置', async () => {
   assert.equal(saved.settings.printers, undefined)
 })
 
+test('说说自动打印默认开启', async () => {
+  const { routes } = await boot()
+  const res = await routes.get('/settings')(bodyReq({}))
+  assert.equal(res.settings.momentAuto, true)
+  assert.equal(res.settings.momentImages, true)
+})
+
 test('纸宽 mm 会换算成每行列数', async () => {
   const { routes, settings } = await boot()
   settings.paperWidthMm = 80
