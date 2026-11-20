@@ -157,7 +157,7 @@ return function Panel({ settings, toast }) {
           start: 1 + termSections.slice(0, sectionIndex).reduce((sum, item) => sum + item.items.length, 0),
           style: { paddingLeft: 18, lineHeight: 1.7, fontSize: 13, margin: '4px 0 8px' },
         }, section.items.map((item, index) => h('li', { key: index }, item))))),
-      h('p', { className: 'ab-note' }, '确认后才能生成和打印；确认一次即对后续版本生效，不同意更新后的条款时请停止使用。'),
+      h('p', { className: 'ab-note' }, '确认后才能生成和打印；条款更新后需要重新确认。'),
       h(ui.Btn, {
         onClick: async () => {
           const r = await call('/accept', {}).catch(() => null)

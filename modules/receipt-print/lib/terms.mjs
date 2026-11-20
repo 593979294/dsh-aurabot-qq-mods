@@ -1,5 +1,5 @@
 // 使用协议：必须在确认后才能打印。
-// 一次确认对后续版本同样有效；条款更新会在 README 与更新说明中标注。
+// 条款有实质更新时提升 TERMS_VERSION，已确认过的用户需要重新确认。
 export const TERMS_VERSION = '1.1'
 export const TERMS_TITLE = '热敏打印使用协议'
 
@@ -9,7 +9,7 @@ export const TERMS_SECTIONS = [
     title: '一、用户需知',
     items: [
       '【适用范围】本协议适用于「热敏打印」模块的全部功能，包括模板生成、预览、打印、自检、校准、定时任务、说说自动打印、打印机状态查询与错误汇报。未确认本协议时，上述功能不可用。',
-      '【确认与后续版本】首次使用前，需在面板点「我已阅读并同意」或发送 /小票 同意。同意一次即表示同意本协议及其后续版本，版本更新后不再要求重新确认；更新内容会写进模块的更新说明和 README。不同意更新后的条款时，请停止使用并卸载本模块。',
+      '【确认与后续版本】首次使用前，需在面板点「我已阅读并同意」或发送 /小票 同意。条款有实质更新（例如新增法律、隐私或责任限制内容）时会提升版本号并重新展示，你需要再次确认后功能才会继续启用，旧版本的确认不会继续生效。不同意更新后的条款时，请停止使用并卸载本模块。',
       '【数据与隐私】模板、设置和打印记录保存在本机；打印备份包含正文，也保存在本机备份目录，不上传。生成模板时，提示词会通过宿主发给你自己配置的模型服务；图片按原始地址下载后在本机处理。本模块不含遥测，不向作者或第三方上传数据。请勿在模板中写入你不希望发给模型服务或留在本机备份里的敏感信息。',
     ],
   },
@@ -35,8 +35,8 @@ export const TERMS_SECTIONS = [
 export const TERMS_ITEMS = TERMS_SECTIONS.flatMap((section) => section.items)
 
 export function termsAccepted(settings = {}) {
-  // 只要确认过一次（不论当时是哪个版本），后续版本都视为已同意。
-  return Boolean(String(settings?.termsVersion || '').trim())
+  // 版本升级后必须重新确认，旧版本的确认不继续生效。
+  return String(settings?.termsVersion || '') === TERMS_VERSION
 }
 
 export function termsPublic(settings = {}) {
@@ -58,7 +58,7 @@ export function termsText() {
     for (const item of section.items) lines.push(`${number++}. ${item}`)
     lines.push('')
   }
-  lines.push('同意一次即对后续版本生效。', '确认：/小票 同意')
+  lines.push('条款更新后会提升版本号，需要重新确认。', '确认：/小票 同意')
   return lines.join('\n')
 }
 
