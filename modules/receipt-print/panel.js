@@ -216,7 +216,7 @@ return function Panel({ settings, toast }) {
     ),
 
     h(ui.Card, { title: '说说自动打印' },
-      h('p', { className: 'ab-note' }, '她每次发空间说说后，自动按当前纸宽排版打印；配图会缩放成适合热敏纸的黑白位图，打印完自动切纸。默认只打公开发布的说说。'),
+      h('p', { className: 'ab-note' }, '她每次发空间说说后，自动按当前纸宽排版打印；配图会按纸宽缩放并自动调色（色阶/亮度/对比度/伽马/锐化），再转成适合热敏纸的黑白位图，打印完自动切纸。默认只打公开发布的说说。'),
       h('div', { style: { display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' } },
         h('label', null, h('input', {
           type: 'checkbox',

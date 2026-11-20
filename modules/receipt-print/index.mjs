@@ -31,6 +31,11 @@ const DEFAULTS = {
   momentMaxImages: 3,
   imageMaxHeightMm: 100,
   imageDither: true,
+  imageAutoLevel: true,
+  imageBrightness: 0,
+  imageContrast: 0,
+  imageGamma: 1.3,
+  imageSharpen: true,
 }
 
 const SEED_TEMPLATE = {
@@ -92,6 +97,11 @@ function normalizeSettings(raw = {}) {
     })(),
     imageMaxHeightMm: Math.max(20, Math.min(200, Number(settings.imageMaxHeightMm) || DEFAULTS.imageMaxHeightMm)),
     imageDither: settings.imageDither !== false,
+    imageAutoLevel: settings.imageAutoLevel !== false,
+    imageBrightness: Math.max(-100, Math.min(100, Math.round(Number(settings.imageBrightness) || 0))),
+    imageContrast: Math.max(-100, Math.min(100, Math.round(Number(settings.imageContrast) || 0))),
+    imageGamma: Math.max(0.5, Math.min(2.5, Number(settings.imageGamma) || DEFAULTS.imageGamma)),
+    imageSharpen: settings.imageSharpen !== false,
   }
 }
 
@@ -146,6 +156,11 @@ export default {
     { key: 'momentMaxImages', label: '每条说说最多打印几张图', type: 'number', min: 0, max: 9, step: 1 },
     { key: 'imageMaxHeightMm', label: '图片最大高度（mm）', type: 'number', min: 20, max: 200, step: 10, hint: '太高的图会整体缩小，避免一张图打太久' },
     { key: 'imageDither', label: '图片抖动', type: 'switch', hint: '开=照片层次更自然；关=纯黑白阈值，适合文字截图' },
+    { key: 'imageAutoLevel', label: '自动调色（色阶）', type: 'switch', hint: '自动拉开明暗，避免整张灰蒙蒙或糊成黑块' },
+    { key: 'imageBrightness', label: '图片亮度', type: 'number', min: -100, max: 100, step: 5, hint: '负数变暗，正数变亮' },
+    { key: 'imageContrast', label: '图片对比度', type: 'number', min: -100, max: 100, step: 5, hint: '正数让黑白更分明' },
+    { key: 'imageGamma', label: '图片伽马', type: 'number', min: 0.5, max: 2.5, step: 0.1, hint: '大于 1 提亮暗部，热敏打印默认 1.3' },
+    { key: 'imageSharpen', label: '图片锐化', type: 'switch', hint: '让文字截图和小图边缘更清楚' },
   ],
   panel: 'panel.js',
 
@@ -318,6 +333,11 @@ export default {
             maxWidthDots: paper.dots,
             maxHeightDots: Math.round(settings.imageMaxHeightMm * 8),
             dither: settings.imageDither,
+            autoLevel: settings.imageAutoLevel,
+            brightness: settings.imageBrightness,
+            contrast: settings.imageContrast,
+            gamma: settings.imageGamma,
+            sharpen: settings.imageSharpen,
           }))
         } catch (error) {
           log.warn?.(`说说配图跳过：${error.message}`)

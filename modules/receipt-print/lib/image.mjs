@@ -1,5 +1,6 @@
 // 图片 → ESC/POS 光栅位图。
-// 纯 JS 解码 JPEG/PNG，按纸宽缩放、转灰度、可选 Floyd–Steinberg 抖动。
+// 纯 JS 解码 JPEG/PNG，按纸宽缩放，再做自动色阶、亮度/对比度、伽马和锐化，
+// 最后抖动成黑白点。热敏纸只有黑点，调色比缩放更影响观感。
 import jpeg from 'jpeg-js'
 import pngjs from 'pngjs'
 
@@ -78,6 +79,82 @@ function resample({ width, height, gray }, dw, dh) {
   return out
 }
 
+export function autoLevels(gray, { clip = 0.01 } = {}) {
+  const hist = new Uint32Array(256)
+  for (let i = 0; i < gray.length; i++) hist[gray[i]]++
+  const allowance = Math.floor(gray.length * Math.max(0, Math.min(0.2, clip)))
+  let low = 0
+  let acc = 0
+  while (low < 255 && acc + hist[low] <= allowance) {
+    acc += hist[low]
+    low++
+  }
+  let high = 255
+  acc = 0
+  while (high > 0 && acc + hist[high] <= allowance) {
+    acc += hist[high]
+    high--
+  }
+  // 几乎纯色或本来就满幅的图不动，避免把噪点拉爆。
+  if (high - low < 16) return gray
+  const scale = 255 / (high - low)
+  const out = new Uint8Array(gray.length)
+  for (let i = 0; i < gray.length; i++) {
+    const value = (gray[i] - low) * scale
+    out[i] = value <= 0 ? 0 : value >= 255 ? 255 : Math.round(value)
+  }
+  return out
+}
+
+// 亮度 ±100 → ±64 灰阶；对比度 ±100；gamma > 1 提亮暗部（热敏机墨点会胀，默认略提亮）。
+export function adjustTone(gray, { brightness = 0, contrast = 0, gamma = 1 } = {}) {
+  const b = Math.max(-100, Math.min(100, Number(brightness) || 0)) * 0.64
+  const c = Math.max(-100, Math.min(100, Number(contrast) || 0))
+  const g = Math.max(0.2, Math.min(4, Number(gamma) || 1))
+  if (b === 0 && c === 0 && g === 1) return gray
+  const factor = (259 * (c + 255)) / (255 * (259 - c))
+  const inverse = 1 / g
+  const lut = new Uint8Array(256)
+  for (let v = 0; v < 256; v++) {
+    let value = factor * (v + b - 128) + 128
+    value = Math.max(0, Math.min(255, value)) / 255
+    lut[v] = Math.round(Math.pow(value, inverse) * 255)
+  }
+  const out = new Uint8Array(gray.length)
+  for (let i = 0; i < gray.length; i++) out[i] = lut[gray[i]]
+  return out
+}
+
+// 3x3 均值模糊后的反锐化，让文字截图和小图细节更清楚。
+export function unsharp(gray, width, height, { amount = 0.6 } = {}) {
+  const strength = Math.max(0, Math.min(2, Number(amount) || 0))
+  if (!strength || width < 3 || height < 3) return gray
+  const blur = new Float32Array(gray.length)
+  const temp = new Float32Array(gray.length)
+  for (let y = 0; y < height; y++) {
+    const row = y * width
+    for (let x = 0; x < width; x++) {
+      const left = gray[row + Math.max(0, x - 1)]
+      const right = gray[row + Math.min(width - 1, x + 1)]
+      temp[row + x] = (left + gray[row + x] + right) / 3
+    }
+  }
+  for (let y = 0; y < height; y++) {
+    const up = Math.max(0, y - 1) * width
+    const down = Math.min(height - 1, y + 1) * width
+    const row = y * width
+    for (let x = 0; x < width; x++) {
+      blur[row + x] = (temp[up + x] + temp[row + x] + temp[down + x]) / 3
+    }
+  }
+  const out = new Uint8Array(gray.length)
+  for (let i = 0; i < gray.length; i++) {
+    const value = gray[i] + (gray[i] - blur[i]) * strength
+    out[i] = value <= 0 ? 0 : value >= 255 ? 255 : Math.round(value)
+  }
+  return out
+}
+
 function packBits(gray, width, height, { dither, threshold }) {
   const bytesPerRow = Math.ceil(width / 8)
   const bits = Buffer.alloc(bytesPerRow * height)
@@ -109,7 +186,17 @@ function packBits(gray, width, height, { dither, threshold }) {
  * maxWidthDots 一般是有效纸宽 × 8；图片会铺满纸宽，并按比例缩放高度。
  * 太高时整体缩小，保证一屏能打完。
  */
-export function imageRaster(buffer, { maxWidthDots = 384, maxHeightDots = 800, dither = true, threshold = 128 } = {}) {
+export function imageRaster(buffer, {
+  maxWidthDots = 384,
+  maxHeightDots = 800,
+  dither = true,
+  threshold = 128,
+  autoLevel = true,
+  brightness = 0,
+  contrast = 0,
+  gamma = 1,
+  sharpen = true,
+} = {}) {
   const decoded = decodeImage(buffer)
   const gray = toGray(decoded)
   let dw = Math.max(1, Math.round(Number(maxWidthDots) || 384))
@@ -120,6 +207,9 @@ export function imageRaster(buffer, { maxWidthDots = 384, maxHeightDots = 800, d
     dw = Math.max(1, Math.round(dw * ratio))
     dh = cap
   }
-  const scaled = resample(gray, dw, dh)
-  return packBits(scaled, dw, dh, { dither: dither !== false, threshold: Number(threshold) || 128 })
+  let pixels = resample(gray, dw, dh)
+  if (autoLevel !== false) pixels = autoLevels(pixels, { clip: 0.01 })
+  pixels = adjustTone(pixels, { brightness, contrast, gamma })
+  if (sharpen !== false) pixels = unsharp(pixels, dw, dh, { amount: 0.6 })
+  return packBits(pixels, dw, dh, { dither: dither !== false, threshold: Number(threshold) || 128 })
 }
