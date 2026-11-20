@@ -98,14 +98,18 @@ test('启动时把 roost 自动更新锁成 false', () => {
   }
 })
 
-test('随包 roost 有来源锁定与许可证例外', () => {
+test('随包 roost 有来源锁定，且模块整体为 AGPL', () => {
   const moduleDir = fileURLToPath(new URL('../modules/roost-bridge/', import.meta.url))
   const vendor = fileURLToPath(new URL('../modules/roost-bridge/lib/vendor/roost/', import.meta.url))
   // 入口用的就是这个 helper：它指错地方等于「模块自带的 roost 找不到」，必须在单测里钉住
   assert.ok(existsSync(join(roost.inplaceDir(moduleDir), 'src', 'main.js')), 'inplaceDir() 没指向随包母本')
-  for (const name of ['LICENSE', 'LICENSE-EXCEPTION.md', 'SOURCE.md', 'SOURCE.sha256']) {
+  for (const name of ['LICENSE', 'SOURCE.md', 'SOURCE.sha256']) {
     assert.ok(existsSync(join(vendor, name)), `缺 ${name}`)
   }
+  assert.ok(!existsSync(join(vendor, 'LICENSE-EXCEPTION.md')), '不应再保留许可证例外文件')
+  const manifest = JSON.parse(readFileSync(join(moduleDir, 'module.json'), 'utf8'))
+  assert.equal(manifest.license, 'AGPL-3.0-only')
+  assert.match(readFileSync(join(moduleDir, 'LICENSE'), 'utf8'), /GNU AFFERO GENERAL PUBLIC LICENSE/)
   const lines = readFileSync(join(vendor, 'SOURCE.sha256'), 'utf8').trim().split('\n')
   assert.ok(lines.length >= 140, `校验和条目太少：${lines.length}`)
   assert.ok(lines.every((line) => /^[a-f0-9]{64}  \S+$/.test(line)))

@@ -1,7 +1,7 @@
 # 内置 roost 来源锁定
 
 > 本文件由 `roost-bridge` 模块维护，随包副本与上游 commit 的对应关系以这里为准。
-> 分发许可例外由上游源仓 `LICENSE-EXCEPTIONS.md` 给出，覆盖本项目任意版本的未修改源码副本；本目录的 `LICENSE-EXCEPTION.md` 是同一份正式文件的副本。
+> 本模块整体按 **AGPL-3.0-only** 授权，不依赖任何分发例外。
 
 ## 来源
 
@@ -13,7 +13,7 @@
 | 提交信息 | `v1.1.7 — 长期运行更省内存，扫码登录新增「手动检查」` |
 | 来源 | GitHub 官方 release tarball `v1.1.7`（tag 指向上述 commit） |
 | 随包路径 | `modules/roost-bridge/lib/vendor/roost/` |
-| 文件数 | 147（不含本文件、`SOURCE.sha256`、`LICENSE-EXCEPTION.md`） |
+| 文件数 | 147（不含本文件与 `SOURCE.sha256`） |
 
 内置副本从上述发版源整份复制，模块胶水**不打补丁、不修改任何 roost 源码**。随包依赖：
 
@@ -58,5 +58,5 @@ roost 原版包含框架自更新能力（`src/updater.js`、`src/services/auto-
 ## 许可证
 
 roost 本体：`AGPL-3.0-only`，见 `LICENSE`。  
-本次随 `dsh-aurabot-qq-mods` 分发的额外许可：上游源仓 `LICENSE-EXCEPTIONS.md` 第 1 条；本目录的 `LICENSE-EXCEPTION.md` 是同一份正式文件副本。  
-第三方依赖按各自 LICENSE。
+本模块整体（含模块胶水与随包 roost）：`AGPL-3.0-only`，见模块根 `LICENSE` 与 `module.json`。  
+第三方依赖 `ws` / `silk-wasm` 按各自 LICENSE。
