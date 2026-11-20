@@ -12,6 +12,7 @@ import { imageRaster } from './lib/image.mjs'
 import { pickNewMoments, extractImageSources, timeOf } from './lib/moments.mjs'
 import { readFile } from 'node:fs/promises'
 import { buildCalibration } from './lib/calibrate.mjs'
+import { TERMS_TITLE, TERMS_VERSION, termsAccepted, termsGate, termsPublic, termsText } from './lib/terms.mjs'
 
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
@@ -32,6 +33,8 @@ function triggerText(trigger = {}) {
 
 const DEFAULTS = {
   enabled: true,
+  termsVersion: '',
+  termsAcceptedAt: '',
   printer: null,
   paperWidthMm: 58,
   effectiveWidthMm: 0,
@@ -109,6 +112,8 @@ function normalizeSettings(raw = {}) {
   return {
     ...cleaned,
     printer,
+    termsVersion: String(settings.termsVersion || '').trim(),
+    termsAcceptedAt: String(settings.termsAcceptedAt || '').trim(),
     paperWidthMm: paper.paperMm,
     // 0 表示自动，跟着纸宽走；填了就固定，并限制在纸宽以内
     effectiveWidthMm: effectiveRaw > 0 ? Math.min(paper.paperMm, Math.round(effectiveRaw * 10) / 10) : 0,
@@ -167,9 +172,9 @@ async function readBody(req) {
 export default {
   id: 'receipt-print',
   name: '小票打印',
-  version: '0.9.0',
+  version: '0.10.0',
   api: 1,
-  description: '把模板和提示词变成热敏小票：定时或随时触发，纸宽按毫米自适应排版，配图缩放调色后打印并自动切纸；支持真机校准页，量出实际有效宽度并检查图片切边；每次打印在本机保存正文与触发来源备份，备份目录可自定义；内置 ESC/POS 指令表和字节解码，可查打印机状态并把返回字节翻译成中文；打印失败或打印机报错会主动私聊主人。支持 Windows USB 队列、网口 9100、CUPS 和预览。',
+  description: '把模板和提示词变成热敏小票：首次使用需在面板或聊天确认使用协议；定时或随时触发，纸宽按毫米自适应排版，配图缩放调色后打印并自动切纸；支持真机校准页，量出实际有效宽度并检查图片切边；每次打印在本机保存正文与触发来源备份，备份目录可自定义；内置 ESC/POS 指令表和字节解码，可查打印机状态并把返回字节翻译成中文；打印失败或打印机报错会主动私聊主人。支持 Windows USB 队列、网口 9100、CUPS 和预览。',
   defaults: DEFAULTS,
   settings: [
     { key: 'enabled', label: '启用', type: 'switch', hint: '关掉后定时任务不再触发，命令仍会提示已关闭' },
@@ -276,6 +281,8 @@ export default {
      */
     async function runTemplate(template, options = {}) {
       const settings = settingsNow()
+      const gate = termsGate(settings)
+      if (gate) return { ok: false, message: gate }
       if (!template) return { ok: false, message: '没有这个模板' }
       if (settings.enabled === false) return { ok: false, message: '小票打印已关闭，先去面板打开' }
       if (running.has(template.id)) return { ok: false, message: `「${template.name}」正在生成，别急` }
@@ -358,6 +365,8 @@ export default {
 
     async function printRaw(text) {
       const settings = settingsNow()
+      const gate = termsGate(settings)
+      if (gate) return { ok: false, message: gate }
       if (settings.enabled === false) return { ok: false, message: '小票打印已关闭，先去面板打开' }
       const body = String(text || '').trim()
       if (!body) return { ok: false, message: '要打印什么？用法：/打印 内容' }
@@ -516,6 +525,7 @@ export default {
 
     async function scanMoments() {
       const settings = settingsNow()
+      if (!termsAccepted(settings)) return
       if (settings.enabled === false || !settings.momentAuto) return
       const diary = typeof api.use === 'function' ? api.use('diary') : null
       if (!diary || typeof diary.history !== 'function') return
@@ -574,6 +584,8 @@ export default {
      */
     async function selfTest(options = {}) {
       const settings = settingsNow()
+      const gate = termsGate(settings)
+      if (gate) return { ok: false, message: gate }
       const printer = currentPrinter(settings)
       if (!printer) return { ok: false, message: printerList() }
 
@@ -650,6 +662,8 @@ export default {
      */
     async function printCalibration(options = {}) {
       const settings = settingsNow()
+      const gate = termsGate(settings)
+      if (gate) return { ok: false, message: gate }
       if (settings.enabled === false) return { ok: false, message: '小票打印已关闭，先去面板打开' }
       const printer = currentPrinter(settings)
       if (!printer) return { ok: false, message: printerList() }
@@ -809,6 +823,13 @@ export default {
       async run(arg) {
         const text = String(arg || '').trim()
         const settings = settingsNow()
+        if (/^(协议|条款|terms)$/i.test(text)) return termsText()
+        if (/^(同意|接受|agree)$/i.test(text)) {
+          api.saveSettings({ termsVersion: TERMS_VERSION, termsAcceptedAt: new Date().toISOString() })
+          return `已确认《${TERMS_TITLE}》v${TERMS_VERSION}，现在可以开始打印了。`
+        }
+        const gate = termsGate(settings)
+        if (gate) return gate
         if (!text || text === '列表') {
           const printerName = settings.printer?.name || '未配置'
           return [
@@ -871,6 +892,8 @@ export default {
       aliases: ['print'],
       desc: '直接打印一段文字：/打印 内容',
       async run(arg) {
+        const gate = termsGate(settingsNow())
+        if (gate) return gate
         const result = await printRaw(arg)
         return result.message
       },
@@ -881,6 +904,8 @@ export default {
       desc: '看小票打印机；/打印机 自检 打自检页，/打印机 校准 打校准页，/打印机 状态 查返回',
       async run(arg) {
         const text = String(arg || '').trim()
+        const gate = termsGate(settingsNow())
+        if (gate) return gate
         if (/^(测试|自检)/.test(text)) return (await selfTest()).message
         if (/^校准/.test(text)) return (await printCalibration()).message
         if (/^状态/.test(text)) return (await printerStatus()).message
@@ -903,6 +928,8 @@ export default {
       aliases: ['selfcheck'],
       desc: '一键自检打印机',
       async run() {
+        const gate = termsGate(settingsNow())
+        if (gate) return gate
         return (await selfTest()).message
       },
     })
@@ -916,7 +943,12 @@ export default {
           ...resolvePaper({ paperWidthMm: settings.printer.paperWidthMm, effectiveWidthMm: settings.printer.effectiveWidthMm }),
         }
         : null
-      return { ok: true, templates: store.templates(), printer, settings }
+      return { ok: true, templates: store.templates(), printer, settings, terms: termsPublic(settings) }
+    })
+
+    api.route('/accept', async () => {
+      api.saveSettings({ termsVersion: TERMS_VERSION, termsAcceptedAt: new Date().toISOString() })
+      return { ok: true, terms: termsPublic(settingsNow()) }
     })
 
     api.route('/settings', async (req) => {

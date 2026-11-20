@@ -8,6 +8,7 @@ const TRIGGER_LABELS = {
   schedule: '定时',
   moment: '说说',
   selftest: '自检',
+  calibrate: '校准',
   unknown: '未知',
 }
 const TRANSPORTS = [
@@ -49,6 +50,7 @@ return function Panel({ settings, toast }) {
   const [text, setText] = useState('')
   const [pform, setPform] = useState({ name: '', transport: 'windows', target: '', paperWidthMm: 58 })
   const [live, setLive] = useState(null)
+  const [terms, setTerms] = useState(null)
   const [diag, setDiag] = useState('')
   const [hex, setHex] = useState('1B 40 1B 61 01 1D 56 01')
   const [decoded, setDecoded] = useState('')
@@ -58,6 +60,7 @@ return function Panel({ settings, toast }) {
     if (r?.ok) {
       setTemplates(r.templates || [])
       setLive(r.settings || null)
+      setTerms(r.terms || null)
       if (r.printer) {
         setPform({
           name: r.printer.name,
@@ -143,6 +146,20 @@ return function Panel({ settings, toast }) {
   }
 
   return h('div', null,
+    terms && !terms.accepted && h(ui.Card, { title: `使用协议 v${terms.version}` },
+      h('ol', { style: { paddingLeft: 18, lineHeight: 1.7, fontSize: 13, margin: '4px 0 8px' } },
+        (terms.items || []).map((item, index) => h('li', { key: index }, item))),
+      h('p', { className: 'ab-note' }, '确认后才能生成和打印；条款更新后需要重新确认。'),
+      h(ui.Btn, {
+        onClick: async () => {
+          const r = await call('/accept', {}).catch(() => null)
+          if (!r?.ok) return toast('确认失败')
+          toast('已确认使用协议')
+          reload()
+        },
+      }, '我已阅读并同意'),
+    ),
+
     h(ui.Card, { title: '模板' },
       h('p', { className: 'ab-note' }, '模板 = 名称 + 提示词。可以手动触发，也可以按时间自动生成打印；提示词支持 {date} {weekday} {time} {width} 占位符。'),
       h('div', { style: { display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' } },

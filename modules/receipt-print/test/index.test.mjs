@@ -4,6 +4,7 @@ import { mkdtemp, readFile, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import mod from '../index.mjs'
+import { TERMS_VERSION } from '../lib/terms.mjs'
 
 function bodyReq(payload) {
   return {
@@ -13,9 +14,9 @@ function bodyReq(payload) {
   }
 }
 
-async function boot({ diary = null, config = null, sendText = null } = {}) {
+async function boot({ diary = null, config = null, sendText = null, terms = true } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'receipt-index-'))
-  const settings = {}
+  const settings = terms ? { termsVersion: TERMS_VERSION } : {}
   const commands = new Map()
   const routes = new Map()
   const ticks = new Map()
@@ -369,4 +370,54 @@ test('面板 /calibrate 也能打印校准页', async () => {
   const result = await routes.get('/calibrate')({})
   assert.equal(result.ok, true)
   assert.match(result.message, /48mm/)
+})
+
+test('未同意协议时拒绝打印，同意后恢复', async () => {
+  const { commands, settings, dir } = await boot({ terms: false })
+  settings.printer = { name: '预览机', transport: 'preview', paperWidthMm: 58 }
+
+  const blocked = await commands.get('小票').run('每日简报')
+  assert.match(blocked, /同意/)
+  assert.match(blocked, /\/小票 协议/)
+  assert.equal(settings.termsVersion, undefined)
+
+  const agreement = await commands.get('小票').run('协议')
+  assert.match(agreement, /小票打印使用协议/)
+  assert.match(agreement, /备份/)
+
+  const accepted = await commands.get('小票').run('同意')
+  assert.match(accepted, /已确认/)
+  assert.equal(settings.termsVersion, TERMS_VERSION)
+  assert.ok(settings.termsAcceptedAt)
+
+  const printed = await commands.get('小票').run('每日简报')
+  assert.match(printed, /已发送/)
+
+  const raw = JSON.parse(await readFile(join(dir, 'state.json'), 'utf8'))
+  assert.equal(raw.history.length, 1)
+})
+
+test('未同意协议时 /打印 和 /自检 也被拦住', async () => {
+  const { commands, settings } = await boot({ terms: false })
+  settings.printer = { name: '预览机', transport: 'preview', paperWidthMm: 58 }
+
+  assert.match(await commands.get('打印').run('你好'), /同意/)
+  assert.match(await commands.get('自检').run(''), /同意/)
+  assert.match(await commands.get('打印机').run('状态'), /同意/)
+})
+
+test('面板 /accept 能确认协议并回传条款状态', async () => {
+  const { routes, settings } = await boot({ terms: false })
+  const result = await routes.get('/accept')({})
+  assert.equal(result.ok, true)
+  assert.equal(result.terms.accepted, true)
+  assert.equal(settings.termsVersion, TERMS_VERSION)
+})
+
+test('旧版本的协议确认会失效', async () => {
+  const { commands, settings } = await boot({ terms: false })
+  settings.termsVersion = '0.9'
+  settings.printer = { name: '预览机', transport: 'preview', paperWidthMm: 58 }
+
+  assert.match(await commands.get('小票').run('每日简报'), /同意/)
 })
