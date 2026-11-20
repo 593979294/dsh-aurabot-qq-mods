@@ -17,6 +17,15 @@ test('折行：中文按 2 列算，不超宽', () => {
   }
 })
 
+test('折行：标点不单独起一行', () => {
+  const lines = wrapText('今天把说说自动打印的配图调好了呀，', 32)
+  assert.deepEqual(lines, ['今天把说说自动打印的配图调好了', '呀，'])
+  for (const line of lines) {
+    assert.equal(/^[。，、；：！？）》」』】]/.test(line), false)
+    assert.ok(displayWidth(line) <= 32)
+  }
+})
+
 test('折行：保留空行，清理行尾空白', () => {
   assert.deepEqual(wrapText('第一行  \n\n第三行', 20), ['第一行', '', '第三行'])
 })

@@ -29,6 +29,9 @@ function cleanLine(text) {
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '')
 }
 
+// 避头标点：不能让标点单独起一行，宁可把前一个字一起挪下去。
+const NO_LINE_START = new Set('。，、；：！？）》」』】〕〉…—·,.!?;:%)]}')
+
 // 折行：保留空行；超宽的长单词也会硬切，不会溢出纸宽。
 export function wrapText(text, width) {
   const limit = Math.max(1, Math.floor(width) || 1)
@@ -45,6 +48,14 @@ export function wrapText(text, width) {
       const cw = charWidth(ch)
       if (cw > limit) continue
       if (used + cw > limit) {
+        if (NO_LINE_START.has(ch) && current) {
+          const chars = [...current]
+          const last = chars.pop()
+          out.push(chars.join(''))
+          current = last + ch
+          used = charWidth(last) + cw
+          continue
+        }
         out.push(current)
         current = ''
         used = 0
