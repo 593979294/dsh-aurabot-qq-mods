@@ -104,11 +104,11 @@ test('面板接口：模板、保存、运行预览、历史、快速预览', as
 test('面板接口：保存打印机设置', async () => {
   const { routes } = await boot()
   const saved = await routes.get('/settings')(bodyReq({
-    patch: { printers: [{ name: 'POS-58', transport: 'windows', target: 'POS-58', paperWidthMm: 58 }] },
+    patch: { printer: { name: 'POS-58', transport: 'windows', target: 'POS-58', paperWidthMm: 58 } },
   }))
   assert.equal(saved.ok, true)
-  assert.equal(saved.settings.printers.length, 1)
-  assert.equal(saved.settings.printers[0].name, 'POS-58')
+  assert.equal(saved.settings.printer.name, 'POS-58')
+  assert.equal(saved.settings.printers, undefined)
 })
 
 test('纸宽 mm 会换算成每行列数', async () => {
@@ -126,10 +126,11 @@ test('纸宽 mm 会换算成每行列数', async () => {
   assert.equal(narrow.columns, 26)
 })
 
-test('/打印机 列表显示 mm 和列数', async () => {
+test('/打印机 显示单台打印机和列数', async () => {
   const { commands, settings } = await boot()
-  settings.printers = [{ name: 'POS-80', transport: 'preview', paperWidthMm: 80 }]
+  settings.printer = { name: 'POS-80', transport: 'preview', paperWidthMm: 80 }
   const text = await commands.get('打印机').run('')
+  assert.match(text, /POS-80/)
   assert.match(text, /80mm \/ 48 列/)
   assert.match(text, /每行 32 列/, '全局默认仍是 58mm')
 })
@@ -142,24 +143,30 @@ test('旧配置 width=48 会迁移成 80mm', async () => {
   assert.equal(preview.columns, 48)
 })
 
-test('/自检：没配打印机时提示去加打印机', async () => {
+test('/自检：没配打印机时提示去配置', async () => {
   const { commands } = await boot()
   const text = await commands.get('自检').run('')
-  assert.match(text, /还没有打印机/)
+  assert.match(text, /还没有配置打印机/)
 })
 
 test('/自检：默认发内置 ESC/POS 自检页', async () => {
   const { commands, settings, exports } = await boot()
-  settings.printers = [{ name: '预览机', transport: 'preview' }]
+  settings.printer = { name: '预览机', transport: 'preview' }
   const text = await commands.get('自检').run('')
   assert.match(text, /自检页已发到「预览机」/)
   assert.match(text, /32 列/)
   assert.equal(exports.templates().length, 1, '自检不影响模板')
 })
 
+test('/自检：旧配置的 printers 数组取第一台', async () => {
+  const { commands, settings } = await boot()
+  settings.printers = [{ name: '旧机', transport: 'preview' }]
+  assert.match(await commands.get('自检').run(''), /自检页已发到「旧机」/)
+})
+
 test('/自检：自定义指令会替换内置自检页，非法时拒绝发送', async () => {
   const { commands, settings } = await boot()
-  settings.printers = [{ name: '预览机', transport: 'preview' }]
+  settings.printer = { name: '预览机', transport: 'preview' }
   settings.selfTestHex = 'ZZ'
   assert.match(await commands.get('自检').run(''), /自检指令有问题/)
 

@@ -9,8 +9,7 @@ import { tick } from './lib/scheduler.mjs'
 
 const DEFAULTS = {
   enabled: true,
-  defaultPrinter: '',
-  printers: [],
+  printer: null,
   paperWidthMm: 58,
   effectiveWidthMm: 0,
   encoding: 'gbk',
@@ -44,8 +43,26 @@ function normalizeSettings(raw = {}) {
     effectiveWidthMm: settings.effectiveWidthMm,
   })
   const effectiveRaw = Number(settings.effectiveWidthMm)
+  // 单个打印机。旧配置里的 printers 数组取第一台，忽略 defaultPrinter。
+  const rawPrinter = settings.printer && typeof settings.printer === 'object'
+    ? settings.printer
+    : (Array.isArray(settings.printers) ? settings.printers.find((p) => p && typeof p === 'object') : null)
+  const printer = rawPrinter
+    ? normalizePrinter(rawPrinter, {
+      paperWidthMm: paper.paperMm,
+      effectiveWidthMm: effectiveRaw > 0 ? effectiveRaw : 0,
+      encoding: settings.encoding,
+      cut: settings.cut,
+      selfTestHex: settings.selfTestHex,
+    })
+    : null
+  const cleaned = { ...settings }
+  delete cleaned.printers
+  delete cleaned.defaultPrinter
+  delete cleaned.width
   return {
-    ...settings,
+    ...cleaned,
+    printer,
     paperWidthMm: paper.paperMm,
     // 0 表示自动，跟着纸宽走；填了就固定，并限制在纸宽以内
     effectiveWidthMm: effectiveRaw > 0 ? Math.min(paper.paperMm, Math.round(effectiveRaw * 10) / 10) : 0,
@@ -55,28 +72,11 @@ function normalizeSettings(raw = {}) {
     maxChars: Math.max(100, Math.min(4000, Number(settings.maxChars) || DEFAULTS.maxChars)),
     timeoutMs: Math.max(1000, Math.min(30000, Number(settings.timeoutMs) || DEFAULTS.timeoutMs)),
     showHeader: settings.showHeader !== false,
-    printers: Array.isArray(settings.printers) ? settings.printers.filter((p) => p && typeof p === 'object') : [],
   }
 }
 
-function normalizePrinters(settings) {
-  return settings.printers.map((raw) => normalizePrinter(raw, {
-    paperWidthMm: settings.paperWidthMm,
-    effectiveWidthMm: settings.effectiveWidthMm,
-    encoding: settings.encoding,
-    cut: settings.cut,
-    selfTestHex: settings.selfTestHex,
-  }))
-}
-
-function resolvePrinter(settings, name) {
-  const printers = normalizePrinters(settings)
-  if (name) return printers.find((p) => p.name === name) || null
-  if (settings.defaultPrinter) {
-    const found = printers.find((p) => p.name === settings.defaultPrinter)
-    if (found) return found
-  }
-  return printers[0] || null
+function currentPrinter(settings) {
+  return settings.printer || null
 }
 
 // 纸宽优先级：模板指定 > 打印机指定 > 全局设置。
@@ -104,7 +104,7 @@ async function readBody(req) {
 export default {
   id: 'receipt-print',
   name: '小票打印',
-  version: '0.2.0',
+  version: '0.3.0',
   api: 1,
   description: '把模板和提示词变成热敏小票：可定时生成或随时触发；纸宽按毫米设置并自适应排版，支持一键 ESC/POS 自检（指令可替换）、Windows USB 打印队列、网口 9100 和 CUPS；没接打印机时可先预览版面。',
   defaults: DEFAULTS,
@@ -115,7 +115,6 @@ export default {
     { key: 'selfTestHex', label: '自检指令（十六进制，可空）', type: 'text', placeholder: '留空 = 内置 ESC/POS 自检页', hint: '例如 1B 40 1B 61 01 ...；填了就原样发给打印机，不再发内置自检页' },
     { key: 'encoding', label: '中文编码', type: 'select', options: [{ value: 'gbk', label: 'GBK（多数国产机）' }, { value: 'utf8', label: 'UTF-8' }] },
     { key: 'cut', label: '切纸', type: 'select', options: [{ value: 'partial', label: '半切' }, { value: 'full', label: '全切' }, { value: 'none', label: '不切' }] },
-    { key: 'defaultPrinter', label: '默认打印机', type: 'text', hint: '填打印机名字，需和下面「打印机」里的一致；空则用第一台' },
     { key: 'maxChars', label: '正文最大字数', type: 'number', min: 100, max: 4000, step: 100, hint: '模型输出超长会被截断' },
     { key: 'showHeader', label: '打印页眉', type: 'switch', hint: '显示模板名、日期时间和分隔线' },
     { key: 'footer', label: '全局页脚', type: 'text', placeholder: '可留空；支持 {date} 等占位符' },
@@ -150,9 +149,7 @@ export default {
       if (settings.enabled === false) return { ok: false, message: '小票打印已关闭，先去面板打开' }
       if (running.has(template.id)) return { ok: false, message: `「${template.name}」正在生成，别急` }
 
-      const printer = options.printerName
-        ? normalizePrinters(settings).find((p) => p.name === options.printerName) || null
-        : (template.printer ? normalizePrinters(settings).find((p) => p.name === template.printer) : null) || resolvePrinter(settings, '')
+      const printer = currentPrinter(settings)
       const paper = paperFor(settings, printer, template)
       const now = options.now instanceof Date ? options.now : new Date()
       const prompt = buildPrompt(template, { ...paper, width: paper.columns, now })
@@ -222,12 +219,12 @@ export default {
       }
     }
 
-    async function printRaw(text, { printerName } = {}) {
+    async function printRaw(text) {
       const settings = settingsNow()
       if (settings.enabled === false) return { ok: false, message: '小票打印已关闭，先去面板打开' }
       const body = String(text || '').trim()
       if (!body) return { ok: false, message: '要打印什么？用法：/打印 内容' }
-      const printer = resolvePrinter(settings, printerName)
+      const printer = currentPrinter(settings)
       const paper = paperFor(settings, printer, null)
       const { lines, qr } = buildLines({
         template: { name: '打印' },
@@ -263,9 +260,8 @@ export default {
       const schedule = template.schedule?.enabled
         ? ` · ${template.schedule.time}${template.schedule.days?.length ? `（周${template.schedule.days.map((d) => '日一二三四五六'[d]).join('')}）` : ' · 每天'}`
         : ''
-      const printer = template.printer ? ` · ${template.printer}` : ''
       const engine = template.engine === 'think' ? ' · 人格' : ''
-      return `${template.enabled === false ? '（停用）' : ''}${template.name}${schedule}${printer}${engine}`
+      return `${template.enabled === false ? '（停用）' : ''}${template.name}${schedule}${engine}`
     }
 
     function templateList() {
@@ -276,15 +272,11 @@ export default {
 
     function printerList() {
       const settings = settingsNow()
-      const printers = normalizePrinters(settings)
-      if (!printers.length) return '还没有打印机。去面板「打印机」里加一台，或先用「只预览」模式。'
-      const list = printers.map((p, i) => {
-        const mark = p.name === settings.defaultPrinter ? '（默认）' : ''
-        const target = p.transport === 'preview' ? '' : ` → ${p.target || '未填目标'}`
-        const paper = resolvePaper({ paperWidthMm: p.paperWidthMm, effectiveWidthMm: p.effectiveWidthMm })
-        return `${i + 1}. ${p.name}${mark} · ${TRANSPORT_LABELS[p.transport] || p.transport}${target} · ${paper.paperMm}mm / ${paper.columns} 列`
-      })
-      return ['打印机：', ...list].join('\n')
+      const printer = currentPrinter(settings)
+      if (!printer) return '还没有配置打印机。去面板「打印机」里填一台，或先用传输方式「只预览」。'
+      const target = printer.transport === 'preview' ? '' : ` → ${printer.target || '未填目标'}`
+      const paper = resolvePaper({ paperWidthMm: printer.paperWidthMm, effectiveWidthMm: printer.effectiveWidthMm })
+      return `打印机：${printer.name} · ${TRANSPORT_LABELS[printer.transport] || printer.transport}${target} · ${paper.paperMm}mm / ${paper.columns} 列`
     }
 
     function rulerLine(columns) {
@@ -295,9 +287,9 @@ export default {
      * 一键自检：默认发内置 ESC/POS 自检页（纸宽、列数、编码、中文、刻度尺、二维码、切纸）。
      * 打印机或全局设置了 selfTestHex 时，原样发送那段十六进制指令。
      */
-    async function selfTest(name) {
+    async function selfTest() {
       const settings = settingsNow()
-      const printer = resolvePrinter(settings, name || settings.defaultPrinter)
+      const printer = currentPrinter(settings)
       if (!printer) return { ok: false, message: printerList() }
 
       const paper = paperFor(settings, printer, null)
@@ -386,11 +378,11 @@ export default {
         const text = String(arg || '').trim()
         const settings = settingsNow()
         if (!text || text === '列表') {
-          const defaultName = settings.defaultPrinter || normalizePrinters(settings)[0]?.name || '未配置'
-          return [templateList(), '', `默认打印机：${defaultName}`, '用法：/小票 名称 · /小票 预览 名称 · /小票 自检'].join('\n')
+          const printerName = settings.printer?.name || '未配置'
+          return [templateList(), '', `打印机：${printerName}`, '用法：/小票 名称 · /小票 预览 名称 · /小票 自检'].join('\n')
         }
         if (text === '测试' || text === '自检') {
-          return (await selfTest('')).message
+          return (await selfTest()).message
         }
         if (text.startsWith('预览')) {
           const name = text.replace(/^预览\s*/, '').trim()
@@ -424,7 +416,7 @@ export default {
     api.command({
       name: '打印',
       aliases: ['print'],
-      desc: '直接打印一段文字到默认打印机：/打印 内容',
+      desc: '直接打印一段文字：/打印 内容',
       async run(arg) {
         const result = await printRaw(arg)
         return result.message
@@ -433,11 +425,10 @@ export default {
 
     api.command({
       name: '打印机',
-      desc: '看小票打印机和默认机器；/打印机 自检 [名字] 打自检页',
+      desc: '看小票打印机；/打印机 自检 打自检页',
       async run(arg) {
         const text = String(arg || '').trim()
-        const name = text.replace(/^(测试|自检)\s*/, '').trim()
-        if (/^(测试|自检)/.test(text)) return (await selfTest(name)).message
+        if (/^(测试|自检)/.test(text)) return (await selfTest()).message
         const settings = settingsNow()
         const paper = resolvePaper({ paperWidthMm: settings.paperWidthMm, effectiveWidthMm: settings.effectiveWidthMm })
         const selfTestLabel = settings.selfTestHex ? '自定义指令' : '内置 ESC/POS 自检页'
@@ -446,7 +437,7 @@ export default {
           '',
           `纸宽：${paper.paperMm}mm · 有效：${paper.effectiveMm}mm · 每行 ${paper.columns} 列`,
           `编码：${settings.encoding} · 切纸：${settings.cut} · 自检：${selfTestLabel}`,
-          '去面板「小票打印」里改纸宽、增删打印机。',
+          '去面板「小票打印」里改打印机和纸宽。',
         ].join('\n')
       },
     })
@@ -454,22 +445,23 @@ export default {
     api.command({
       name: '自检',
       aliases: ['selfcheck'],
-      desc: '一键自检打印机：/自检 [打印机名字]',
-      async run(arg) {
-        return (await selfTest(String(arg || '').trim())).message
+      desc: '一键自检打印机',
+      async run() {
+        return (await selfTest()).message
       },
     })
 
     // ---------- 面板接口 ----------
-    api.route('/templates', () => ({
-      ok: true,
-      templates: store.templates(),
-      printers: normalizePrinters(settingsNow()).map((p) => ({
-        ...p,
-        ...resolvePaper({ paperWidthMm: p.paperWidthMm, effectiveWidthMm: p.effectiveWidthMm }),
-      })),
-      settings: settingsNow(),
-    }))
+    api.route('/templates', () => {
+      const settings = settingsNow()
+      const printer = settings.printer
+        ? {
+          ...settings.printer,
+          ...resolvePaper({ paperWidthMm: settings.printer.paperWidthMm, effectiveWidthMm: settings.printer.effectiveWidthMm }),
+        }
+        : null
+      return { ok: true, templates: store.templates(), printer, settings }
+    })
 
     api.route('/settings', async (req) => {
       const body = await readBody(req)
@@ -498,14 +490,11 @@ export default {
       const body = await readBody(req)
       const template = store.get(body.id || body.name)
       if (!template) return { ok: false, message: '没找到这个模板' }
-      const result = await runTemplate(template, { preview: body.preview === true, printerName: body.printer })
+      const result = await runTemplate(template, { preview: body.preview === true })
       return result
     })
 
-    api.route('/test', async (req) => {
-      const body = await readBody(req)
-      return selfTest(String(body.name || '').trim())
-    })
+    api.route('/test', async () => selfTest())
 
     api.route('/history', () => ({
       ok: true,
@@ -518,7 +507,7 @@ export default {
     api.route('/preview', async (req) => {
       const body = await readBody(req)
       const settings = settingsNow()
-      const printer = resolvePrinter(settings, body.printer)
+      const printer = currentPrinter(settings)
       const paper = paperFor(settings, printer, null)
       const { lines, qr } = buildLines({
         template: { name: '' },
@@ -541,7 +530,7 @@ export default {
       }
     })
 
-    log.info?.(`小票打印已启动，${store.templates().length} 个模板，${normalizePrinters(settingsNow()).length} 台打印机`)
+    log.info?.(`小票打印已启动，${store.templates().length} 个模板，${settingsNow().printer ? `打印机：${settingsNow().printer.name}` : '未配置打印机'}`)
 
     return {
       runTemplate,

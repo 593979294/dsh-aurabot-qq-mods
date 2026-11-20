@@ -37,7 +37,6 @@ export function normalizeTemplate(raw = {}) {
       time: /^\d{2}:\d{2}$/.test(String(schedule.time || '')) ? String(schedule.time) : '08:30',
       days,
     },
-    printer: String(raw.printer || ''),
     widthMm: templatePaperMm(raw),
     footer: String(raw.footer || ''),
     qr: String(raw.qr || ''),

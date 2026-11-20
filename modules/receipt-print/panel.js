@@ -34,23 +34,27 @@ const emptyTemplate = () => ({
 
 return function Panel({ settings, toast }) {
   const [templates, setTemplates] = useState([])
-  const [printers, setPrinters] = useState([])
   const [history, setHistory] = useState([])
   const [draft, setDraft] = useState(null)
   const [busy, setBusy] = useState('')
   const [preview, setPreview] = useState('')
   const [text, setText] = useState('')
-  const [form, setForm] = useState({ name: '', transport: 'windows', target: '', paperWidthMm: 58 })
-  const [rawPrinters, setRawPrinters] = useState([])
+  const [pform, setPform] = useState({ name: '', transport: 'windows', target: '', paperWidthMm: 58 })
   const [live, setLive] = useState(null)
 
   const reload = async () => {
     const r = await call('/templates').catch(() => null)
     if (r?.ok) {
       setTemplates(r.templates || [])
-      setPrinters(r.printers || [])
-      setRawPrinters(r.settings?.printers || [])
       setLive(r.settings || null)
+      if (r.printer) {
+        setPform({
+          name: r.printer.name,
+          transport: r.printer.transport,
+          target: r.printer.target,
+          paperWidthMm: r.printer.paperWidthMm,
+        })
+      }
     }
     const h = await call('/history').catch(() => null)
     if (h?.ok) setHistory(h.history || [])
@@ -86,33 +90,33 @@ return function Panel({ settings, toast }) {
     reload()
   }
 
-  const testPrinter = async (name) => {
-    setBusy('test-' + name)
-    const r = await call('/test', { name }).catch(() => null)
+  const savePrinter = async () => {
+    if (!pform.name.trim()) return toast('给打印机起个名字')
+    if (pform.transport !== 'preview' && !pform.target.trim()) return toast('填 IP 或系统打印队列名')
+    const r = await call('/settings', {
+      patch: {
+        printer: {
+          ...pform,
+          name: pform.name.trim(),
+          target: pform.target.trim(),
+          paperWidthMm: Number(pform.paperWidthMm),
+        },
+      },
+    }).catch(() => null)
+    if (!r?.ok) return toast('保存失败')
+    reload()
+    return true
+  }
+
+  const testPrinter = async () => {
+    setBusy('test')
+    const saved = await savePrinter()
+    if (saved) {
+      const r = await call('/test', {}).catch(() => null)
+      toast(r?.message || '自检失败')
+    }
     setBusy('')
-    toast(r?.message || '测试失败')
     reload()
-  }
-
-  const addPrinter = async () => {
-    if (!form.name.trim()) return toast('给打印机起个名字')
-    if (form.transport !== 'preview' && !form.target.trim()) return toast('填 IP 或系统打印队列名')
-    const next = [...rawPrinters, { ...form, name: form.name.trim(), target: form.target.trim(), paperWidthMm: Number(form.paperWidthMm) }]
-    const r = await call('/settings', { patch: { printers: next } }).catch(() => null)
-    if (!r?.ok) return toast('添加失败')
-    setRawPrinters(next)
-    setForm({ name: '', transport: 'windows', target: '', paperWidthMm: 58 })
-    toast('已添加')
-    reload()
-  }
-
-  const removePrinter = async (name) => {
-    if (!window.confirm(`移除打印机「${name}」？`)) return
-    const next = rawPrinters.filter((p) => p.name !== name)
-    const r = await call('/settings', { patch: { printers: next } }).catch(() => null)
-    if (!r?.ok) return toast('移除失败')
-    setRawPrinters(next)
-    toast('已移除')
   }
 
   const setSchedule = (patch) => setDraft((d) => ({ ...d, schedule: { ...(d.schedule || {}), ...patch } }))
@@ -138,7 +142,7 @@ return function Panel({ settings, toast }) {
           h('div', { className: 'ab-small ab-muted' },
             [
               t.schedule?.enabled ? `定时 ${t.schedule.time}${t.schedule.days?.length ? ' · 周' + t.schedule.days.map((d) => WEEK[d]).join('') : ' · 每天'}` : '手动触发',
-              t.printer || '默认打印机',
+              t.widthMm ? `纸张 ${t.widthMm}mm` : '跟随纸宽',
               t.engine === 'think' ? '人格生成' : '单问模型',
             ].join(' · ')),
         ),
@@ -162,10 +166,6 @@ return function Panel({ settings, toast }) {
             h('select', { style: field, value: draft.engine, onChange: (e) => setDraft({ ...draft, engine: e.target.value }) },
               h('option', { value: 'ask' }, '单问模型（快，不带人格）'),
               h('option', { value: 'think' }, '让她想（带人格和记忆，慢）'))),
-          h('label', null, '指定打印机',
-            h('select', { style: field, value: draft.printer || '', onChange: (e) => setDraft({ ...draft, printer: e.target.value }) },
-              h('option', { value: '' }, '默认打印机'),
-              printers.map((p) => h('option', { key: p.name, value: p.name }, p.name)))),
           h('label', null, '纸张',
             h('select', { style: field, value: draft.widthMm || 0, onChange: (e) => setDraft({ ...draft, widthMm: Number(e.target.value) }) },
               h('option', { value: 0 }, '跟随打印机'),
@@ -194,28 +194,18 @@ return function Panel({ settings, toast }) {
     ),
 
     h(ui.Card, { title: '打印机' },
-      h('p', { className: 'ab-note' }, `全局纸宽 ${live?.paperWidthMm ?? settings.paperWidthMm ?? 58} mm，有效宽度 ${live?.effectiveWidthMm > 0 ? live.effectiveWidthMm + ' mm' : '自动'}；改纸宽、有效宽度和自检指令请到「设置」页。USB 打印机填 Windows「设备和打印机」里的队列名，网口填 IP（可带 :9100）。`),
-      h('div', { style: { display: 'flex', gap: 8, marginBottom: 8 } },
-        h(ui.Btn, { onClick: () => testPrinter('') }, '一键自检默认打印机')),
-      !rawPrinters.length && h('p', { className: 'ab-muted' }, '还没有打印机，可以先加一台「只预览」。'),
-      rawPrinters.map((p) => {
-        const meta = printers.find((x) => x.name === p.name)
-        return h('div', { key: p.name, style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '6px 0', borderTop: '1px solid rgba(128,128,128,.18)' } },
-          h('div', { style: { flex: '1 1 220px' } },
-            h('div', null, p.name),
-            h('div', { className: 'ab-small ab-muted' }, `${(TRANSPORTS.find((t) => t[0] === p.transport) || [])[1] || p.transport} · ${p.target || '未填目标'} · ${meta?.paperMm || p.paperWidthMm || settings.paperWidthMm || 58}mm / ${meta?.columns || '—'} 列`)),
-          h(ui.Btn, { disabled: busy === 'test-' + p.name, onClick: () => testPrinter(p.name) }, busy === 'test-' + p.name ? '发送中…' : '自检'),
-          h(ui.Btn, { onClick: () => removePrinter(p.name) }, '移除'),
-        )
-      }),
-      h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 } },
-        h('input', { style: { ...field, flex: '1 1 120px' }, placeholder: '名字', value: form.name, onChange: (e) => setForm({ ...form, name: e.target.value }) }),
-        h('select', { style: field, value: form.transport, onChange: (e) => setForm({ ...form, transport: e.target.value }) },
+      h('p', { className: 'ab-note' }, `全局纸宽 ${live?.paperWidthMm ?? settings.paperWidthMm ?? 58} mm，有效宽度 ${live?.effectiveWidthMm > 0 ? live.effectiveWidthMm + ' mm' : '自动'}；改有效宽度和自检指令请到「设置」页。USB 打印机填 Windows「设备和打印机」里的队列名，网口填 IP（可带 :9100），没接打印机选「只预览」。`),
+      h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
+        h('input', { style: { ...field, flex: '1 1 120px' }, placeholder: '名字', value: pform.name, onChange: (e) => setPform({ ...pform, name: e.target.value }) }),
+        h('select', { style: field, value: pform.transport, onChange: (e) => setPform({ ...pform, transport: e.target.value }) },
           TRANSPORTS.map(([value, label]) => h('option', { key: value, value }, label))),
-        h('input', { style: { ...field, flex: '1 1 150px' }, placeholder: '队列名 / IP / 留空', value: form.target, onChange: (e) => setForm({ ...form, target: e.target.value }) }),
-        h('select', { style: field, value: form.paperWidthMm, onChange: (e) => setForm({ ...form, paperWidthMm: Number(e.target.value) }) },
+        h('input', { style: { ...field, flex: '1 1 150px' }, placeholder: '队列名 / IP / 留空', value: pform.target, onChange: (e) => setPform({ ...pform, target: e.target.value }) }),
+        h('select', { style: field, value: pform.paperWidthMm, onChange: (e) => setPform({ ...pform, paperWidthMm: Number(e.target.value) }) },
           h('option', { value: 58 }, '58mm'), h('option', { value: 80 }, '80mm')),
-        h(ui.Btn, { onClick: addPrinter }, '添加'),
+      ),
+      h('div', { style: { display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' } },
+        h(ui.Btn, { onClick: savePrinter }, '保存'),
+        h(ui.Btn, { disabled: busy === 'test', onClick: testPrinter }, busy === 'test' ? '发送中…' : '保存并自检'),
       ),
     ),
 
