@@ -95,6 +95,8 @@ test('面板接口：模板、保存、运行预览、历史、快速预览', as
   assert.equal(listed.ok, true)
   assert.equal(listed.templates.length, 2)
   assert.ok(listed.templates.some((t) => t.name === '今日总结'))
+  assert.match(listed.version, /^\d+\.\d+\.\d+$/)
+  assert.equal(listed.stage, '测试')
 
   const saved = await routes.get('/save')(bodyReq({ template: { name: '周报', prompt: '写周报' } }))
   assert.equal(saved.ok, true)
@@ -382,7 +384,7 @@ test('未同意协议时拒绝打印，同意后恢复', async () => {
   assert.equal(settings.termsVersion, undefined)
 
   const agreement = await commands.get('小票').run('协议')
-  assert.match(agreement, /小票打印使用协议/)
+  assert.match(agreement, /热敏打印使用协议/)
   assert.match(agreement, /备份/)
 
   const accepted = await commands.get('小票').run('同意')

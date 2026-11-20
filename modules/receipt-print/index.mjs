@@ -1,4 +1,4 @@
-// 小票打印：模板 + 提示词 → 模型生成 → ESC/POS → 热敏打印机。
+// 热敏打印：模板 + 提示词 → 模型生成 → ESC/POS → 热敏打印机。
 // 本文件只做接线，排版/传输/存储都在 lib/。
 import { openStore } from './lib/store.mjs'
 import { normalizePrinter, sendBytes, queryStatus, TRANSPORT_LABELS } from './lib/transport.mjs'
@@ -15,6 +15,8 @@ import { buildCalibration } from './lib/calibrate.mjs'
 import { TERMS_TITLE, TERMS_VERSION, termsAccepted, termsGate, termsPublic, termsText } from './lib/terms.mjs'
 
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024
+const VERSION = '0.10.0'
+const STAGE = '测试'
 
 const TRIGGER_LABELS = {
   command: '命令',
@@ -171,8 +173,8 @@ async function readBody(req) {
 
 export default {
   id: 'receipt-print',
-  name: '小票打印',
-  version: '0.10.0',
+  name: '热敏打印',
+  version: VERSION,
   api: 1,
   description: '把模板和提示词变成热敏小票：首次使用需在面板或聊天确认使用协议；定时或随时触发，纸宽按毫米自适应排版，配图缩放调色后打印并自动切纸；支持真机校准页，量出实际有效宽度并检查图片切边；每次打印在本机保存正文与触发来源备份，备份目录可自定义；内置 ESC/POS 指令表和字节解码，可查打印机状态并把返回字节翻译成中文；打印失败或打印机报错会主动私聊主人。支持 Windows USB 队列、网口 9100、CUPS 和预览。',
   defaults: DEFAULTS,
@@ -242,7 +244,7 @@ export default {
         log.warn?.(`没有配置主人 QQ，错误未汇报：${title}`)
         return
       }
-      const text = `【小票打印】${title}${detail ? `\n${detail}` : ''}`.slice(0, 900)
+      const text = `【热敏打印】${title}${detail ? `\n${detail}` : ''}`.slice(0, 900)
       const key = text.slice(0, 200)
       const now = Date.now()
       if (now - (reported.get(key) || 0) < 10 * 60 * 1000) return
@@ -284,7 +286,7 @@ export default {
       const gate = termsGate(settings)
       if (gate) return { ok: false, message: gate }
       if (!template) return { ok: false, message: '没有这个模板' }
-      if (settings.enabled === false) return { ok: false, message: '小票打印已关闭，先去面板打开' }
+      if (settings.enabled === false) return { ok: false, message: '热敏打印已关闭，先去面板打开' }
       if (running.has(template.id)) return { ok: false, message: `「${template.name}」正在生成，别急` }
 
       const printer = currentPrinter(settings)
@@ -367,7 +369,7 @@ export default {
       const settings = settingsNow()
       const gate = termsGate(settings)
       if (gate) return { ok: false, message: gate }
-      if (settings.enabled === false) return { ok: false, message: '小票打印已关闭，先去面板打开' }
+      if (settings.enabled === false) return { ok: false, message: '热敏打印已关闭，先去面板打开' }
       const body = String(text || '').trim()
       if (!body) return { ok: false, message: '要打印什么？用法：/打印 内容' }
       const printer = currentPrinter(settings)
@@ -506,8 +508,8 @@ export default {
         preview: false,
       })
       if (!result.ok) {
-        log.warn?.(`说说小票打印失败：${result.error || '未知错误'}`)
-        reportError('说说小票打印失败', `打印机：${printer.name}\n原因：${result.error || '未知错误'}`)
+        log.warn?.(`说说热敏打印失败：${result.error || '未知错误'}`)
+        reportError('说说热敏打印失败', `打印机：${printer.name}\n原因：${result.error || '未知错误'}`)
       }
     }
 
@@ -605,7 +607,7 @@ export default {
           `纸宽：${paper.paperMm}mm / 有效 ${paper.effectiveMm}mm / 每行 ${paper.columns} 列`,
           `编码：${printer.encoding} · 切纸：${printer.cut}`,
           '',
-          '中文测试：小票打印中文正常',
+          '中文测试：热敏打印中文正常',
           'ASCII: ABC abc 0123456789',
           rulerLine(paper.columns),
           '上面这行数字如果正好铺满纸宽，说明有效宽度设置正确。',
@@ -664,7 +666,7 @@ export default {
       const settings = settingsNow()
       const gate = termsGate(settings)
       if (gate) return { ok: false, message: gate }
-      if (settings.enabled === false) return { ok: false, message: '小票打印已关闭，先去面板打开' }
+      if (settings.enabled === false) return { ok: false, message: '热敏打印已关闭，先去面板打开' }
       const printer = currentPrinter(settings)
       if (!printer) return { ok: false, message: printerList() }
 
@@ -767,7 +769,7 @@ export default {
         },
       })
       if (due.length) log.info?.(`定时小票触发 ${due.length} 个`)
-    }, '小票打印定时')
+    }, '热敏打印定时')
 
     // 轮询内置 diary 模块的动态，有新说说就自动打一张（打印完照常切纸）。
     api.every(30 * 1000, async () => {
@@ -818,7 +820,7 @@ export default {
     // ---------- 命令（主人） ----------
     api.command({
       name: '小票',
-      aliases: ['打印小票', 'receipt'],
+      aliases: ['打印小票', 'receipt', '热敏', '热敏打印'],
       desc: '模板小票：/小票 看列表，/小票 名称 生成打印，/小票 预览 名称 只看版面，/小票 加 名称 | 提示词，/小票 状态 查打印机，/小票 解码 1B 40 解读指令',
       async run(arg) {
         const text = String(arg || '').trim()
@@ -901,7 +903,7 @@ export default {
 
     api.command({
       name: '打印机',
-      desc: '看小票打印机；/打印机 自检 打自检页，/打印机 校准 打校准页，/打印机 状态 查返回',
+      desc: '看热敏打印机；/打印机 自检 打自检页，/打印机 校准 打校准页，/打印机 状态 查返回',
       async run(arg) {
         const text = String(arg || '').trim()
         const gate = termsGate(settingsNow())
@@ -918,7 +920,7 @@ export default {
           `纸宽：${paper.paperMm}mm · 有效：${paper.effectiveMm}mm · 每行 ${paper.columns} 列`,
           `编码：${settings.encoding} · 切纸：${settings.cut} · 自检：${selfTestLabel}`,
           '状态回读需要网口 9100 直连；Windows 队列和 CUPS 只能发不能读。',
-          '去面板「小票打印」里改打印机和纸宽。',
+          '去面板「热敏打印」里改打印机和纸宽。',
         ].join('\n')
       },
     })
@@ -943,7 +945,7 @@ export default {
           ...resolvePaper({ paperWidthMm: settings.printer.paperWidthMm, effectiveWidthMm: settings.printer.effectiveWidthMm }),
         }
         : null
-      return { ok: true, templates: store.templates(), printer, settings, terms: termsPublic(settings) }
+      return { ok: true, templates: store.templates(), printer, settings, terms: termsPublic(settings), version: VERSION, stage: STAGE }
     })
 
     api.route('/accept', async () => {
@@ -1053,7 +1055,7 @@ export default {
       }
     })
 
-    log.info?.(`小票打印已启动，${store.templates().length} 个模板，${settingsNow().printer ? `打印机：${settingsNow().printer.name}` : '未配置打印机'}`)
+    log.info?.(`热敏打印已启动，${store.templates().length} 个模板，${settingsNow().printer ? `打印机：${settingsNow().printer.name}` : '未配置打印机'}`)
 
     return {
       runTemplate,

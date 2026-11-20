@@ -1,4 +1,4 @@
-// 小票打印面板：模板（提示词/定时）、打印机、预览、最近记录。
+// 热敏打印面板：模板（提示词/定时）、打印机、预览、最近记录。
 const { useState, useEffect } = React
 
 const WEEK = ['日', '一', '二', '三', '四', '五', '六']
@@ -51,6 +51,7 @@ return function Panel({ settings, toast }) {
   const [pform, setPform] = useState({ name: '', transport: 'windows', target: '', paperWidthMm: 58 })
   const [live, setLive] = useState(null)
   const [terms, setTerms] = useState(null)
+  const [meta, setMeta] = useState(null)
   const [diag, setDiag] = useState('')
   const [hex, setHex] = useState('1B 40 1B 61 01 1D 56 01')
   const [decoded, setDecoded] = useState('')
@@ -61,6 +62,7 @@ return function Panel({ settings, toast }) {
       setTemplates(r.templates || [])
       setLive(r.settings || null)
       setTerms(r.terms || null)
+      if (r.version) setMeta({ version: r.version, stage: r.stage || '' })
       if (r.printer) {
         setPform({
           name: r.printer.name,
@@ -327,6 +329,14 @@ return function Panel({ settings, toast }) {
           h('pre', { style: { whiteSpace: 'pre-wrap', margin: '6px 0 0', padding: 8, border: '1px solid rgba(128,128,128,.2)', borderRadius: 6 } }, entry.text),
           entry.backup && h('div', { style: { opacity: .6, marginTop: 4 } }, `文件：${entry.backup}`),
         ))),
+    ),
+
+    meta && h('div', {
+      className: 'ab-small ab-muted',
+      style: { textAlign: 'center', padding: '12px 0 4px', lineHeight: 1.7 },
+    },
+      `热敏打印 v${meta.version}${meta.stage ? ` · 阶段：${meta.stage}` : ''}`,
+      meta.stage === '测试' ? h('div', null, '测试阶段，功能和指令可能随时调整') : null,
     ),
   )
 }

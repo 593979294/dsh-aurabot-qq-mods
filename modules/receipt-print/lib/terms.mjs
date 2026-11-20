@@ -1,7 +1,7 @@
 // 使用协议：必须在确认后才能打印。
 // 条款有实质改动时提升 TERMS_VERSION，已确认过的用户会被要求重新确认。
 export const TERMS_VERSION = '1.0'
-export const TERMS_TITLE = '小票打印使用协议'
+export const TERMS_TITLE = '热敏打印使用协议'
 
 export const TERMS_ITEMS = [
   '仅在你自有或已获授权的打印机和账号上使用，不得用于伪造票据、凭证或侵害他人权益。',
