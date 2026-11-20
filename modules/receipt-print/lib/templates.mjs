@@ -1,5 +1,6 @@
 // 模板：提示词占位符替换、模型输出清洗、打印行组装。
 import { wrapText } from './layout.mjs'
+import { funLines } from './fun.mjs'
 
 export const PLACEHOLDERS = ['date', 'weekday', 'time', 'datetime', 'weekdayNum', 'width', 'paper', 'effective', 'columns', 'name']
 
@@ -77,6 +78,7 @@ export function buildLines({
   qr = '',
   now = new Date(),
   title,
+  fun = false,
 } = {}) {
   const lines = []
   const vars = templateVars(template, { width, paperMm, effectiveMm, now })
@@ -95,6 +97,16 @@ export function buildLines({
 
   const bodyLines = wrapText(body, width)
   for (const line of bodyLines) lines.push({ text: line, style: 'normal' })
+
+  if (fun) {
+    const extras = funLines({ now, name: heading, width })
+    if (extras.length) {
+      lines.push({ text: '', style: 'normal' })
+      for (const text of extras) {
+        lines.push({ text, style: text.startsWith('---') ? 'sep' : 'normal' })
+      }
+    }
+  }
 
   const foot = substitute(footer, vars).trim()
   const qrData = substitute(qr, vars).trim()

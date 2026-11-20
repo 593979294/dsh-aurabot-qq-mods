@@ -55,6 +55,22 @@ test('组装打印行：页眉、正文、页脚、分隔线', () => {
   assert.ok(text.includes('第二行'))
 })
 
+test('组装打印行：打开彩蛋会追加幸运数字和小图案', () => {
+  const { lines } = buildLines({
+    template: { name: '今日总结' },
+    body: '今天还不错',
+    width: 32,
+    now: new Date(2026, 10, 20, 18, 0),
+    fun: true,
+  })
+  assert.ok(lines.some((l) => l.text.includes('幸运数字')))
+  assert.ok(lines.some((l) => l.text.includes('今日关键词')))
+  assert.ok(lines.some((l) => /^[\s\\/()|._'"`*<>^o-]+$/.test(l.text) && l.text.trim()), '应包含一个 ASCII 小图案')
+
+  const plain = buildLines({ template: { name: '今日总结' }, body: 'x', width: 32, fun: false })
+  assert.equal(plain.lines.some((l) => l.text.includes('幸运数字')), false)
+})
+
 test('组装打印行：标题按半宽折行，正文按整宽折行', () => {
   const { lines } = buildLines({ template: { name: '一二三四五六七八九十' }, body: '一二三四五六七八九十', width: 10, showHeader: true })
   const titleLines = lines.filter((l) => l.style === 'title')
