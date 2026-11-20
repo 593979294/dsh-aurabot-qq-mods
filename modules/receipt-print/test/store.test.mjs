@@ -16,6 +16,33 @@ test('种子模板只会写一次', async () => {
   assert.equal(store.templates().length, 1)
 })
 
+test('今日总结只补种一次，删掉也不复活', async () => {
+  const dir = await tempDir()
+  const store = openStore(dir)
+  store.seed({ name: '每日简报', prompt: '写简报' })
+
+  const summary = store.seedSummary({
+    name: '今日总结',
+    prompt: '写总结',
+    schedule: { enabled: true, time: '18:00', days: [] },
+  })
+  assert.equal(summary.name, '今日总结')
+  assert.equal(summary.schedule.enabled, true)
+  assert.equal(summary.schedule.time, '18:00')
+  assert.equal(store.templates().length, 2)
+
+  assert.equal(store.seedSummary({ name: '今日总结', prompt: '写总结' }), null)
+  assert.equal(store.templates().length, 2)
+
+  store.deleteTemplate('今日总结')
+  assert.equal(store.seedSummary({ name: '今日总结', prompt: '写总结' }), null)
+  assert.equal(store.get('今日总结'), null)
+
+  const again = openStore(dir)
+  assert.equal(again.seedSummary({ name: '今日总结', prompt: '写总结' }), null)
+  assert.equal(again.get('今日总结'), null)
+})
+
 test('按名字或 id 取模板，保存和删除', async () => {
   const store = openStore(await tempDir())
   const t = store.saveTemplate({ name: '日报', prompt: '写日报', schedule: { enabled: true, time: '08:30', days: [1, 3] } })

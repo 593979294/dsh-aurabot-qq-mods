@@ -47,6 +47,15 @@ const SEED_TEMPLATE = {
   footer: '{date}',
 }
 
+const SEED_SUMMARY = {
+  name: '今日总结',
+  prompt: '今天是 {date} {weekday}。请写一份适合打印在小票上的今日总结：今天发生了什么、做完了什么、还有什么没做完、明天最要紧的一件事。只输出正文，不要标题，不要 Markdown，每行不超过 {width} 个字符。',
+  system: '你是简洁的中文助理。只输出要打印在小票上的纯文本正文，不要解释、不要代码块、不要 Markdown。',
+  engine: 'ask',
+  schedule: { enabled: true, time: '18:00', days: [] },
+  footer: '{date}',
+}
+
 function normalizeSettings(raw = {}) {
   const source = raw && typeof raw === 'object' ? raw : {}
   const settings = { ...DEFAULTS, ...source }
@@ -134,7 +143,7 @@ async function readBody(req) {
 export default {
   id: 'receipt-print',
   name: '小票打印',
-  version: '0.4.0',
+  version: '0.4.1',
   api: 1,
   description: '把模板和提示词变成热敏小票：可定时生成或随时触发；纸宽按毫米设置并自适应排版，支持一键 ESC/POS 自检（指令可替换）、Windows USB 打印队列、网口 9100 和 CUPS；她每次发说说会自动排版打印（配图按纸宽缩放），打完自动切纸；没接打印机时可先预览版面。',
   defaults: DEFAULTS,
@@ -170,6 +179,7 @@ export default {
     const running = new Set()
 
     if (store.templates().length === 0) store.seed(SEED_TEMPLATE)
+    store.seedSummary(SEED_SUMMARY)
 
     const settingsNow = () => normalizeSettings(api.settings())
 

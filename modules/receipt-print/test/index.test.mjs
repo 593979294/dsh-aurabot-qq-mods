@@ -36,12 +36,17 @@ async function boot({ diary = null } = {}) {
   return { dir, settings, commands, routes, ticks, exports }
 }
 
-test('启动后自动种下「每日简报」模板', async () => {
+test('启动后自动种下「每日简报」和「今日总结」', async () => {
   const { exports } = await boot()
   const templates = exports.templates()
-  assert.equal(templates.length, 1)
-  assert.equal(templates[0].name, '每日简报')
-  assert.equal(templates[0].schedule.enabled, false)
+  assert.equal(templates.length, 2)
+  const brief = templates.find((t) => t.name === '每日简报')
+  assert.equal(brief.schedule.enabled, false)
+
+  const summary = templates.find((t) => t.name === '今日总结')
+  assert.equal(summary.schedule.enabled, true)
+  assert.equal(summary.schedule.time, '18:00')
+  assert.deepEqual(summary.schedule.days, [])
 })
 
 test('/小票 列表', async () => {
@@ -81,7 +86,8 @@ test('面板接口：模板、保存、运行预览、历史、快速预览', as
 
   const listed = routes.get('/templates')()
   assert.equal(listed.ok, true)
-  assert.equal(listed.templates.length, 1)
+  assert.equal(listed.templates.length, 2)
+  assert.ok(listed.templates.some((t) => t.name === '今日总结'))
 
   const saved = await routes.get('/save')(bodyReq({ template: { name: '周报', prompt: '写周报' } }))
   assert.equal(saved.ok, true)
@@ -164,7 +170,7 @@ test('/自检：默认发内置 ESC/POS 自检页', async () => {
   const text = await commands.get('自检').run('')
   assert.match(text, /自检页已发到「预览机」/)
   assert.match(text, /32 列/)
-  assert.equal(exports.templates().length, 1, '自检不影响模板')
+  assert.equal(exports.templates().length, 2, '自检不影响模板')
 })
 
 test('/自检：旧配置的 printers 数组取第一台', async () => {

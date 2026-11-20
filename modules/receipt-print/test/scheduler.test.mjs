@@ -18,6 +18,13 @@ test('到点触发，同一天只触发一次', () => {
   assert.equal(dueTemplates([tpl()], at(8, 31), {}).length, 0)
 })
 
+test('今日总结默认 18:00 每天触发', () => {
+  const summary = tpl({ id: 'sum', name: '今日总结', schedule: { enabled: true, time: '18:00', days: [] } })
+  assert.equal(dueTemplates([summary], at(18, 0), {}).length, 1)
+  assert.equal(dueTemplates([summary], at(17, 59), {}).length, 0)
+  assert.equal(dueTemplates([summary], at(18, 1), {}).length, 0)
+})
+
 test('按星期过滤，不选星期等于每天', () => {
   const day = at(8, 30).getDay()
   assert.equal(dueTemplates([tpl({ schedule: { enabled: true, time: '08:30', days: [day] } })], at(8, 30), {}).length, 1)

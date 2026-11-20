@@ -48,7 +48,7 @@ export function normalizeTemplate(raw = {}) {
 export function openStore(dir) {
   mkdirSync(dir, { recursive: true })
   const file = join(dir, 'state.json')
-  let state = { version: 1, seeded: false, templates: [], history: [], lastRun: {}, moment: { lastAt: 0 } }
+  let state = { version: 1, seeded: false, seededSummary: false, templates: [], history: [], lastRun: {}, moment: { lastAt: 0 } }
   if (existsSync(file)) {
     try {
       const loaded = JSON.parse(readFileSync(file, 'utf8'))
@@ -132,6 +132,20 @@ export function openStore(dir) {
       state.seeded = true
       const created = this.saveTemplate(template)
       return created
+    },
+    // 老用户已经有「每日简报」时，也要补一个「今日总结」，但只补一次。
+    seedSummary(template) {
+      if (state.seededSummary) return null
+      state.seededSummary = true
+      if (state.templates.some((t) => t.name === template.name)) {
+        save()
+        return null
+      }
+      if (state.templates.length >= MAX_TEMPLATES) {
+        save()
+        return null
+      }
+      return this.saveTemplate(template)
     },
   }
 }
