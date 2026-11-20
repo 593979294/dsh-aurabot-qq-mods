@@ -296,6 +296,7 @@ export default {
     async function attempt(day) {
       const t = tries[day] || { n: 0, next: 0 }
       if (t.n >= 3 || Date.now() < t.next) return false
+      api.log.info?.(`私人日记：开始${day === dayKey() ? '写' : '补写'} ${day}（第 ${t.n + 1} 次）`)
       const res = await run({ day, auto: true })
       if (res && res.ok) delete tries[day]
       else tries[day] = { n: t.n + 1, next: Date.now() + 10 * 60_000 }
