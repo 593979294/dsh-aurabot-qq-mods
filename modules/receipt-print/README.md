@@ -237,9 +237,13 @@
 
 ```sh
 cd modules/receipt-print
-npm ci
+npm ci            # 必须先装依赖，否则测试无法运行
 npm test          # 布局、字节、模板、传输、存储、图片、说说
 npm run build     # 产出 .build/
 ```
+
+测试依赖 `npm ci` 安装的 `node_modules`（`iconv-lite`、`jpeg-js`、`pngjs`）。没装依赖直接跑测试，涉及编码、图片和模块入口的 4 个测试文件会报 `ERR_MODULE_NOT_FOUND`，这是缺依赖不是用例失败。CI 请先在本目录执行 `npm ci`（或 `npm install`）再跑 `npm test`。
+
+仓库根目录的 `node scripts/check.mjs` 只做静态检查（模块清单、capabilities、构建产物），不需要 `node_modules`，可以直接在任何干净 checkout 里跑。
 
 测试不依赖真打印机：网口用本地假 TCP 服务器，Windows/CUPS 用注入的 spawn 断言命令参数。
