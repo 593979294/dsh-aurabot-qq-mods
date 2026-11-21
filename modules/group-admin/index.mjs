@@ -9,9 +9,9 @@ const { defineTool, str, int } = __lib('tools/tools.js')
 export const CMD = [
   { re: /^(全体禁言|开启全体禁言|全员禁言)$/, action: 'wholeban' },
   { re: /^(关闭全体禁言|解除全体禁言|关闭全员禁言|解除全员禁言)$/, action: 'wholeoff' },
-  { re: /^禁言\s*(\S+?)\s*(\d+)?\s*(分钟)?$/, action: 'ban' },
-  { re: /^(解禁|取消禁言)\s*(\S+)$/, action: 'unban' },
-  { re: /^(踢人|踢出|踢了)\s*(\S+)$/, action: 'kick' },
+  { re: /^禁言\s*(@[^\n]+?|\S+?)\s*(?:(\d+)\s*(?:分钟|min)?)?$/, action: 'ban' },
+  { re: /^(解禁|取消禁言)\s*(@[^\n]+|\S+)$/, action: 'unban' },
+  { re: /^(踢人|踢出|踢了)\s*(@[^\n]+|\S+)$/, action: 'kick' },
   { re: /^(改头衔|设置头衔)\s*(\S+)\s+(.+)$/, action: 'title' },
   { re: /^(发公告|群公告)\s+([\s\S]+)$/, action: 'notice' },
   { re: /^添加白名单\s*([\s\S]+)$/, action: 'wladd' },
@@ -22,9 +22,9 @@ export const CMD = [
 const HELP = [
   '群管能做的事（只有主人和群管白名单里的人能发）：',
   '  全体禁言 / 关闭全体禁言',
-  '  禁言 名字或QQ 分钟数',
-  '  解禁 名字或QQ',
-  '  踢人 名字或QQ',
+  '  禁言 @某人 10 ／ 禁言 名字或QQ 分钟数',
+  '  解禁 @某人 ／ 解禁 名字或QQ',
+  '  踢人 @某人 ／ 踢人 名字或QQ',
   '  改头衔 名字或QQ 头衔内容',
   '  发公告 内容',
   '  添加白名单 @某人 或 QQ号 / 移除白名单 @某人 或 QQ号 / 查看白名单',
@@ -44,7 +44,7 @@ export function matchCommand(text) {
 export default {
   id: 'group-admin',
   name: '群管',
-  version: '1.1.0',
+  version: '1.1.1',
   api: 1,
   description: '主人开口时帮忙管群：禁言、解禁、踢人、改头衔、发公告、全体禁言；自带群管白名单，白名单里的人可以直接发指令触发。',
   defaults: { extraWhitelist: '' },
@@ -111,7 +111,7 @@ export default {
 
     // 名字 / QQ 号 → uid
     const resolveUid = async (gid, who) => {
-      const s = String(who || '').trim().replace(/^[@＠]/, '')
+      const s = String(who || '').trim().replace(/^[@＠]\s*/, '').replace(/\s+/g, ' ')
       if (/^\d{5,12}$/.test(s)) return { uid: Number(s) }
       const found = await findMember(gid, s)
       if (!found.uid) {
