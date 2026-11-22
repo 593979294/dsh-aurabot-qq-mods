@@ -1,4 +1,4 @@
-// travel —— 出行总模块（v2.0.2）
+// travel —— 真实世界总模块（v2.1.0）
 // 把原来的三个模块合成一个：travel-hub（总控/工具）、trip-loc（引擎）、outings（出门走走）。
 // real-loc 定位卡片模块不随分发包提供，lib/real/ 下只是 Key 读写占位。
 //
@@ -35,7 +35,7 @@ export default {
   description: '真实世界：行程、定位、出门、票务、天时，一个入口一个面板六页。合并自 travel-hub / trip-loc / outings / real-loc。',
   category: 'social',
   tags: ['出行', '行程', '车票', '定位', '出门'],
-  author: '匿名',
+  author: 'momo9422',
   license: 'MIT',
   minPluginVersion: '1.2.0',
   panel: 'panel.js',
