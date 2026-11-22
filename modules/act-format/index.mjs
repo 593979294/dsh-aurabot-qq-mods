@@ -18,6 +18,8 @@ import { actionWeight, parseMessage, DEFAULT_FORMATS } from './lib/parse.mjs'
 
 const DEFAULTS = {
   enabled: true,
+  // 睡眠状态来源：auto=自动探测已安装的睡眠模块；也可指定某一模块，或用 setSleepProbe 注入
+  sleepSource: 'auto',
   inject: true,                 // 醒着时把对方动作注入上下文
   formats: DEFAULT_FORMATS.join(','),
   injectChars: 200,             // 单条动作注入上限
@@ -46,7 +48,7 @@ function clamp(n, lo, hi) {
 export default {
   id: 'act-format',
   name: '动作互动',
-  version: '0.1.0',
+  version: '0.2.0',
   api: 1,
   description:
     '把 *动作* 这类包裹文本解析成结构化动作（观察者，不拦消息）；睡眠期间只保留模糊体感残留，不记录具体发生了什么',
@@ -55,6 +57,18 @@ export default {
   // 面板字段全部用声明式表单，省掉自定义 panel.js
   settings: [
     { key: 'enabled', label: '启用动作解析', type: 'switch' },
+    {
+      key: 'sleepSource',
+      label: '睡眠状态来源',
+      type: 'select',
+      options: [
+        { label: '自动探测（优先用已装的睡眠模块）', value: 'auto' },
+        { label: '长夜如梦（night）', value: 'night' },
+        { label: '生理模块（real-life）', value: 'real-life' },
+        { label: '自定义端口（api.use(\'act-format\').setSleepProbe）', value: 'custom' },
+        { label: '不判断（永远当醒着）', value: 'none' },
+      ],
+    },
     { key: 'inject', label: '把对方动作注入上下文', type: 'switch', hint: '只在消息里真的带动作时才注入，普通聊天不花 token' },
     {
       key: 'formats',
@@ -100,14 +114,47 @@ export default {
       }
     }
 
-    /** 睡着了没：以长夜如梦为准（它就是睡/醒的权威）。 */
-    const sleeping = () => {
+    // ---------------------------------------------------------------- 睡眠状态端口（可插拔）
+    // 本模块不绑定任何具体的睡眠模块：默认自动探测已安装的（night → real-life），
+    // 也可以通过 api.use('act-format').setSleepProbe(fn) 把自家作息接进来。
+    let sleepProbe = null
+
+    const modeOf = (id) => {
       try {
-        const snap = api.use('night')?.snapshot?.()
-        return snap?.mode === 'asleep'
+        const snap = api.use(id)?.snapshot?.()
+        const mode = snap && typeof snap === 'object' ? snap.mode : null
+        return typeof mode === 'string' ? mode : null
       } catch {
+        return null
+      }
+    }
+
+    const askProbe = () => {
+      if (typeof sleepProbe !== 'function') return undefined
+      try {
+        const v = sleepProbe()
+        return v === undefined ? undefined : Boolean(v)
+      } catch (error) {
+        api.log.warn('[act-format] 自定义睡眠探针报错，按醒着处理：' + (error?.message || error))
         return false
       }
+    }
+
+    /** 睡着了没：来源由设置 sleepSource 决定，默认 auto（谁在就用谁）。 */
+    const sleeping = () => {
+      const src = String(cfg().sleepSource || 'auto')
+      if (src === 'none') return false
+      if (src === 'custom') return askProbe() === true
+      if (src === 'night') return modeOf('night') === 'asleep'
+      if (src === 'real-life') return modeOf('real-life') === 'asleep'
+      // auto：先问自定义探针（它可能返回 undefined 表示“我不管”），再按 night → real-life 探测
+      const asked = askProbe()
+      if (asked !== undefined) return asked
+      const nightMode = modeOf('night')
+      if (nightMode) return nightMode === 'asleep'
+      const lifeMode = modeOf('real-life')
+      if (lifeMode) return lifeMode === 'asleep'
+      return false
     }
 
     /** 残留按时间衰减后的当前值。 */
@@ -304,6 +351,14 @@ export default {
     )
 
     return {
+      /** 预留端口：把自己的作息接进来。fn 返回 true/false，返回 undefined 表示“我不判断”。 */
+      setSleepProbe: (fn) => {
+        sleepProbe = typeof fn === 'function' ? fn : null
+        return () => { if (sleepProbe === fn) sleepProbe = null }
+      },
+      clearSleepProbe: () => { sleepProbe = null },
+      sleepSource: () => String(cfg().sleepSource || 'auto'),
+      isAsleep: () => sleeping(),
       parse: (text) => parseMessage(text, { formats: formats().split(/[,，\s]+/).filter(Boolean) }),
       recentActions,
       residue: residueNow,

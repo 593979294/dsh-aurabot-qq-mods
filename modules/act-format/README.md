@@ -82,3 +82,21 @@ api.on('message', async (msg) => { ... return false })   // 永远 false
 ## 数据
 
 `modules-data/act-format/state.json`：`actions[]`、`residue`、`residueAt`、`suppressedCount`、`chats{}`。
+
+## 睡眠状态端口（可插拔）
+
+本模块不绑定任何具体的睡眠模块。默认 sleepSource=auto：先问自定义探针，再依次探测已安装的 
+ight（长夜如梦）、
+eal-life（生理模块）的 snapshot().mode。
+
+想把自己那套作息接进来：
+
+`js
+const act = api.use('act-format')
+const off = act.setSleepProbe(() => mySleepState() === 'asleep') // 返回 undefined = 我不判断，交回自动探测
+off() // 用完取消注册
+`
+
+设置项「睡眠状态来源」也可以直接指定：自动探测 / 长夜如梦 / 生理模块 / 自定义端口 / 不判断。
+
+> 注意：「睡眠期间不记录结构化动作、只留模糊体感」这套行为，只有在**睡眠状态能判定为睡着**时才生效。sleepSource=none 或谁都探测不到时，睡眠期间的动作会当成醒着记录。
