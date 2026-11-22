@@ -29,10 +29,10 @@ const T = (s) => String(s == null ? '' : s).trim()
 
 export default {
   id: 'travel',
-  name: '出行',
+  name: '真实世界',
   version: '2.1.0',
   api: 1,
-  description: '出行总模块：行程、定位、出门、票务、天时，一个入口一个面板六页。合并自 travel-hub / trip-loc / outings / real-loc。',
+  description: '真实世界：行程、定位、出门、票务、天时，一个入口一个面板六页。合并自 travel-hub / trip-loc / outings / real-loc。',
   category: 'social',
   tags: ['出行', '行程', '车票', '定位', '出门'],
   author: '匿名',

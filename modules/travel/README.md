@@ -1,4 +1,4 @@
-# 出行（travel）
+# 真实世界（travel）
 
 把「行程 / 定位 / 出门 / 票务 / 天时」合成一个模块：一套面板六页、一套规则、一个数据目录。
 合并自 travel-hub、trip-loc、outings 三个模块；位置卡统一走 `travel_where`（本模块不含 `loc_send`，原因见「已知限制」）。
