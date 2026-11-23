@@ -17,8 +17,9 @@ export const MAX_PACKAGE_BYTES = 20 * 1024 * 1024
 const ID_RE = /^[a-z][a-z0-9-]{1,39}$/
 const VERSION_RE = /^\d+\.\d+\.\d+$/
 const ENTRY = ['index.mjs', 'index.js']
-const SKIP_DIRS = new Set(['node_modules', '.git', '.build', '.runtime', '.aurabot-cache', 'test', 'tests', 'fixtures', '__tests__'])
-const SKIP_FILE = /(\.test\.[cm]?[jt]s|^package-lock\.json|^\.gitignore)$/
+// src/ 与 scripts/ 是开发目录（TS 源码与构建脚本），不随发布包走，也不参与运行时能力扫描。
+const SKIP_DIRS = new Set(['node_modules', '.git', '.build', '.runtime', '.aurabot-cache', 'test', 'tests', 'fixtures', '__tests__', 'src', 'scripts'])
+const SKIP_FILE = /(\.test\.[cm]?[jt]s|^package-lock\.json|^yarn\.lock$|^tsconfig(\..+)?\.json$|^\.gitignore$)/
 
 // 能力声明：给审核者和安装页看的，不是沙箱。模块和插件同进程，这里拦不住恶意代码。
 export const CAPABILITIES = {
@@ -40,8 +41,8 @@ export const CATEGORIES = {
   manage: '管理',
   tool: '工具',
 }
-const ROOT_FILES = /^(module\.json|index\.m?js|panel\.js|package(-lock)?\.json|.*\.md|LICENSE.*)$/i
-const ROOT_DIRS = new Set(['lib', 'test', 'assets', 'docs'])
+const ROOT_FILES = /^(module\.json|index\.m?js|panel\.js|package(-lock)?\.json|tsconfig(\..+)?\.json|yarn\.lock|.*\.md|LICENSE.*)$/i
+const ROOT_DIRS = new Set(['lib', 'test', 'assets', 'docs', 'src', 'scripts'])
 
 export const compareVersions = (a, b) => {
   const x = String(a).split('.').map(Number)
