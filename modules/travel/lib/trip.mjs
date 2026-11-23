@@ -317,10 +317,13 @@ export default {
       if ((o.mode === 'flight' || o.mode === 'plane') && !String(c.flightKey || '').trim() && !(o.depart && o.arrive)) {
         return { ok: false, message: '飞机还没接航班数据源（Key 留空），我不会编一个航班号。要么给我真实起降时刻，要么先不坐飞机。' }
       }
-      const want = o.legs && o.legs.length
-        ? { op: 'plan', legs: o.legs }
-        : { op: 'plan', mode: o.mode, from: o.from, to: o.to, date: o.date, code: o.code, city: o.city, depart: o.depart, arrive: o.arrive,
-            after: o.after, before: o.before }
+      const legList = Array.isArray(o.legs) ? o.legs : []
+      const multiLeg = legList.length > 1
+      const q = legList.length === 1 ? { ...o, ...legList[0] } : o
+      const want = multiLeg
+        ? { op: 'plan', legs: legList }
+        : { op: 'plan', mode: q.mode, from: q.from, to: q.to, date: q.date, code: q.code, city: q.city, depart: q.depart, arrive: q.arrive,
+            after: q.after, before: q.before }
       // 开始时刻交给引擎按「行程所在地当地时间」记，不拿本机时钟
       const r = engine(want)
       if (!r.ok) return { ok: false, message: r.error }
@@ -332,21 +335,21 @@ export default {
       }
       // 排出来的那一刻以「计划」为准：请求的车次没排上时，别把请求值和实际计划混着用（票面会串站）
       const p0 = r.trip || {}
-      const picked = !(o.legs && o.legs.length)
+      const picked = !multiLeg
       const t = {
-        mode: (o.legs && o.legs.length) ? 'multi' : (picked && p0.mode) || o.mode,
-        from: (picked && p0.from) || o.from, to: (picked && p0.to) || o.to,
-        date: (picked && (p0.depart || '').slice(0, 10)) || o.date || '',
-        code: (picked && p0.code) || o.code || '',
-        city: o.city || '',
-        legs: o.legs || null,
-        plan: r.trip, note: o.note || '', startedAt: r.trip.start_at || r.trip.depart || '', at: new Date().toISOString(),
-        tz: r.trip.tz, plan_at: new Date().toISOString(), seat_class: String(o.seat_class || ''),
-        delay: (o.delay === undefined || o.delay === null || o.delay === '') ? null : Number(o.delay),
+        mode: multiLeg ? 'multi' : (picked && p0.mode) || q.mode,
+        from: (picked && p0.from) || q.from, to: (picked && p0.to) || q.to,
+        date: (picked && (p0.depart || '').slice(0, 10)) || q.date || '',
+        code: (picked && p0.code) || q.code || '',
+        city: q.city || '',
+        legs: multiLeg ? legList : null,
+        plan: r.trip, note: q.note || '', startedAt: r.trip.start_at || r.trip.depart || '', at: new Date().toISOString(),
+        tz: r.trip.tz, plan_at: new Date().toISOString(), seat_class: String(q.seat_class || ''),
+        delay: (q.delay === undefined || q.delay === null || q.delay === '') ? null : Number(q.delay),
       }
-      if (picked && o.code && p0.code && String(p0.code).toUpperCase() !== String(o.code).toUpperCase()) {
-        t.requested_code = String(o.code)
-        t.note = `你要的 ${o.code} 这天没排上，改成了 ${p0.code}${t.note ? '；' + t.note : ''}`
+      if (picked && q.code && p0.code && String(p0.code).toUpperCase() !== String(q.code).toUpperCase()) {
+        t.requested_code = String(q.code)
+        t.note = `你要的 ${q.code} 这天没排上，改成了 ${p0.code}${t.note ? '；' + t.note : ''}`
       }
       const tks = buildTickets(t)
       if (tks && tks.seatError) return { ok: false, message: tks.seatError }
@@ -355,11 +358,11 @@ export default {
       save(t)
       // 排好行程就把这趟的坐标/走廊一次取全（之后问位置几乎不再打高德）；失败不挡挂行程
       try {
-        const wreq = o.legs && o.legs.length
-          ? { op: 'warm', legs: o.legs }
-          : { op: 'warm', mode: o.mode, from: o.from, to: o.to, date: o.date, code: o.code, city: o.city,
-              depart: o.depart, arrive: o.arrive, stops: r.trip.stops,
-              start: o.mode === 'train' ? undefined : (r.trip.start_at || r.trip.depart) }
+        const wreq = multiLeg
+          ? { op: 'warm', legs: legList }
+          : { op: 'warm', mode: q.mode, from: q.from, to: q.to, date: q.date, code: q.code, city: q.city,
+              depart: q.depart, arrive: q.arrive, stops: r.trip.stops,
+              start: q.mode === 'train' ? undefined : (r.trip.start_at || r.trip.depart) }
         const w = engine(wreq)
         if (w && w.ok) api.log.info(`行程预热完成：这次取了 ${w.warm_calls} 条，今日累计 ${w.used_today} 次`)
       } catch (e) { api.log.warn?.('预热没成（不影响行程）：' + (e?.message || e)) }

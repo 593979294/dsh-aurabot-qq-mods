@@ -174,7 +174,14 @@ export default {
       const firstFrom = tail[0].from
       const nm = (s) => String(s || '').replace(/站|机场/g, '')
       const sameSpot = nm(p.name).includes(nm(firstFrom)) || (nm(firstFrom).length > 2 && nm(p.name) === nm(firstFrom))
-      if (sameSpot) return { ...a, legs: tail }
+      if (sameSpot) {
+        if (tail.length === 1) {
+          // 回程只排一段：按单程传，不要塞进 legs 让引擎当联程
+          const { legs: _drop, ...base } = a
+          return { ...base, ...tail[0] }
+        }
+        return { ...a, legs: tail }
+      }
       const legs = [{ mode: 'drive', from: here, to: firstFrom, date: today }, ...tail]
       return { ...a, legs, rerouteNote: `已改道：先从${p.name}回${firstFrom}，再走原来那段。` }
     }

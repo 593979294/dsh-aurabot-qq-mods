@@ -1136,8 +1136,11 @@ def build_multi(specs):
                            st, s.get('city'), after, s.get('before'),
                            s.get('depart'), s.get('arrive'), s.get('stops')))
         prev = trips[-1]
-    if len(trips) < 2:
+    if not trips:
         raise RuntimeError('联程至少要两段')
+    if len(trips) == 1:
+        # 单段列表按单程处理：中途从当前站排回程时，调用方可能只传一段
+        return trips[0]
     check_transfers(trips)
     return {'mode': 'multi', 'legs': trips, 'from': trips[0]['from'], 'to': trips[-1]['to'],
             'depart': trips[0]['depart'], 'arrive': trips[-1]['arrive'], '_tz': 8}
