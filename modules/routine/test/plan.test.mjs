@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { fileURLToPath } from 'node:url'
 import { PROFESSIONS } from '../professions.mjs'
-import { WORK_TASKS, tasksFor, newTask, advance, willSlack, willGoOut, newOuting, doWork, doSlack, taskFailed, leaderOf, caughtChance } from '../plan.mjs'
+import { WORK_TASKS, SLACKS, OUTINGS, tasksFor, newTask, advance, willSlack, willGoOut, newOuting, doWork, doSlack, taskFailed, leaderOf, caughtChance, pickFresh } from '../plan.mjs'
 
 const mod = (await import(pathToFileURL(fileURLToPath(new URL('../index.mjs', import.meta.url))).href)).default
 
@@ -61,6 +61,49 @@ test('每个职业都有活可干：任务池不落空、至少三条、扣题�
     assert.equal(pool, WORK_TASKS[id], `${id} 应该有专属池子，不要落到 office`)
     for (const t of pool) assert.ok(typeof t === 'string' && t.length >= 4 && !t.includes('undefined'))
   }
+})
+
+test('池子够大：每个职业 ≥16 条活、摸鱼 ≥20 种、去处 ≥20 个，且互不重复', () => {
+  for (const [id, pool] of Object.entries(WORK_TASKS)) {
+    assert.ok(pool.length >= 16, `${id} 只有 ${pool.length} 条活，容易重样`)
+    assert.equal(new Set(pool).size, pool.length, `${id} 的池子里有重复条目`)
+  }
+  assert.ok(SLACKS.length >= 20, `摸鱼只有 ${SLACKS.length} 种`)
+  assert.ok(OUTINGS.length >= 20, `去处只有 ${OUTINGS.length} 个`)
+  assert.equal(new Set(SLACKS).size, SLACKS.length, '摸鱼条目有重复')
+  assert.equal(new Set(OUTINGS).size, OUTINGS.length, '去处有重复')
+})
+
+test('pickFresh：避开用过的；整池都用完才允许重样', () => {
+  assert.equal(pickFresh(['a', 'b', 'c'], ['a', 'b'], () => 0), 'c')
+  assert.equal(pickFresh(['a', 'b'], ['a', 'b'], () => 0), 'a', '全用过时回退到原池，不能返回 undefined')
+})
+
+test('同一天的几条活不重样：avoid 把已经抽到的挡掉', () => {
+  const now = at(MON, '10:00')
+  const used = []
+  for (let i = 0; i < 10; i++) {
+    const t = newTask('office', now, { hours: 3, avoid: used })
+    used.push(t.title)
+  }
+  assert.equal(new Set(used).size, 10, `10 次抽到了重复的活：${used.join(' / ')}`)
+})
+
+test('摸鱼与出门也不连着重样，且说的和记的是同一件事', () => {
+  const now = at(MON, '10:00')
+  const seen = []
+  for (let i = 0; i < 12; i++) {
+    const d = doSlack({ profId: 'nurse', recent: seen, rand: () => 0.99 })
+    if (d.kind === 'slack') { seen.push(d.text); assert.equal(d.say, d.text, '说的和记的必须同一件事') }
+  }
+  assert.equal(new Set(seen).size, seen.length, `摸鱼重样了：${seen.join(' / ')}`)
+
+  const acts = []
+  for (let i = 0; i < 10; i++) {
+    const o = newOuting(now, { recent: acts, rand: () => 0.5 })
+    acts.push(o.act)
+  }
+  assert.equal(new Set(acts).size, 10, `去的地方重样了：${acts.join(' / ')}`)
 })
 
 test('newTask：截止时间落在 hours 附近，进度从 0 起，标题来自本职业池', () => {

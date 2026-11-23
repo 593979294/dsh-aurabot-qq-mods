@@ -69,7 +69,7 @@ const LIVIN_ON = new Set(['rest', 'leave', 'home'])
 export default {
   id: 'routine',
   name: '作息',
-  version: '1.2.0',
+  version: '1.2.1',
   api: 1,
   category: 'desktop',
   tags: ['作息', '上下班', '生活', '职业', '自主'],
@@ -393,6 +393,18 @@ export default {
 
     const pendingTasks = () => st.plan.tasks.filter((t) => !t.done && !t.failed)
     const moodValue = () => { try { return Number(api.use('mood')?.state?.()?.value) || 60 } catch { return 60 } }
+    // 最近记过的同类事，抽新的时先避开，免得连着两天摸同一种鱼、去同一个地方
+    const recentOf = (kind, n = 8) => {
+      const out = []
+      for (let i = st.plan.log.length - 1; i >= 0 && out.length < n; i--) {
+        const e = st.plan.log[i]
+        if (e.kind !== kind) continue
+        const t = String(e.text || '')
+        if (t && !out.includes(t)) out.push(t)
+      }
+      return out
+    }
+    const recentOutings = () => recentOf('out', 6).map((t) => t.replace(/^出门了，/, ''))
 
     // 每个 tick（5 分钟）都走一遍：查超时、查回家、备活；决定本身按 planIntervalMin 节流
     function planTick(now, res) {
@@ -440,7 +452,8 @@ export default {
         const base = Number(c.taskHours) || 3
         for (let i = 0; i < n; i++) {
           const hours = clamp(base * Math.max(0.3, leftMin / 60 / 8), 0.5, 6)
-          p.tasks.push(newTask(c.profession, now, { hours }))
+          // 同一天抽的几条活不能撞，撞了就换
+          p.tasks.push(newTask(c.profession, now, { hours, avoid: p.tasks.map((t) => t.title) }))
         }
         record('plan-tasks', { n, titles: p.tasks.map((t) => t.title) })
         save()
@@ -456,7 +469,9 @@ export default {
         const list = pendingTasks()
         const next = list.slice().sort((a, b) => a.deadline - b.deadline)[0]
         const urgent = !!next && next.deadline - now < HOUR
-        if (willSlack({ mood, pressure: st.pressure, urgent, now })) return applyDecision(doSlack({ profId }), now)
+        if (willSlack({ mood, pressure: st.pressure, urgent, now })) {
+          return applyDecision(doSlack({ profId, recent: recentOf('slack', 6) }), now)
+        }
         if (!next) return null // 活都干完了，没什么可记的，别拿「收了收尾」刷日志
         return applyDecision(doWork({ task: next }), now)
       }
@@ -467,7 +482,7 @@ export default {
         if (now - (p.homeAt || 0) < 3 * HOUR) return null
         p.homeAt = now
         if (willGoOut({ mood, pressure: st.pressure, now })) {
-          const o = newOuting(now)
+          const o = newOuting(now, { recent: recentOutings() })
           p.outing = o
           // 出门了就别让过日子按「在家」找乐子
           try {
