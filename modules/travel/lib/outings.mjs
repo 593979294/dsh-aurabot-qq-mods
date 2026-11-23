@@ -1280,7 +1280,9 @@ export default {
     const allPlan = () => (Array.isArray(state.plan) ? state.plan : [])
     function planList(day) {
       const d = normDay(day)
-      return allPlan().filter((x) => x.day === d).sort((a, b) => String(a.at || '99:99').localeCompare(String(b.at || '99:99')))
+      return allPlan()
+        .filter((x) => x.day === d && !x.doneAt)
+        .sort((a, b) => String(a.at || '99:99').localeCompare(String(b.at || '99:99')))
     }
     function planAdd({ day, at, place, act, dest, note } = {}) {
       const d = normDay(day)
@@ -1341,6 +1343,31 @@ export default {
     }
     function planOf(day) {
       return planList(day).map((x) => ({ id: x.id, at: x.at, label: x.label, note: x.note, place: x.place, act: x.act, dest: x.dest }))
+    }
+    /** 今天到点、还没执行的下一件安排（没写钟点的不自动执行） */
+    function planDue(nowHM) {
+      const hm = String(nowHM || bjText(Date.now()))
+      return planList(today()).find((x) => x.at && x.at <= hm) || null
+    }
+    /** 执行一条到点安排：本地点位走 out_go，活动走 out_act；成功才标记 doneAt */
+    async function runPlan(item) {
+      if (!item) return { ok: false, message: '没有到点的安排。' }
+      let r = null
+      if (item.act) {
+        const a = ACTS[item.act]
+        if (!a) return { ok: false, message: `安排里的活动「${item.act}」不见了。` }
+        const d = resolveDest(a, item.dest) || pickOne(a.dests)
+        r = await startAct(a, d, `按今天 ${item.at || ''} 的安排：${item.label}`, item.days, false)
+      } else {
+        const p = resolveSpot(item.place) || byId(item.place)
+        if (!p) return { ok: false, message: `安排里的地点「${item.place}」不见了。` }
+        r = await go(p, `按今天 ${item.at || ''} 的安排：${item.label}`)
+      }
+      if (r && r.ok) {
+        const x = allPlan().find((y) => y.id === item.id)
+        if (x) { x.doneAt = Date.now(); save(state) }
+      }
+      return r || { ok: false, message: '安排没执行。' }
     }
 
     const tools = api.tool(({ chat, sessionId }) => (s().enabled && chat.kind !== 'system' ? [
@@ -1777,6 +1804,8 @@ export default {
         return { id: p.id, name: p.name, home: p.id === HOME, minutes: minsSince(state.since), since: clock(state.since), act: state.trip?.actName || '', days: state.trip?.days || 0 }
       },
       go: (text, reason) => goByText(text, reason),
+      planDue: (nowHM) => planDue(nowHM),
+      runPlan: (item) => runPlan(item),
       act: (actId, destId, reason, days) => {
         const a = resolveAct(actId)
         if (!a) return { ok: false, message: '没有这个活动' }
