@@ -75,6 +75,7 @@ return function Panel({ settings, save, toast }) {
     return (r && r.token) || ''
   }
   useEffect(() => { if (!ov) loadOverview() }, [])
+  useEffect(() => { call('/real/key').then(setKey).catch(() => {}) }, [])
 
   // 设置保存：一次一个键，宿主负责落 config
   const setOne = async (k, v) => {
