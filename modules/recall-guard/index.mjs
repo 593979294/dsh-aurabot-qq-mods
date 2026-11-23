@@ -1,5 +1,5 @@
 // 撤回守卫：消息进来先等几秒，期间被撤回就不回复；也能主动撤回自己说错的话
-// 1.2.2：功能介绍补全，市场版与内部版本号同步
+// 1.2.2：功能介绍补全，market 与内部元数据同步
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -8,7 +8,7 @@ export default {
   name: '撤回守卫',
   version: '1.2.2',
   api: 1,
-  description: '消息进来先等几秒，期间被撤回就不回复；她也长了手，能把说错的话收回来；对方打错字时按同音理解',
+  description: '撤回守卫：消息进来先等几秒，期间被撤回就不回复；能主动撤回自己发错、答错人或发错对象的消息；支持好友撤回和群撤回，按 message_id 精确匹配；对方打错字时按同音猜本意，内置 52864 条词库、不联网；面板可调等待时间、同音提示方式和候选数量，只写本机统计文件。',
   tab: 'overview',
   panel: 'panel.js',
   defaults: {
