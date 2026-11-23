@@ -10,10 +10,11 @@
 - **定位**：有行程按线路推算并发位置卡；没行程发最后点位卡。地名、门牌、坐标纠偏走高德，备用高德与天地图。
 - **出门**：本地点位、看海/爬山/旅游、天气与日落；多日行程受「最多住几晚」「每天远门上限」限制。
 - **手上的事**：`travel_stay` 记录「在做什么、还要多久」，到点提醒；模块每轮注入硬规则——手上有事要回话，先暂停再回。
-- **位置硬锁**（v2.1.1）：每轮私聊现算「你现在在<当前地点>」，照片、出图、视频里的地点必须跟它一致；回酒店/泳池/家里拍，要先结束当前停留、真的换地点并用 `travel_stay` 记下来，不能一句话瞬移。
+- **位置硬锁**（v2.1.2）：每轮私聊现算「你现在在<当前地点>」，照片、出图、视频里的地点必须跟它一致；回酒店/泳池/家里拍，要先结束当前停留、真的换地点并用 `travel_stay` 记下来，不能一句话瞬移。
+- **按计划换地点**（v2.1.2）：`out_plan` 排了钟点的安排到点自动执行；没安排或安排走完了，最晚 `20:00` 自动回屋（多日游在外过夜除外）。
 - 工具共 21 个（`travel_*` 12 个 + `out_*` 9 个），命令 6 个。
 
-### 位置硬锁：照片不许瞬移（v2.1.1）
+### 位置硬锁：照片不许瞬移（v2.1.2）
 
 `travel` 模块每轮私聊都会用 `api.context` 现算一条「你现在在<当前地点>」注入给模型，地点来源是 `travel_stay` 的最后记录；即使计时结束，只要没有 `travel_stay end` 或新的 `travel_stay start`，地点仍保留最后位置，不会因为计时到点就漂回默认地点。
 
@@ -21,6 +22,16 @@
 - 主人说「回酒店拍」「去泳池拍」「回家拍」，不能一句话就瞬移：先 `travel_stay end` 结束手上的事，真的走回去或换地方，并用 `travel_stay start` 记下新地点，下一轮才能按新地点拍；没走完就照实说「我还在<当前地点>，等我回去再拍」。
 - 也不许拍完酒店/泳池，下一句又回到面馆——地点只能沿一条线走，不能来回跳。
 - 以前按主人要求出过和当时地点不一致的图，只是想象图，不算真去过；再提起来要认「那几张是我想的，我没真去」。
+
+### 按计划换地点 / 最晚回家（v2.1.2）
+
+每 60 秒检查一次 `outings` 的当前位置和今天的 `out_plan`：
+
+- 排了钟点、已经到点的下一件事自动执行：本地点位走 `out_go`，活动走 `out_act`；成功后给这条安排写 `doneAt`，不会重复跑。失败（例如远门额度用完）保留安排，日志里写原因。
+- 没排安排，或安排已经走完，到 `out_homeBy`（默认 `20:00`）还不在屋里，就自动 `out_home` 回屋，并结束 `travel_stay`；下一轮位置锁直接报「在家里」。
+- 多日游/在外过夜（`state.trip.days > 0`）不强制当天回；`out_homeBy` 可以在面板改。
+- 自动换地点不额外发消息；她下一轮开口时，位置锁已经是新地点，不会出现「说回酒店、人还在面馆」。
+- 自动换地点是全局状态，不按聊天区分；位置锁仍然只在私聊注入。
 
 ## 二、运行要求
 
@@ -65,10 +76,10 @@ modules/travel/
 
 ## 四、配置与 Key
 
-设置键都在 `config.ext.travel`（共 17 个）：`enabled`、`hub_showOutings`、`hub_panelWrite`、
+设置键都在 `config.ext.travel`（共 18 个）：`enabled`、`hub_showOutings`、`hub_panelWrite`、
 `trip_pythonPath`、`trip_enginePath`、`trip_personName`、`trip_flightProvider`、`trip_flightKey`、`trip_stayNotify`、
 `real_enabled`、`real_amapKey`、`real_amapKeyBackup`、`real_tdtTk`、
-`out_enabled`、`out_farLimitPerDay`、`out_tripMaxDays`、`out_allowAutoTrip`、`out_locSource`。
+`out_enabled`、`out_farLimitPerDay`、`out_tripMaxDays`、`out_allowAutoTrip`、`out_locSource`、`out_homeBy`。
 
 Key 只在**面板第 ③ 页**（高德主/备、天地图）和**第 ④ 页**（航班源 Key）填，保存后写进上面三个 `real_*` 键与 `trip_flightKey`。仓库源码里没有任何 Key，也不带任何人的 `config.json`。
 
