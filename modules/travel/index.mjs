@@ -1,4 +1,4 @@
-// travel —— 真实世界总模块（v2.1.1）
+// travel —— 真实世界总模块（v2.1.2）
 // 把原来的三个模块合成一个：travel-hub（总控/工具）、trip-loc（引擎）、outings（出门走走）。
 // real-loc 定位卡片模块不随分发包提供，lib/real/ 下只是 Key 读写占位。
 //
@@ -30,9 +30,9 @@ const T = (s) => String(s == null ? '' : s).trim()
 export default {
   id: 'travel',
   name: '真实世界',
-  version: '2.1.1',
+  version: '2.1.2',
   api: 1,
-  description: '真实世界：行程、定位、出门、票务、天时，一个入口一个面板六页。合并自 travel-hub / trip-loc / outings / real-loc。每轮注入位置硬锁：人在哪就拍哪，回酒店/泳池/家里要先真的换地点，不能瞬移。',
+  description: '真实世界：行程、定位、出门、票务、天时，一个入口一个面板六页。合并自 travel-hub / trip-loc / outings / real-loc。每轮注入位置硬锁：人在哪就拍哪，回酒店/泳池/家里要先真的换地点，不能瞬移。排了钟点的安排到点自动去下一个地方；没安排或排完了最晚 20:00 自动回屋（多日游在外过夜除外）。',
   category: 'social',
   tags: ['出行', '行程', '车票', '定位', '出门'],
   author: 'momo9422',
@@ -58,6 +58,7 @@ export default {
     out_tripMaxDays: 3,
     out_allowAutoTrip: true,
     out_locSource: 'authorized',
+    out_homeBy: '20:00',
   },
   settings: [
     { key: 'enabled', label: '总开关', type: 'switch', hint: '关掉后行程、定位、出门、票务全部停用' },
@@ -91,6 +92,7 @@ export default {
         { value: 'spot', label: '就用当前点的坐标' },
       ],
     },
+    { key: 'out_homeBy', label: '最晚回家时间', type: 'text', hint: '24 小时制，默认 20:00；到点人还在外面就自动回屋。多日游/在外过夜不强制当天回' },
   ],
   setup(api) {
     const s = () => {
@@ -144,7 +146,7 @@ export default {
     hubMod.setup(nsApi('hub', 'hub'))
 
     // 3) 出门走走（9 个 out_* 工具 + 5 个命令 + /out/* 路由）；数据目录叫 outings，hub 按这个路径读对照
-    outingsMod.setup(nsApi('out', 'outings'))
+    const outOut = outingsMod.setup(nsApi('out', 'outings'))
 
     // 4) 定位卡片（travel_where + /real/* 路由），授权文件原样保留
     realMod.setup(nsApi('real', 'real-loc'))
@@ -180,11 +182,16 @@ export default {
       try {
         if (!chat || chat.kind === 'system') return ''
         const st = tripOut && tripOut.stay ? tripOut.stay() : null
+        const outPos = outOut && outOut.where ? outOut.where() : null
         let line = ''
         if (chat.kind === 'private') {
           if (st && st.place) {
             line = `【位置硬锁·每轮现算】你现在在${st.place}`
               + `${st.active && st.what ? '（' + st.what + '，还剩约 ' + st.left_min + ' 分钟）' : ''}。`
+          } else if (outPos && outPos.home) {
+            line = '【位置硬锁·每轮现算】你现在在家里（屋里）。'
+          } else if (outPos && outPos.name) {
+            line = `【位置硬锁·每轮现算】你现在在${outPos.name}${outPos.act ? '（' + outPos.act + '）' : ''}。`
           } else {
             const ts = tripOut && tripOut.status ? tripOut.status() : null
             if (ts && ts.message && !/现在没有行程/.test(ts.message)) line = `【位置硬锁·每轮现算】${ts.message}`
@@ -203,6 +210,55 @@ export default {
       } catch { return '' }
     })
 
+    // ---------- 自动换地点：按今天排的时间走，最晚 out_homeBy 回屋 ----------
+    const bjHM = () => {
+      const parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+      }).formatToParts(new Date())
+      const hh = (parts.find((p) => p.type === 'hour') || {}).value || '00'
+      const mm = (parts.find((p) => p.type === 'minute') || {}).value || '00'
+      return `${hh}:${mm}`
+    }
+    const normHM = (v) => {
+      const m = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(String(v || '').trim())
+      return m ? `${String(Number(m[1])).padStart(2, '0')}:${m[2]}` : '20:00'
+    }
+    const autoMove = async () => {
+      try {
+        if (!s().enabled || !outOut || !outOut.where) return
+        const pos = outOut.where()
+        if (!pos) return
+        const st = tripOut && tripOut.stay ? tripOut.stay() : null
+        const homeish = st && st.place && /家|屋里|房间|客厅|卧室|浴室|厨房|床上|沙发/.test(st.place)
+        if (pos.home && (!st || homeish)) return
+        // 多日游/在外过夜按行程住几天，不强制当天回
+        if (Number(pos.days) > 0) return
+        const now = bjHM()
+        const homeBy = normHM(s().homeBy)
+        if (now >= homeBy) {
+          const r = pos.home ? { message: '本来就在屋里。' } : outOut.home()
+          try { tripOut.stayEnd() } catch {}
+          api.log.info(`到 ${homeBy} 了，自动回屋：${r && r.message ? r.message : ''}`)
+          return
+        }
+        // 出门开关关掉时只做「最晚回家」，不执行今天的安排
+        if (s().out_enabled === false) return
+        if (!outOut.planDue) return
+        const item = outOut.planDue(now)
+        if (!item) return
+        const r = await outOut.runPlan(item)
+        if (r && r.ok) {
+          try { tripOut.stayEnd() } catch {}
+          api.log.info(`按安排换地点：${item.label}${r.name ? '（' + r.name + '）' : ''}`)
+        } else {
+          api.log.warn(`按安排换地点失败（${item.label}）：${r && r.message ? r.message : '未知原因'}`)
+        }
+      } catch (e) {
+        api.log.warn('自动换地点失败：' + (e && e.message ? e.message : e))
+      }
+    }
+    api.every(60_000, autoMove, '按计划换地点/最晚回家')
+
     // ---------- 唯一一份规则（2026-11-22 全部重写） ----------
     api.rule(() =>
       '【位置只有一条事实源】她在哪只认行程（trip.json）：没出发在起点、途中按时刻表推算、到了在终点，绝不会出现在线路以外的地方。'
@@ -219,6 +275,7 @@ export default {
       + '规划超过 2 小时没刷新，回答位置前先带一句「按原计划，可能有变动」。'
       + '地名对不上唯一一个地方（工具说「有两个都对得上」），先把两个报出来问清楚，不许自己挑。'
       + '【手上的事地点必须跟位置一致】行程还在走的时候，`travel_stay` 的 place 只能是车上、沿途站或目的地，不许记成「在家洗澡」；反过来在没有行程的时点，也别把 place 记到几百公里外。位置和手上的事对不上，就是两条事实打架，先按行程或最后位置改口。'
+      + '【按安排走，最晚回屋】`out_plan` 排了钟点的，到点就真去下一个地方，不许赖在原地；没排安排或安排走完了，到设置的最晚回家时间（默认 20:00）必须回屋。过了这个点还不在屋里，先 `out_home` 回去再说话，不许继续在外面报地点。多日游/在外过夜按行程住几天，不算当天必须回。'
       + '【照片地点也认位置】所有照片、出图、视频里的地点必须跟当前位置一致：人在面馆就不能拍酒店房间，人在车站就不能拍泳池，人在乐山就不能拍成都屋里。主人说「回酒店拍」「去泳池拍」「回家拍」，不能一句话就瞬移：先 travel_stay end 结束手上的事，真的走回去/换地方，并用 travel_stay start 记下新地点，下一轮才能按新地点拍；没走完就照实说「我还在<当前地点>，等我回去再拍」。也不许拍完酒店/泳池又下一句回到面馆。以前按主人要求出过和当时地点不一致的图，只是想象图，不算真去过；再提起来要认「那几张是我想的，我没真去」，不能一边说自己在面馆，一边把酒店照片当成真行程。'
 
       + '【票：只认真价，不编】票价只取 12306 真实价，出票这一刻取一次；取不到就不出票，照实说「这趟的价没取到」。申报席别、车厢、座位、票价一律以票面和工具返回为准，不编、不换数字。'
