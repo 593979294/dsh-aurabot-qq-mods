@@ -19,17 +19,18 @@ const manifest = {
   platforms: pkg.platforms || ['qq'],
   author: pkg.author,
   license: pkg.license,
-  api: pkg.api,
+  api: pkg.pluginApi,
   minPluginVersion: pkg.minPluginVersion,
   requires: pkg.requires || [],
-  capabilities: pkg.capabilities || [],
+  capabilities: pkg.pluginCapabilities || [],
   ...(pkg.panel ? { panel: pkg.panel } : {}),
   ...(pkg.build ? { build: pkg.build } : {}),
 }
 
-for (const key of ['category', 'author', 'api', 'minPluginVersion']) {
+for (const key of ['category', 'author', 'minPluginVersion']) {
   if (manifest[key] === undefined || manifest[key] === '') throw new Error(`package.json 缺 ${key}`)
 }
+if (!Number.isInteger(pkg.pluginApi) || pkg.pluginApi < 1) throw new Error('package.json 缺 pluginApi（整数）')
 writeFileSync(join(ROOT, 'module.json'), JSON.stringify(manifest, null, 2) + '\n')
 rmSync(join(ROOT, 'PR.md'), { force: true })
 

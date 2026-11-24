@@ -10,10 +10,10 @@
   "category": "social",
   "tags": ["转告", "工单", "反馈", "主人"],
   "platforms": ["qq"],
-  "api": 1,
+  "pluginApi": 1,
   "minPluginVersion": "1.2.0",
   "requires": [],
-  "capabilities": ["plugin-config", "filesystem", "network", "plugin-internals"],
+  "pluginCapabilities": ["plugin-config", "filesystem", "network", "plugin-internals"],
   "panel": "panel.js",
   "build": {
     "out": "lib"
