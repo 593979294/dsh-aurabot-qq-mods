@@ -68,14 +68,21 @@ export function noteText(chatId, kind, raw) {
  * @returns {null|{reply:false, mode:'none', reason:string}} 返回 null = 放行
  */
 export function limitDecision(decision, rule, times, now) {
-  if (!decision?.reply || decision.mode !== 'must') return null
-  if (rule.onlyAt && !decision.mentioned) {
+  if (!decision?.reply) return null
+  // 只管必须说话（must）和正聊得起劲（engaged）这两条路。
+  // engaged 一定要算上：它明确「不受冷却和每小时上限限制」，机器人互刷时真正在说话的
+  // 就是这条路——@ 只是点火，烧起来靠 engaged 一句接一句。只拦 must 等于没拦。
+  const counted = decision.mode === 'must' || decision.mode === 'engaged'
+  if (!counted) return null
+  // 「只认@」只管 must：engaged 是她自己接着聊，没有「被叫到」这回事，拿它去卡会误伤
+  if (rule.onlyAt && decision.mode === 'must' && !decision.mentioned) {
     return { reply: false, mode: 'none', reason: `这个群只认 @（${decision.reason || '被叫到'}不算）` }
   }
   const win = rule.windowMin * 60_000
   const recent = (times || []).filter((t) => now - t < win).length
   if (recent >= rule.max) {
-    return { reply: false, mode: 'none', reason: `必回太频繁（${rule.windowMin} 分钟内已 ${recent} 次，上限 ${rule.max}）` }
+    const what = decision.mode === 'engaged' ? '说话' : '必回'
+    return { reply: false, mode: 'none', reason: `${what}太频繁（${rule.windowMin} 分钟内已 ${recent} 次，上限 ${rule.max}）` }
   }
   return null
 }
@@ -85,7 +92,7 @@ export default {
   name: '群聊特别处理',
   version: '1.0.0',
   api: 1,
-  description: '给指定的群加背景说明，并给「必回」加硬上限——防止和别的机器人互相 @ / 互相引用刷屏。',
+  description: '给指定的群加背景说明，并给「她会不会开口」加硬上限——必回和「正聊得起劲」都算，防止在机器人扎堆的群里一句接一句刷屏。',
   // 默认不预置任何群：每个人的群不一样，预置别人的群号只会误导。按需自己填。
   defaults: {
     enabled: true,
@@ -125,8 +132,8 @@ export default {
       mustTimes.set(gid, times)
       const blocked = limitDecision({ ...decision, mentioned: Boolean(info?.msg?.mentioned) }, rule, times, now)
       if (blocked) return blocked
-      // 放行了：记一笔，后面的消息才看得见这次占用
-      if (decision?.reply && decision.mode === 'must') {
+      // 放行了：must 和 engaged 都记一笔，后面的消息才看得见这次占用
+      if (decision?.reply && (decision.mode === 'must' || decision.mode === 'engaged')) {
         times.push(now)
         mustTimes.set(gid, times)
       }
