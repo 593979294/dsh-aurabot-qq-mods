@@ -1,0 +1,14 @@
+{
+  "id": "ctx-guard",
+  "name": "上下文守门",
+  "version": "1.0.0",
+  "description": "盯着每轮请求的 token 用量：到预警线记一笔，到压缩线自动压缩，压缩完还超就换新会话。阈值全在面板里调。",
+  "category": "tool",
+  "tags": ["上下文", "token", "压缩", "省钱"],
+  "author": "KuroPeach",
+  "license": "MIT",
+  "api": 1,
+  "minPluginVersion": "1.2.0",
+  "requires": [],
+  "capabilities": ["filesystem", "plugin-config", "plugin-internals"]
+}

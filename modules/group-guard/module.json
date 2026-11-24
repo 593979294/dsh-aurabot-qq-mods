@@ -1,0 +1,14 @@
+{
+  "id": "group-guard",
+  "name": "群聊特别处理",
+  "version": "1.0.0",
+  "description": "给指定的群加背景说明（比如「这个群里基本都是别的 AI 机器人」），并可按群收紧「必回」——只认 @，别人引用她、叫她的名字都降成普通插话判断。",
+  "category": "manage",
+  "tags": ["群聊", "提示词", "上下文", "防刷屏"],
+  "author": "KuroPeach",
+  "license": "MIT",
+  "api": 1,
+  "minPluginVersion": "1.2.0",
+  "requires": [],
+  "capabilities": []
+}
