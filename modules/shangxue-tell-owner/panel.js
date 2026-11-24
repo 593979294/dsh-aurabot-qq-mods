@@ -1,8 +1,3 @@
-// 转告主人反馈（shangxue-tell-owner）面板：反馈次数看板 + 每用户每日上限滑块。
-// 契约（见插件 client.js ExtPanel）：整份源码交给面板的受限作用域执行（React/h/ui/call 四个入参），
-// 最后 return 一个组件函数；call(path, body) 打模块路由 /ext/shangxue-tell-owner< path >（带 body 即 POST）。
-// ui 提供：Card / Btn / Switch / Row / Empty / Select / Seg / Range。
-// 表格列出每个发起者：名称(ID) / 群组名称或 ID / 主题 / 今日反馈次数 / 重置按钮。
 
 return function TellOwnerPanel(props) {
   var toast = props.toast;
@@ -30,7 +25,6 @@ return function TellOwnerPanel(props) {
 
   React.useEffect(function () { load(); }, []);
 
-  // 拖动滑块：先即时更新本地显示，松手（onChange 后）再保存
   function saveLimit(n) {
     setPerUser(n);
     setSaving(true);
@@ -57,7 +51,6 @@ return function TellOwnerPanel(props) {
   var thStyle = { padding: '8px 6px', borderBottom: '2px solid #ddd', whiteSpace: 'nowrap', textAlign: 'left' };
   var tdStyle = { padding: '8px 6px', verticalAlign: 'top', maxWidth: 320 };
 
-  // 顶部：每用户每日上限滑块（1~10，默认 2）
   var limitRow = h(ui.Row, {
     label: '每个用户每天最多几条',
     hint: '按用户算（不分群、不分私聊），当天超过就不让再提交。拖动滑块调整（1~10，默认 2）',

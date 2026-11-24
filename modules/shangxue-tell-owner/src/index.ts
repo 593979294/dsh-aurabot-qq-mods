@@ -1,10 +1,4 @@
-// 转告主人反馈（shangxue-tell-owner）
-// 群里 / 私聊里有人托话 → 记一张「工单」并送达主人私聊；主人在私聊处理完 → 机器人自己判断是哪张工单，
-// 回对应群里引用原消息 @ 原发送者。转述由「主模型」用自然口吻完成（它有人格和聊天记忆）。
-//
-// 两种转发模式（settings.forwardMode）：
-//   natural       主模型润色后的一段自然话 → 发主人（含多媒体）
-//   natural-sign  同上，插件再补一条来源署名
+// 转告主人反馈：托话记成工单送达主人，主人处理完回原消息 @ 当事人。
 
 import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
@@ -303,7 +297,7 @@ function signLine(t: Ticket): string {
 export default {
   id: 'shangxue-tell-owner',
   name: '转告主人反馈',
-  version: '1.0.0',
+  version: '1.0.1',
   api: 1,
   description: '群里/私聊有人托话，记成工单送达主人；主人处理完，机器人自己找对工单回群引用原消息告诉本人',
   panel: 'panel.js',
@@ -389,7 +383,6 @@ export default {
       return { ok: true, message: '带给主人了' }
     }
 
-    // ---------------- 工具一：告诉主人（记工单 + 送达）----------------
     api.tool(({ chat, level }: any) => {
       if (!chat || chat.kind === 'system') return []
       const st = s()
@@ -508,7 +501,6 @@ export default {
       })
     })
 
-    // ---------------- 工具二：主人查看工单列表（只读）----------------
     api.tool(({ chat, level }: any) => {
       if (!chat || chat.kind === 'system') return []
       const st = s()
@@ -541,7 +533,6 @@ export default {
       })
     })
 
-    // ---------------- 工具三：主人回话（自动用建单时记下的参数回原消息）----------------
     api.tool(({ chat, level }: any) => {
       if (!chat || chat.kind === 'system') return []
       const st = s()
@@ -595,7 +586,6 @@ export default {
       })
     })
 
-    // ---------------- 工具四：主人删除工单 ---------------
     api.tool(({ chat, level }: any) => {
       if (!chat || chat.kind === 'system') return []
       const st = s()
@@ -666,7 +656,6 @@ export default {
       })
     })
 
-    // ---------------- 规则：告诉主模型这两个工具怎么用 ----------------
     try {
       api.rule((kind: string) => {
         const st = s()
@@ -696,7 +685,6 @@ export default {
       // 老接口没 rule 就算了
     }
 
-    // ---------------- 面板路由：反馈次数看板 ----------------
     try {
       api.route('/board', async () => {
         const { start, end } = dayRange()

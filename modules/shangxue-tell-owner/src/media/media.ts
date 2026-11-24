@@ -1,6 +1,3 @@
-// 从一条 OneBot 消息（msg.raw / msg.images 等）里抽取多媒体附件。
-// 支持图片、文件、语音、视频；返回统一结构供 store 保存。
-
 import { existsSync, statSync, readdirSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import type { TicketMedia } from '../tickets/types.js'

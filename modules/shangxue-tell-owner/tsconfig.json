@@ -14,7 +14,7 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "removeComments": false
+    "removeComments": true
   },
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "lib"]

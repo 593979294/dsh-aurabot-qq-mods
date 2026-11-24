@@ -41,19 +41,25 @@
 
 数据都在 `data/`：`tickets.json`（工单）、`tickets.md`（可读镜像）、`media/`（附件）。
 
+## 问题反馈
+
+到 [aureth-labs/dsh-aurabot-qq-mods](https://github.com/aureth-labs/dsh-aurabot-qq-mods/issues) 提 Issue，
+正文里 `@shangxueink` 并把 **shangxueink** assign 为负责人。请附上复现步骤和相关日志。
+
 ## 开发
 
 ```bash
-yarn install
-yarn build    # 清空 lib/，把 src/**/*.ts 编译成 lib/**/*.js
-yarn test     # 先 build，再跑 node --test
-yarn check    # 只做类型检查
+npm install
+npm run build   # 同步 module.json，清空 lib/ 后编译 src/**/*.ts
+npm test        # 先 build，再跑 node --test
+npm run check   # 只做类型检查
 ```
 
 - `src/` 只放 TypeScript；`lib/` 是编译产物，不手改
 - 根目录 `index.mjs` 只负责加载 `lib/index.js`
 - `panel.js` 是手写的面板组件，留在模块根目录
-- `module.json` 不设 `build.out`，所以 **`lib/` 要随仓库提交**（或在发布前先 `yarn build`）
+- `package.json` 是模块配置的唯一来源，`module.json` 每次 build 自动生成，不要手改
+- `build.out` 是 `lib`：发布包由 CI 构建，`lib/` 不进仓库
 
 ```
 ├── index.mjs            # 入口，加载 lib/index.js

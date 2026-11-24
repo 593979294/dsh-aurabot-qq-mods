@@ -1,7 +1,3 @@
-// 工单存储：data/tickets.md 人可读，data/media/ 存多媒体。
-// 同时维护一个 JSON 侧车（data/tickets.json）方便程序读写；md 是给人看的镜像。
-// 设计原则：即使把 tickets.json 删了，也能从 tickets.md 里尽量还原工单。
-
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, copyFileSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Ticket, TicketMedia } from './types.js'
