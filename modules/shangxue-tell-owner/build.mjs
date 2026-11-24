@@ -5,7 +5,7 @@ import { copyFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'n
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
+const ROOT = dirname(fileURLToPath(import.meta.url))
 const OUT = join(ROOT, 'lib')
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
 

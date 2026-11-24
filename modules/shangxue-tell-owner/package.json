@@ -19,7 +19,7 @@
     "out": "lib"
   },
   "scripts": {
-    "build": "node scripts/build.mjs",
+    "build": "node build.mjs",
     "test": "npm run build && node --test \"test/*.test.mjs\"",
     "check": "tsc -p tsconfig.json --noEmit"
   },

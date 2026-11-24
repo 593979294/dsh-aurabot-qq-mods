@@ -70,7 +70,7 @@ npm run check   # 只做类型检查
 │   ├── media/           # 附件识别与落盘
 │   └── utils/           # 时间工具
 ├── lib/                 # 编译产物
-├── scripts/build.mjs
+├── build.mjs            # 构建：生成 module.json、编译 src/ → lib/
 └── test/index.test.mjs
 ```
 

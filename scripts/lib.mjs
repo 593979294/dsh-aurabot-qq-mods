@@ -17,9 +17,11 @@ export const MAX_PACKAGE_BYTES = 20 * 1024 * 1024
 const ID_RE = /^[a-z][a-z0-9-]{1,39}$/
 const VERSION_RE = /^\d+\.\d+\.\d+$/
 const ENTRY = ['index.mjs', 'index.js']
-// src/ 与 scripts/ 是开发目录（TS 源码与构建脚本），不随发布包走，也不参与运行时能力扫描。
-const SKIP_DIRS = new Set(['node_modules', '.git', '.build', '.runtime', '.aurabot-cache', 'test', 'tests', 'fixtures', '__tests__', 'src', 'scripts'])
-const SKIP_FILE = /(\.test\.[cm]?[jt]s|^package-lock\.json|^yarn\.lock$|^tsconfig(\..+)?\.json$|^\.gitignore$)/
+// scripts/ 里可能放着运行时文件，不能整体跳过；只跳过测试与本地缓存。
+const SKIP_DIRS = new Set(['node_modules', '.git', '.build', '.runtime', '.aurabot-cache', 'test', 'tests', 'fixtures', '__tests__'])
+// 有构建输出的模块，src/ 是 TS 源码，不进包。
+const BUILD_SKIP_DIRS = new Set([...SKIP_DIRS, 'src'])
+const SKIP_FILE = /(\.test\.[cm]?[jt]s|^package-lock\.json|^yarn\.lock$|^tsconfig(\..+)?\.json$|^\.gitignore$|^build\.(mjs|js|ts)$)/
 
 // 能力声明：给审核者和安装页看的，不是沙箱。模块和插件同进程，这里拦不住恶意代码。
 export const CAPABILITIES = {
@@ -41,7 +43,7 @@ export const CATEGORIES = {
   manage: '管理',
   tool: '工具',
 }
-const ROOT_FILES = /^(module\.json|index\.m?js|panel\.js|package(-lock)?\.json|tsconfig(\..+)?\.json|yarn\.lock|.*\.md|LICENSE.*)$/i
+const ROOT_FILES = /^(module\.json|index\.m?js|panel\.js|build\.(mjs|js|ts)|package(-lock)?\.json|tsconfig(\..+)?\.json|yarn\.lock|.*\.md|LICENSE.*)$/i
 const ROOT_DIRS = new Set(['lib', 'test', 'assets', 'docs', 'src', 'scripts'])
 
 export const compareVersions = (a, b) => {
@@ -97,18 +99,18 @@ export function validateManifest(m, id, known = new Set(BUILTINS)) {
 }
 
 /** 模块发布时带的文件（不含测试和依赖）。相对路径，统一用 /。 */
-export function filesOf(dir, base = dir, out = []) {
+export function filesOf(dir, base = dir, out = [], skipDirs = SKIP_DIRS) {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     if (e.isSymbolicLink()) throw new Error(`不允许符号链接：${relative(base, join(dir, e.name))}`)
-    if (e.isDirectory()) { if (!SKIP_DIRS.has(e.name)) filesOf(join(dir, e.name), base, out) }
+    if (e.isDirectory()) { if (!skipDirs.has(e.name)) filesOf(join(dir, e.name), base, out, skipDirs) }
     else if (e.isFile() && !SKIP_FILE.test(e.name)) out.push(relative(base, join(dir, e.name)).split(sep).join('/'))
   }
   return out.sort()
 }
 
 /** 源码里实际用到的能力。 */
-export function scanCapabilities(dir) {
-  const code = filesOf(dir).filter((f) => /\.([cm]?[jt]s|html)$/.test(f)).map((f) => readFileSync(join(dir, f), 'utf8')).join('\n')
+export function scanCapabilities(dir, skipDirs = SKIP_DIRS) {
+  const code = filesOf(dir, dir, [], skipDirs).filter((f) => /\.([cm]?[jt]s|html)$/.test(f)).map((f) => readFileSync(join(dir, f), 'utf8')).join('\n')
   return Object.keys(CAPABILITIES).filter((cap) => CAPABILITIES[cap].re.test(code))
 }
 
@@ -142,7 +144,7 @@ export function checkModule(mod, known) {
   if (Object.keys(pkg?.dependencies || {}).length && !m.build) errors.push('有 npm 依赖的模块必须配 build 打成独立运行包：用户机器上不跑 npm install')
   if (m.build && !pkg?.scripts?.build) errors.push('配了 build，package.json 里要有 scripts.build')
   try {
-    const found = scanCapabilities(mod.dir)
+    const found = scanCapabilities(mod.dir, m.build ? BUILD_SKIP_DIRS : SKIP_DIRS)
     const declared = new Set(Array.isArray(m.capabilities) ? m.capabilities : [])
     for (const cap of found) if (!declared.has(cap)) errors.push(`代码用到了「${CAPABILITIES[cap].label}」，capabilities 要声明 ${cap}`)
     for (const cap of declared) if (!found.includes(cap)) warnings.push(`声明了 ${cap}，但扫描没发现（确认一下是不是多写了）`)
@@ -206,7 +208,8 @@ export function collect(mod, m = readManifest(mod.dir)) {
     dir = join(mod.dir, m.build.out)
     if (!existsSync(dir)) throw new Error(`构建后没有 ${m.build.out}/`)
   }
-  const files = new Map(filesOf(dir).map((f) => [f, readFileSync(join(dir, f))]))
+  const skipDirs = m.build ? BUILD_SKIP_DIRS : SKIP_DIRS
+  const files = new Map(filesOf(dir, dir, [], skipDirs).map((f) => [f, readFileSync(join(dir, f))]))
   files.set('module.json', readFileSync(join(mod.dir, 'module.json')))
   for (const name of ['LICENSE', 'README.md']) if (!files.has(name)) files.set(name, readFileSync(join(mod.dir, name)))
   return files
