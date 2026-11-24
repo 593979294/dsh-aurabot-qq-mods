@@ -2,7 +2,7 @@
 // 搜狗对非浏览器请求经常直接给验证页，所以搜索用实测能返回结果页的浏览器标识。
 // 不提交验证码；遇到验证页就失败，等下一轮再试。Cookie 只留在这一轮内存里。
 import { decodeBasic } from './article.mjs'
-import { cookieHeader, pinnedUrl, readBody, rememberCookies, shortError, signalWithTimeout } from './http.mjs'
+import { cookieHeader, pinnedUrl, readBody, rememberCookies, shortError, signalWithTimeout, wait } from './http.mjs'
 import { ACCOUNT, searchQuery, titleMatches, beijing } from './time.mjs'
 
 const SOGOU = ['weixin.sogou.com']
@@ -104,4 +104,56 @@ export async function locateArticle(stamp, { fetchImpl = (...args) => fetch(...a
   const articleUrl = parseLinkPage(jump.html)
   if (!articleUrl) return { ok: false, missing: false, error: '没能从搜狗跳转页解析出文章地址' }
   return { ok: true, articleUrl, title: hit.title }
+}
+
+const PAGE_HTML = 'document.documentElement ? document.documentElement.outerHTML : ""'
+const PAGE_HREF = 'location.href'
+
+async function readPage(browser, expression) {
+  const value = await browser.evaluate(expression)
+  return value == null ? '' : value
+}
+
+/**
+ * 普通请求被搜狗验证页拦住时，用真实浏览器打开同一个搜索地址。
+ * 只等页面自己跳转，不填写验证码。
+ */
+export async function locateWithBrowser(browser, stamp, { sleep = wait, signal, attempts = 8, intervalMs = 1000 } = {}) {
+  const pageUrl = searchPageUrl(stamp)
+  const opened = await browser.navigate(pageUrl)
+  if (!opened?.ok) return { ok: false, missing: false, error: opened?.message || '搜狗搜索页打开失败' }
+  let sawVerification = false
+  for (let i = 0; i < attempts; i++) {
+    if (signal?.aborted) return { ok: false, missing: false, error: '摸鱼日历模块已停止' }
+    const html = String(await readPage(browser, PAGE_HTML))
+    const items = parseResults(html)
+    if (items.length) {
+      const hit = matchToday(items, stamp)
+      if (!hit) return { ok: false, missing: true, error: '搜狗还没有今天的摸鱼人日历' }
+      let linkUrl = ''
+      try { linkUrl = new URL(hit.href, 'https://weixin.sogou.com/').href } catch { linkUrl = '' }
+      if (!pinnedUrl(linkUrl, SOGOU)) return { ok: false, missing: false, error: '搜索结果链接不在搜狗域名下' }
+      const jump = await browser.navigate(linkUrl)
+      if (!jump?.ok) return { ok: false, missing: false, error: jump?.message || '搜狗跳转失败' }
+      for (let step = 0; step < attempts; step++) {
+        if (signal?.aborted) return { ok: false, missing: false, error: '摸鱼日历模块已停止' }
+        const href = String(await readPage(browser, PAGE_HREF))
+        if (/^https:\/\/mp\.weixin\.qq\.com\/s(\?|$)/.test(href)) {
+          return { ok: true, articleUrl: href.split('#')[0], title: hit.title, alreadyOpen: true }
+        }
+        const parsed = parseLinkPage(String(await readPage(browser, PAGE_HTML)))
+        if (parsed) {
+          const moved = await browser.navigate(parsed)
+          if (!moved?.ok) return { ok: false, missing: false, error: moved?.message || '文章页打开失败' }
+          return { ok: true, articleUrl: parsed, title: hit.title, alreadyOpen: true }
+        }
+        if (step < attempts - 1) await sleep(intervalMs, signal)
+      }
+      return { ok: false, missing: false, error: '没能从搜狗跳转页解析出文章地址' }
+    }
+    if (blocked(html)) sawVerification = true
+    if (i < attempts - 1) await sleep(intervalMs, signal)
+  }
+  if (sawVerification) return { ok: false, missing: false, error: '搜狗在浏览器里仍要求验证，稍后再试' }
+  return { ok: false, missing: true, error: '搜狗还没有今天的摸鱼人日历' }
 }
