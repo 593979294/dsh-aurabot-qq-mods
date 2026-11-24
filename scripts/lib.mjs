@@ -21,6 +21,8 @@ const ENTRY = ['index.mjs', 'index.js']
 const SKIP_DIRS = new Set(['node_modules', '.git', '.build', '.runtime', '.aurabot-cache', 'test', 'tests', 'fixtures', '__tests__'])
 // 有构建输出的模块，src/ 是 TS 源码，不进包。
 const BUILD_SKIP_DIRS = new Set([...SKIP_DIRS, 'src'])
+// 用「相对模块根目录」的路径来测（不是文件名）：带 ^ 的规则只命中根目录，
+// 这样 lib/build.mjs 这种运行时文件不会被当成根目录的构建脚本一起跳过。
 const SKIP_FILE = /(\.test\.[cm]?[jt]s|^package-lock\.json|^yarn\.lock$|^tsconfig(\..+)?\.json$|^\.gitignore$|^build\.(mjs|js|ts)$)/
 
 // 能力声明：给审核者和安装页看的，不是沙箱。模块和插件同进程，这里拦不住恶意代码。
@@ -103,7 +105,10 @@ export function filesOf(dir, base = dir, out = [], skipDirs = SKIP_DIRS) {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     if (e.isSymbolicLink()) throw new Error(`不允许符号链接：${relative(base, join(dir, e.name))}`)
     if (e.isDirectory()) { if (!skipDirs.has(e.name)) filesOf(join(dir, e.name), base, out, skipDirs) }
-    else if (e.isFile() && !SKIP_FILE.test(e.name)) out.push(relative(base, join(dir, e.name)).split(sep).join('/'))
+    else if (e.isFile()) {
+      const rel = relative(base, join(dir, e.name)).split(sep).join('/')
+      if (!SKIP_FILE.test(rel)) out.push(rel)
+    }
   }
   return out.sort()
 }
