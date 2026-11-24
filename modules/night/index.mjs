@@ -144,7 +144,10 @@ const SETTINGS = [
     { label: '只有「晚安 / 我睡了」这种强收线', value: 'strong' },
     { label: '强收线和中收线（拜拜 / 先这样）都睡', value: 'medium' },
   ] },
-  { key: 'closeConfirmByLlm', label: '收线判定再让模型复核一次', type: 'switch' },
+  { key: 'closeConfirmByLlm', label: '收线判定再让模型复核一次', type: 'switch',
+    hint: '命中收线词之后才问模型，能区分「现在去睡」和「看完这集再睡」，避免误睡。'
+      + '正常的聊天不会触发，只在偶尔有人道晚安时多一次很小的模型调用（约 10 token 输出，4 秒超时）。'
+      + '介意 token 消耗可以关掉，关了就用纯规则判断。' },
   { key: 'byeMuteMinutes', label: '中/弱收线后闭嘴多久（分钟）', type: 'number' },
   { key: 'noonMuteMinutes', label: '午睡收线后闭嘴多久（分钟）', type: 'number' },
 
@@ -473,6 +476,29 @@ export default {
     }
 
     /**
+     * 带超时的 ask（2026-11-25 加）。
+     *
+     * `api.ask` 本身没有超时参数（`timeoutMs` 传了也不会生效，那是 `api.think` 的选项）。
+     * 而我们是在 `api.on('message')` 里同步 await 模型结果——模型一慢，这条消息的处理
+     * 就整个挂住，主人的消息也发不出去。所以用 Promise.race 自己兜一层。
+     *
+     * 超时不代表失败：调用方拿到 null 就按"不确定"处理（比如判收线时当"不睡"）。
+     */
+    function askWithTimeout(opts, timeoutMs) {
+      return Promise.race([
+        api.ask(opts),
+        new Promise((resolve) => {
+          const t = setTimeout(() => resolve(null), Math.max(500, Number(timeoutMs) || 4000))
+          // 别因为这一个定时器把进程吊着
+          if (typeof t?.unref === 'function') t.unref()
+        }),
+      ]).catch((error) => {
+        api.log.warn('长夜：ask 调用失败 ' + (error?.message || error))
+        return null
+      })
+    }
+
+    /**
      * 模型复核：这句话是让 BOT **马上**睡、**待会**睡，还是**不是在说这个**？
      *
      * 三分类而不是二分类，因为「看完这集就去睡」这种句子用「是/不是」表达不了：
@@ -485,7 +511,7 @@ export default {
      */
     async function judgeClosing(msg, word) {
       try {
-        const out = await api.ask({
+        const out = await askWithTimeout({
           system: '判断对方这句话对「你」的意图。只回答一个词：现在 / 待会 / 不是。'
             + '现在＝让我马上就去睡；待会＝让我过一会儿或做完某事再去睡；'
             + '不是＝根本没在说我该睡（说的是别人、宠物、或者在关心我但没让我睡）。',
@@ -496,7 +522,7 @@ export default {
             + '另外注意时段：如果现在是白天（不是深夜），对方说「我睡了」多半是在说他自己要睡，'
             + '不是在安排你睡觉——这种情况答「不是」。',
           maxTokens: 10,
-        })
+        }, 4000)   // 4 秒：再慢就当没判出来，按"不睡"走
         const t = String(out || '').trim()
           // 去掉开头/结尾的口头词和标点（模型偶尔会答「嗯，待会。」）
           .replace(/^[\s，,。.!！、]+/, '')
