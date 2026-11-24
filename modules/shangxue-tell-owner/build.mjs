@@ -35,7 +35,10 @@ writeFileSync(join(ROOT, 'module.json'), JSON.stringify(manifest, null, 2) + '\n
 rmSync(join(ROOT, 'PR.md'), { force: true })
 
 rmSync(OUT, { recursive: true, force: true })
-execFileSync(process.execPath, [join(ROOT, 'node_modules', 'typescript', 'bin', 'tsc'), '-p', join(ROOT, 'tsconfig.json')], { stdio: 'inherit' })
+const TSC = join(ROOT, 'node_modules', 'typescript', 'bin', 'tsc')
+// 没装依赖时 tsc 不存在，编辑器这类「找不到 fetch/Response」的报错也是同一个原因。
+if (!existsSync(TSC)) throw new Error('没装依赖：先进本模块目录跑 npm ci')
+execFileSync(process.execPath, [TSC, '-p', join(ROOT, 'tsconfig.json')], { stdio: 'inherit' })
 
 if (existsSync(join(ROOT, 'panel.js'))) copyFileSync(join(ROOT, 'panel.js'), join(OUT, 'panel.js'))
 writeFileSync(join(OUT, 'index.mjs'), "export * from './index.js'\nexport { default } from './index.js'\n")
