@@ -694,7 +694,7 @@ test('clientStatus：手改 app/main.js → changed 点名，但不谎报「跑�
 
 /** 与模块 clientTemplate/installedSig 同算法：算 app/ 现状的模板签名（模拟「旧版模板生成时的凭据」）。 */
 function appSig(app) {
-  const names = ['main.js', 'preload.js', 'index.html', 'physics.js', 'packmeta.js', 'behavior.js', 'chat.html', 'house.html', 'house.js']
+  const names = ['main.js', 'preload.js', 'index.html', 'physics.js', 'packmeta.js', 'behavior.js', 'chat.html', 'voice-talk.html', 'voice-talk.js', 'house.html', 'house.js']
   const files = names.map((f) => {
     try { return { name: f, hash: createHash('sha1').update(readFileSync(join(app, f))).digest('hex').slice(0, 12) } } catch { return null }
   }).filter(Boolean)
@@ -742,6 +742,47 @@ test('/status：带 client 对账字段（面板「桌宠」卡据此提示）',
   const r = await env.call('/status')
   assert.equal(r.json.client.installed, true)
   assert.equal(r.json.client.healthy, true)
+})
+
+// ---------- 通话配置回显（1.1.2）：面板「通话」卡控件取当前值的数据源 ----------
+// host.js /panel/pet/status 走 use('pet').status()，这条 HTTP 路由同口径；两处都带 call 字段。
+
+test('/status：带 call 字段，各键取自 settings（默认值）', async () => {
+  // 测试 helper 不并入模块 defaults，按 defaults 原值显式喂一份（对齐 makeApi 的合成结果）
+  const env = startModule({ settings: {
+    callEngine: 'native', sovitsUrl: 'http://127.0.0.1:9880',
+    callRvc: false, callRvcVoice: '', callTalkMode: 'free', callPttKey: 'Space',
+    callVadSilence: 0.7, callMaxChars: 120, callAsrUrl: 'http://127.0.0.1:8000',
+    callMicDeviceId: '', callSpeakerDeviceId: '',
+  } })
+  const json = (await env.call('/status')).json
+  assert.ok(json.call, '/status 返回里有 call 字段')
+  assert.deepEqual(json.call, {
+    engine: 'native', rvc: false, rvcVoice: '',
+    talkMode: 'free', pttKey: 'Space', vadSilence: 0.7,
+    maxChars: 120, asrUrl: 'http://127.0.0.1:8000', sovitsUrl: 'http://127.0.0.1:9880',
+    micDeviceId: '', speakerDeviceId: '',
+  })
+  // status() 导出（面板真正读的那份）与 HTTP 路由同口径
+  assert.deepEqual(env.exports.status().call, json.call, 'status() 导出的 call 与 /status 一致')
+})
+
+test('/status：call 字段回显自定义 settings（非默认值不被规范化吞掉）', async () => {
+  const custom = {
+    callEngine: 'sovits', sovitsUrl: 'http://10.0.0.5:9880',
+    callRvc: true, callRvcVoice: 'fish', callTalkMode: 'ptt', callPttKey: 'F2',
+    callVadSilence: 1.25, callMaxChars: 80, callAsrUrl: 'http://10.0.0.5:8000',
+    callMicDeviceId: 'mic-1', callSpeakerDeviceId: 'spk-2',
+  }
+  const env = startModule({ settings: custom })
+  const json = (await env.call('/status')).json
+  assert.deepEqual(json.call, {
+    engine: custom.callEngine, rvc: custom.callRvc, rvcVoice: custom.callRvcVoice,
+    talkMode: custom.callTalkMode, pttKey: custom.callPttKey, vadSilence: custom.callVadSilence,
+    maxChars: custom.callMaxChars, asrUrl: custom.callAsrUrl, sovitsUrl: custom.sovitsUrl,
+    micDeviceId: custom.callMicDeviceId, speakerDeviceId: custom.callSpeakerDeviceId,
+  }, 'call 各键直接取自 settings，所见即面板原值')
+  assert.deepEqual(env.exports.status().call, json.call, 'status() 导出的 call 同样回显自定义值')
 })
 
 // ---------- Electron 三键（面板「安装 Electron / 启动桌宠 / 停止桌宠」） ----------

@@ -122,6 +122,42 @@ test('定位文章时带上搜狗下发的 Cookie 和 Referer', async () => {
   assert.match(seen[1].referer, /^https:\/\/weixin\.sogou\.com\/weixin\?/)
 })
 
+test('普通请求遇到搜狗验证页时改用浏览器搜索', async () => {
+  let url = ''
+  const browser = {
+    launch: async () => ({ ok: true }),
+    navigate: async (next) => { url = String(next); return { ok: true, url } },
+    evaluate: async (expr) => {
+      const code = String(expr)
+      if (code.includes('location.href')) return url.includes('/link') ? 'https://mp.weixin.qq.com/s?src=11&signature=abc' : url
+      if (code.includes('documentElement')) {
+        if (url.includes('/weixin?')) return searchHtml()
+        if (url.includes('/link')) return LINK_HTML
+        return ''
+      }
+      return {
+        blocked: false,
+        heading: '[摸鱼人日历]11月19号 今天你摸鱼了吗？',
+        title: '[摸鱼人日历]11月19号 今天你摸鱼了吗？',
+        nickname: '摸鱼人日历',
+        ct: TS,
+        imgs: [{ src: 'https://mmbiz.qpic.cn/cal/640?wx_fmt=png', w: 540, ratio: 1.49 }],
+      }
+    },
+  }
+  const result = await resolveCalendar({
+    stamp: STAMP,
+    fetchImpl: async () => htmlResponse('<html>antispider 请输入验证码</html>', 'https://weixin.sogou.com/weixin?type=2'),
+    browser,
+    sleep: async () => {},
+    attempts: 2,
+    intervalMs: 0,
+  })
+  assert.equal(result.ok, true, result.error)
+  assert.match(result.imageUrl, /mmbiz\.qpic\.cn\/cal\//)
+  assert.match(result.articleUrl, /^https:\/\/mp\.weixin\.qq\.com\/s\?/)
+})
+
 test('搜狗验证页不算「今天没有」', async () => {
   const fetchImpl = async () => htmlResponse('<html>antispider 请输入验证码</html>', 'https://weixin.sogou.com/weixin?type=2')
   const found = await locateArticle(STAMP, { fetchImpl })
@@ -158,6 +194,22 @@ test('文章页先是验证、随后出图；一直验证则失败', async () =>
   const blocked = await readArticle({ evaluate: async () => ({ blocked: true, imgs: [] }) }, { attempts: 2, intervalMs: 0, sleep: async () => {} })
   assert.equal(blocked.ok, false)
   assert.match(blocked.error, /环境异常/)
+})
+
+test('标签页还停在昨天时，等到今天的标题再取图', async () => {
+  const pages = [
+    { blocked: false, title: '[摸鱼人日历]11月22号 今天你摸鱼了吗？', nickname: '摸鱼人日历', ct: 1, imgs: [{ src: 'https://mmbiz.qpic.cn/old/640?wx_fmt=png', w: 540, ratio: 1.49 }] },
+    { blocked: false, heading: '[摸鱼人日历]11月23号 今天你摸鱼了吗？', title: '微信公众平台', nickname: '摸鱼人日历', ct: 2, imgs: [{ src: 'https://mmbiz.qpic.cn/new/640?wx_fmt=png', w: 540, ratio: 1.49 }] },
+  ]
+  const ok = await readArticle({ evaluate: async () => pages.shift() }, {
+    attempts: 3,
+    intervalMs: 0,
+    sleep: async () => {},
+    accept: (page) => String(page.title).includes('11月23号'),
+  })
+  assert.equal(ok.ok, true)
+  assert.match(ok.title, /11月23号/)
+  assert.match(ok.image, /\/new\//)
 })
 
 test('RSS 取今天的图；没有今天的条目算缺失，内网地址拒绝', async () => {
