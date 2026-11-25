@@ -192,7 +192,22 @@ export function createEgoBackend({
     if (starting) return starting.then((p) => ({ port: p, shared: true }))
     starting = (async () => {
       log?.info?.('[ego] 侧边浏览器没在跑，拉起 DSH 共享实例')
-      return coldStart(check)
+      const p = await coldStart(check)
+      // --window-position 有启动竞态：Edge 先在默认位置画一帧才应用参数。
+      // 冷启动就绪的瞬间用 CDP 把窗口挪到屏幕外，压掉那一闪。
+      try {
+        const v = await getJson(`http://127.0.0.1:${p}/json/version`, 1500)
+        const ws = v?.webSocketDebuggerUrl
+        if (ws) {
+          const { connectCdp } = await import('./browser.mjs')
+          const c = connectCdp(ws)
+          try {
+            await c.ready
+            await c.send('Browser.setWindowBounds', { windowId: 1, bounds: { left: -2400, top: -2400 } }).catch(() => {})
+          } finally { c.close() }
+        }
+      } catch { /* 挪窗失败不影响可用性；--window-position 兜底 */ }
+      return p
     })()
     try {
       const p = await starting

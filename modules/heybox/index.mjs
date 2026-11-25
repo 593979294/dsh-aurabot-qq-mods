@@ -11,7 +11,7 @@ const { profileToolVisible, profilePermits } = __lib('chat/access.js')
 export default {
   id: 'heybox',
   name: '刷小黑盒',
-  version: '1.5.6',
+  version: '1.6.2',
   api: 1,
   description: '用主人的账号逛小黑盒：看帖子和热评，点赞、评论、发帖。支持谷时逛、扫码登录和浏览器验证。',
   tab: 'heybox',
@@ -75,7 +75,7 @@ export default {
         }))
         tools.push(defineTool({
           name: 'heybox_acts',
-          description: '查小黑盒可挂的话题：创作活动（有奖励，排最前）和普通话题，都带热度。发帖要挂话题时先用这个查，再用 heybox_post 的 hashtags 传**话题名字**（纯文本，别传 id 或对象）。传 keywords 可以按关键词搜。话题表每天自动更新一次。活动和普通话题可以同时挂：活动最多 1 个 + 普通最多 3 个。',
+          description: '查小黑盒可挂的话题：创作活动（有奖励，排最前）和普通话题，都带热度。发帖要挂话题时先用这个查，再用 heybox_post 的 hashtags 传**话题名字**（纯文本，别传 id 或对象）。传 keywords 可以按关键词搜。话题表每天自动更新一次。活动和普通话题可以同时挂，但一帖总共只有 3 个名额（活动最多 1 个，共享这 3 席）。',
           properties: { keywords: str('可选：按关键词搜话题（如 游戏 / 养鱼 / steam），不填列出全部') },
           execute: guarded('heyboxBrowse', ({ keywords }) =>
             String(keywords || '').trim() ? hb.searchTopics(String(keywords), 30) : hb.actList()),
@@ -131,8 +131,8 @@ export default {
             title: String(title || ''), text: String(text || ''), topic: String(topic || ''), style: String(style || ''),
             images: Array.isArray(images) ? images.slice(0, 4) : [],
             imagesByPos: imagesByPos && typeof imagesByPos === 'object' ? imagesByPos : null,
-            // 活动最多 1 个 + 普通最多 3 个 = 4 个（模块侧 resolveHashtagItems 的规则，这里别收紧到 3）
-            hashtags: Array.isArray(hashtags) ? hashtags.slice(0, 4) : [],
+            // 一帖总共 3 个名额，活动和普通共享（模块侧 resolveHashtagItems 的规则，这里别放宽到 4）
+            hashtags: Array.isArray(hashtags) ? hashtags.slice(0, 3) : [],
             mood: String(mood || ''),
             look: String(look || ''),
           })),
@@ -156,7 +156,7 @@ export default {
       '小黑盒评论要短：15-40 字，超过 60 字就是在写小作文。抓住对方话里的具体措辞顶回去，别写「闲鱼水深」这种贴哪都成立的空话。自检：这条回复贴到同帖另一条评论下还说得通吗？说得通说明没针对，重写。',
       '定时刷小黑盒跑在独立后台会话里；可选分享给主人，由模块执行并限制额度。',
       '小黑盒返回验证码或限流后暂停所有普通请求，等待冷却；不要换接口反复重试。',
-      '发帖想挂话题就先用 heybox_acts 查（可以传 keywords 搜）：创作活动有奖励、优先挂；普通话题按热度挑。活动和普通可以一起挂（活动最多 1 个 + 普通最多 3 个）。传话题**名字**，别传 id、更别传 {name,hashtag_id} 对象——传对象发帖会直接 HTTP 500。不在表里的话题别挂。',
+      '发帖想挂话题就先用 heybox_acts 查（可以传 keywords 搜）：创作活动有奖励、优先挂；普通话题按热度挑。活动和普通可以一起挂，但一帖总共只有 3 个名额（活动最多 1 个，剩下的给普通话题）。传话题**名字**，别传 id、更别传 {name,hashtag_id} 对象——传对象发帖会直接 HTTP 500。不在表里的话题别挂。',
     ].join('\n'))
 
     // 面板：全部只读状态下拉，不带副作用

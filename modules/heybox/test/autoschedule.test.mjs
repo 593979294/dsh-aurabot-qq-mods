@@ -16,6 +16,12 @@ const BODY = ('今天在小黑盒刷到一条很有意思的帖子，说的是�
 const isPostPrompt = (p) => String(p).includes('写一篇小黑盒帖子')
 // 「带原文补长」那一轮的开头
 const isFixPrompt = (p) => String(p).includes('把这篇小黑盒帖子补长一点')
+// 分段扩写的两轮：先大纲、再逐段
+const isOutlinePrompt = (p) => String(p).includes('做分段大纲')
+const isSectionPrompt = (p) => String(p).includes('其中一段')
+
+/** 一段 420 字（countWords 去空白计字，21 字 × 20）：三段拼成 1260，够过 1200 下限 */
+const SEG = '这段讲了个具体细节，带了数字和时间点说明。'.repeat(20)
 
 /** 造一个能跑 tick 全链路（逛 + 自动发帖）的 fixture：网络全 mock、时间可控
  *  发帖那一轮返回什么由 f.postMode 决定（ok | badJson | short），用来模拟模型写歪 / 写不够字数 */
@@ -37,16 +43,21 @@ function fx({ heybox = {} } = {}) {
   }
   const turns = []
   const posted = []
-  let postMode = 'ok'   // 由测试通过 setPostMode 改：'ok' | 'badJson' | 'short'
+  let postMode = 'ok'   // 由测试通过 setPostMode 改：'ok' | 'badJson' | 'short' | 'shortThenFixed' | 'shortThenChunked'
   const chat = {
     runSystemTurn: async (ext, title, prompt, opts) => {
       turns.push({ ext, title, prompt, opts })
       if (isPostPrompt(prompt)) {
         if (postMode === 'badJson') return '抱歉，我这次没写成'
-        if (postMode === 'short') return JSON.stringify({ title: '短稿', text: '今天刷到一条。' })
-        if (postMode === 'shortThenFixed') return JSON.stringify({ title: '第一稿', text: '今天刷到一条。' })
+        if (postMode === 'short' || postMode === 'shortThenFixed' || postMode === 'shortThenChunked') return JSON.stringify({ title: '短稿', text: '今天刷到一条。' })
         return JSON.stringify({ title: '排期到点自动发的测试帖', text: BODY })
       }
+      // 分段扩写：只有 shortThenChunked 给大纲和段落，其余模式回垃圾（好验证退回整篇补写那条路）
+      if (isOutlinePrompt(prompt)) {
+        if (postMode === 'shortThenChunked') return JSON.stringify({ title: '分块拼出来的测试帖', sections: [{ focus: '开头说清这事', points: '给个价格数字' }, { focus: '我自己的看法', points: '多讲一段' }, { focus: '收尾抛问题', points: '问盒友一句' }] })
+        return '抱歉，我这次没写成'
+      }
+      if (isSectionPrompt(prompt)) return postMode === 'shortThenChunked' ? JSON.stringify({ text: SEG }) : '抱歉，我这次没写成'
       // 「带原文补长」那一轮：只有 shortThenFixed 会写成合格稿，其余模式仍回垃圾
       if (isFixPrompt(prompt)) {
         if (postMode === 'shortThenFixed') return JSON.stringify({ title: '补长后的测试帖', text: BODY })
@@ -257,7 +268,32 @@ test('安全阀式跳过（关自动发帖/没排期/额度没了）不退避，
   assert.equal(postTurns(f).length, 0, '自动发帖关了就不叫模型')
 })
 
-test('第一稿字数不够：带原文补一轮，补够就发出去（不整篇丢掉重写）', async (t) => {
+test('高下限一稿写不满：先分段扩写，拼够就发出去', async (t) => {
+  // 下限 1200 ≥ CHUNK_TARGET_MIN(1000) → 走分块；三段各 400 字拼成 1200
+  const f = fx({ heybox: { postWordsMin: 1200, postWordsMax: 3000 } })
+  t.after(() => f.close())
+  f.setPostMode('shortThenChunked')
+
+  f.at(10, 0)
+  await f.hb.tick()
+
+  assert.equal(f.turns.filter((x) => isPostPrompt(x.prompt)).length, 1, '先写一稿')
+  assert.equal(f.turns.filter((x) => isOutlinePrompt(x.prompt)).length, 1, '一稿不够就出大纲')
+  const secs = f.turns.filter((x) => isSectionPrompt(x.prompt))
+  assert.equal(secs.length, 3, '大纲几段就生成几段')
+  // 每段都要带上大纲顺序和这段的素材，否则模型会写成三篇独立帖子
+  assert.match(secs[1].prompt, /整篇大纲（按顺序）/)
+  assert.match(secs[1].prompt, /现在只写第 2 段/)
+  assert.match(secs[1].prompt, /我自己的看法/, '要带上这段的 focus')
+  assert.match(secs[1].prompt, /多讲一段/, '要带上这段的 points')
+
+  assert.equal(f.posted.length, 1, '拼够之后发出去了')
+  assert.match(String(f.posted[0].title), /分块拼出来的测试帖/)
+  assert.equal(f.hb.state().postFailures || 0, 0)
+})
+
+test('低下限不走分块：一稿 + 带原文补写，别多烧回合', async (t) => {
+  // 下限 100 < CHUNK_TARGET_MIN：维持老路径（一稿不够再补写整篇）
   const f = fx()
   t.after(() => f.close())
   f.setPostMode('shortThenFixed')
@@ -265,10 +301,10 @@ test('第一稿字数不够：带原文补一轮，补够就发出去（不整�
   f.at(10, 0)
   await f.hb.tick()
 
-  const postTurns2 = f.turns.filter((x) => isPostPrompt(x.prompt))
+  assert.equal(f.turns.filter((x) => isPostPrompt(x.prompt)).length, 1, '写第一稿一次')
+  assert.equal(f.turns.filter((x) => isOutlinePrompt(x.prompt)).length, 0, '低下限不该走分块')
   const fixTurns = f.turns.filter((x) => isFixPrompt(x.prompt))
-  assert.equal(postTurns2.length, 1, '写第一稿一次')
-  assert.equal(fixTurns.length, 1, '太短时补一轮')
+  assert.equal(fixTurns.length, 1, '太短时补写一轮')
   // 补写那一轮必须把原文和差额都带上，否则模型只会从零再写一篇同样短的
   assert.match(fixTurns[0].prompt, /还差 \d+ 字/)
   assert.match(fixTurns[0].prompt, /今天刷到一条/, '要带上原文')
@@ -279,22 +315,35 @@ test('第一稿字数不够：带原文补一轮，补够就发出去（不整�
   assert.equal(f.hb.state().postFailures || 0, 0, '发成功要清零退避')
 })
 
-test('补一轮还不行：就按失败退避，不无限重写', async (t) => {
+test('补写最多两轮就收：还不行按失败退避，不无限重写', async (t) => {
   const f = fx()
   t.after(() => f.close())
-  f.setPostMode('short')   // 第一稿和补写轮都回短稿
+  f.setPostMode('short')   // 第一稿和两轮补写都回短稿
 
   f.at(10, 0)
   await f.hb.tick()
-  assert.equal(f.turns.filter((x) => isPostPrompt(x.prompt)).length, 1)
-  assert.equal(f.turns.filter((x) => isFixPrompt(x.prompt)).length, 1, '只补一轮')
+  assert.equal(f.turns.filter((x) => isPostPrompt(x.prompt)).length, 1, '第一稿只写一次')
+  assert.equal(f.turns.filter((x) => isFixPrompt(x.prompt)).length, 2, '补写两轮就收手')
   assert.equal(f.posted.length, 0)
-  const st = f.hb.state()
-  assert.equal(st.postFailures, 1, '两轮都不行算一次失败')
+  assert.equal(f.hb.state().postFailures, 1, '这一整篇算一次失败（不是两次）')
 
-  // 下一分钟不再重写
+  // 退避期内连试都不试
   f.at(10, 1)
   await f.hb.tick()
-  assert.equal(f.turns.filter((x) => isFixPrompt(x.prompt)).length, 1, '退避期内不补写')
+  assert.equal(f.turns.filter((x) => isFixPrompt(x.prompt)).length, 2, '退避期内不补写')
 })
 
+test('分块大纲拿不到：退回整篇补写，不硬发半截稿', async (t) => {
+  // 高下限走分块，但大纲那一轮回垃圾 → 应退回全文补写，而不是发一条空的
+  const f = fx({ heybox: { postWordsMin: 1200, postWordsMax: 3000 } })
+  t.after(() => f.close())
+  f.setPostMode('short')
+
+  f.at(10, 0)
+  await f.hb.tick()
+  assert.equal(f.turns.filter((x) => isOutlinePrompt(x.prompt)).length, 1, '试过大纲')
+  assert.equal(f.turns.filter((x) => isSectionPrompt(x.prompt)).length, 0, '没大纲就不逐段生成')
+  assert.equal(f.turns.filter((x) => isFixPrompt(x.prompt)).length, 2, '退回整篇补写两轮')
+  assert.equal(f.posted.length, 0)
+  assert.equal(f.hb.state().postFailures, 1)
+})

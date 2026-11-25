@@ -181,9 +181,11 @@ test('话题：列表活动在前、都带热度，搜索按关键词且活动�
   f.close()
 })
 
-test('话题：活动最多 1 个、普通最多 3 个，可以同时挂（#21 起不再互斥）', async () => {
-  // 实测结论：真实带话题的帖子常常活动+普通同时挂（如「分享我的养鱼日常」+「盒友日常」+「deepseek」），
-  // 之前那条「互斥只能选一类」的规则是错的，已在 #21 去掉。
+test('话题：活动和普通不互斥，但共享总共 3 个名额（活动最多 1 个）', async () => {
+  // 实测（2026-11-02）：「互斥只能选一类」是错的，活动和普通可以一起挂。
+  // 主人定的口径（2026-11-12）：一帖的话题**总共 3 个名额，活动普通共享**
+  // （小黑盒网页编辑器自己的上限是 5，这里按主人的规则收紧到 3）。
+  // 排期里配了 4 个时截到 3 并 warn，别悄悄多挂一个没人知道。
   const f = fixture({
     fetcher: async (url) => {
       const u = String(url)
@@ -205,10 +207,16 @@ test('话题：活动最多 1 个、普通最多 3 个，可以同时挂（#21 �
   await f.hb.refreshActs(true)
   const items = await f.hb.resolveHashtagItems(['分享我的养鱼日常', '盒友日常', 'deepseek', '手机'])
   const names = items.map((x) => x.name)
-  // 活动最多 1 个 + 普通最多 3 个，一起返回
-  assert.ok(names.includes('分享我的养鱼日常'), '活动要挂上')
-  assert.ok(names.filter((n) => n !== '分享我的养鱼日常').length <= 3, '普通话题最多 3 个')
-  assert.ok(names.length >= 2, '活动和普通可以同时挂')
+  assert.equal(names.length, 3, '总数截到 3 个名额')
+  assert.ok(names.includes('分享我的养鱼日常'), '活动优先占 1 席')
+  assert.deepEqual(names.slice(1), ['盒友日常', 'deepseek'], '剩下 2 席按顺序给普通话题')
+  // 没选活动时，普通话题同样最多 3 个
+  const plainOnly = await f.hb.resolveHashtagItems(['盒友日常', 'deepseek', 'ai人工智能', '手机'])
+  assert.equal(plainOnly.length, 3, '纯普通话题也受 3 席总闸约束')
+  assert.deepEqual(plainOnly.map((x) => x.name), ['盒友日常', 'deepseek', 'ai人工智能'])
+  // 1 活动 + 2 普通正好占满 3 席，不截断
+  const twoActs = await f.hb.resolveHashtagItems(['分享我的养鱼日常', '盒友日常', '手机'])
+  assert.equal(twoActs.length, 3)
   f.close()
 })
 test('排期：按今天第几篇取配置，用完回落全局', async () => {
