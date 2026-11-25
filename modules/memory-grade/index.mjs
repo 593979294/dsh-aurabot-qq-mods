@@ -259,7 +259,7 @@ async function absorbInbox({ inbox, api, log, memory, max = 300 } = {}) {
 export default {
   id: 'memory-grade',
   name: '记忆总库',
-  version: '2.1.0',
+  version: '2.1.1',
   api: 1,
   description: '存记忆、判密级、贴标签、算时效，还能顺手标八卦。写库前自动盖章，过期的只标「当时」不删除。东西全在自己机器上，不联网、不外传。',
   panel: 'panel.js',
