@@ -25,7 +25,7 @@ export function createModule({ fetchImpl, now = () => Date.now(), browserOf, sle
   return {
     id: 'moyu-calendar',
     name: '摸鱼人日历',
-    version: '1.0.4',
+    version: '1.0.6',
     api: 1,
     description: DESCRIPTION,
     defaults: {

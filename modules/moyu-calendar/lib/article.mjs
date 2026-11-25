@@ -77,40 +77,58 @@ export const ARTICLE_EXPR = `(() => {
       ratio: Number(img.getAttribute('data-ratio') || 0),
     })
   }
+  const heading = document.querySelector('#activity-name')
   return {
     blocked: text.includes('环境异常'),
     title: document.title || '',
+    heading: heading ? heading.innerText : '',
+    msgTitle: typeof msg_title === 'string' ? msg_title : '',
     nickname: typeof nickname === 'string' ? nickname.trim() : '',
     ct: Number(typeof ct === 'undefined' ? 0 : ct) || 0,
     imgs,
   }
 })()`
 
+function titleCandidates(page) {
+  return [page?.heading, page?.msgTitle, page?.title, page?.documentTitle]
+    .map(item => String(item || '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+}
+
 /**
  * 打开文章后轮询，等验证页过去、图片出现。默认大约 15 秒。
+ * 上一篇的图可能还留在同一个标签页里，accept 不通过就继续等，不拿旧标题交差。
  * 一直停在「环境异常」就失败，交给外层过一会再试，不破解验证码。
  */
-export async function readArticle(browser, { sleep = wait, signal, attempts = 6, intervalMs = 3000 } = {}) {
+export async function readArticle(browser, { sleep = wait, signal, attempts = 8, intervalMs = 2000, accept } = {}) {
   let lastError = '文章页没有返回内容'
+  let rejected = null
   for (let i = 0; i < attempts; i++) {
     if (signal?.aborted) return { ok: false, error: '摸鱼日历模块已停止' }
     try {
       const page = await browser.evaluate(ARTICLE_EXPR)
       const image = pickCalendarImage(page?.imgs || [])
       if (image && !page?.blocked) {
-        return {
+        const titles = titleCandidates(page)
+        const matched = accept ? titles.find(title => accept({ title })) : titles[0]
+        const picked = {
           ok: true,
-          title: page.title || '',
+          title: matched || titles[0] || '',
           nickname: page.nickname || '',
           ct: Number(page.ct) || 0,
           image,
         }
+        if (!accept || matched) return picked
+        rejected = picked
+        lastError = '打开的还不是今天的日历'
+      } else {
+        lastError = page?.blocked ? '微信文章页仍提示环境异常，稍后重试' : '文章里没有找到日历图'
       }
-      lastError = page?.blocked ? '微信文章页仍提示环境异常，稍后重试' : '文章里没有找到日历图'
     } catch (error) {
       lastError = error?.message ? String(error.message).slice(0, 160) : '文章页读取失败'
     }
     if (i < attempts - 1) await sleep(intervalMs, signal)
   }
+  if (rejected) return { ...rejected, ok: false, error: lastError }
   return { ok: false, error: lastError }
 }

@@ -22,8 +22,8 @@
 要走搜狗这条路，需要另装并打开 [逛网页（browser-ops）](../browser-ops/)：
 
 1. 面板里打开逛网页的总开关。
-2. 如果填了站点白名单，加入 `mp.weixin.qq.com`，或者把白名单留空。
-3. 搜狗搜到文章后，本模块用 `api.use('browser-ops')` 打开那一篇，读出第一张竖版日历图。打不开或仍是验证页，这次算失败，等下一轮。
+2. 如果填了站点白名单，加入 `mp.weixin.qq.com` 和 `weixin.sogou.com`，或者把白名单留空。
+3. 搜狗的普通请求若被验证页拦住，就用逛网页打开同一个搜索地址，不填写验证码。搜到文章后再打开那一篇，读出第一张竖版日历图。打不开或仍是验证页，这次算失败，等下一轮。
 
 只使用 RSS 时可以不装逛网页。RSS 用自建的 [we-mp-rss](https://github.com/rachelos/we-mp-rss) 或 [wechat2rss](https://github.com/ttttmr/wechat2rss)，订阅公众号「摸鱼人日历」，把订阅地址填到「RSS 地址」。填了就优先用，失败再走搜狗。
 
