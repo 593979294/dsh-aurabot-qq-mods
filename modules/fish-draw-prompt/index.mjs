@@ -30,7 +30,7 @@ import * as core from './lib/draw-prompt.js'
 export default {
   id: 'fish-draw-prompt',
   name: '生图提示词（三步走）',
-  version: '1.0.0',
+  version: '1.0.1',
   description: '拼生图提示词的唯一一份源代码（用途 + 三步走 + 元素清单 + 关键特征）',
   tab: '',
   files: ['lib/draw-prompt.js'],
