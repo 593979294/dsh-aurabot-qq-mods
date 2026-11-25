@@ -259,7 +259,7 @@ async function absorbInbox({ inbox, api, log, memory, max = 300 } = {}) {
 export default {
   id: 'memory-grade',
   name: '记忆总库',
-  version: '2.1.0',
+  version: '2.1.1',
   api: 1,
   description: '存记忆、判密级、贴标签、算时效，还能顺手标八卦。写库前自动盖章，过期的只标「当时」不删除。东西全在自己机器上，不联网、不外传。',
   panel: 'panel.js',
@@ -291,6 +291,7 @@ export default {
     expireScan: true,
     // 存储引擎：'json' 还是 'sqlite'。默认 json，用熟了再换
     storage: 'json',
+    redLine: true, // 机密红线：非主人场合带家里身份就整条拦下
     neverForget: true,
     clsSelfCheck: true, // 每小时自检密级 // 过目不忘：知识类重要度一直保持 0.6 以上
     inboxKeepDays: 30, // 收件箱归档保留天数，超了自动删
@@ -412,6 +413,15 @@ export default {
       label: '③ 盖章 · 定时清档案',
       type: 'switch',
       hint: '开着的话，每天 4:30 扫一遍人物小档案，把混进去的「他要求我做什么」「他叮嘱过我什么」这类规矩句剔掉。默认开。',
+    },
+    {
+      key: 'redLine',
+      label: '③ 盖章 · 机密红线（说出口前再拦一道）',
+      type: 'switch',
+      hint:
+        '打开（默认）：跟主人私聊以外的地方，话里带家里身份就整条不发。' +
+        '管的是「手已经按在发送键上」那一下——密级是提醒，这个是硬拦。' +
+        '命中会记一条警告日志。关掉就不拦了。',
     },
     {
       key: 'clsSelfCheck',
@@ -1129,8 +1139,45 @@ function collectFromChats() {
       }
     })
 
+    // 机密红线（2026-11-25 从插件搬过来）：家里的身份只在家里私聊说。
+    const SECRET_RED_LINE =
+      /(赵清棠|婧涵|赵清禾|婧汝|赵克才|解秀英|张藤藤|藤姐|赵阳|1094184052|625220495|女主人|大大大藤|亲妈|后妈|家里人|咱家|我爸爸|我爸|我妈|我姐姐|我爷爷|我奶奶)/
+    
+    /** 这段文字能不能在「这个聊天」里说出去：主人私聊放行，其他场合命中就拦 */
+    function redLineBlocks(text, chatId, ownerQQ) {
+      const s = String(text || "").trim()
+      if (!s) return false
+      if (chatId === "private:" + String(ownerQQ || "")) return false
+      return SECRET_RED_LINE.test(s)
+    }
+    
     // 实时层：她说出去的话。send 是「最终发给 QQ 的消息段」，所有出站都经过这里。
     api.on('send', (message, info) => {
+      // 机密红线（2026-11-25 从插件搬过来）：家里的身份只在家里私聊说，
+      // 群聊、别人的私聊、公开评论一律不许出口。
+      // 原来这段在插件 chat/reply.js 里（SECRET_RED_LINE），插件一升级就没了，
+      // 现在由模块兜住——send 钩子走的是 filter，返回 null 就能把整条拦下。
+      try {
+        const stRl = api.settings() || {}
+        if (stRl.redLine !== false) {
+          const chatRl = String(info?.chatId || '')
+          if (chatRl && !chatRl.startsWith('system:')) {
+            const segTexts = []
+            for (const seg of [].concat(message || [])) {
+              if (seg && seg.type === 'text') segTexts.push(String(seg.data?.text ?? ''))
+            }
+            const joined = segTexts.join('')
+            if (redLineBlocks(joined, chatRl, stRl.ownerQQ)) {
+              api.log?.warn?.(
+                '[memory-grade] 机密红线拦下一条：这个场合不能说家里的事（' + chatRl + '）',
+              )
+              return null
+            }
+          }
+        }
+      } catch {
+        /* 红线自身出错不能把消息吞了，照常往下走 */
+      }
       try {
         if (!flow) return
         if (api.settings().enableFlow === false) return

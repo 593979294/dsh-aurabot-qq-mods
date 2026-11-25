@@ -29,6 +29,10 @@ const TEXT_MAX = 600
  */
 export function openFlow(dir, opts = {}) {
   const now = opts.now || Date.now
+  // 2026-11-25 修：原来这里没取 opts.classify，record() 里的 classify(...)
+  // 实际调的是 undefined，每次抛 TypeError 被 catch 吞成 'internal'。
+  // 结果就是流水里几乎所有记录都是 internal，密级等于没盖。
+  const classify = typeof opts.classify === 'function' ? opts.classify : () => 'internal'
   try {
     mkdirSync(dir, { recursive: true })
   } catch {
