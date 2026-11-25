@@ -211,7 +211,7 @@ rm -rf _tmp
 
 ## 安全
 
-这个版本**默认一项能力都没有**：`module.json` 的 `capabilities` 只声明「最坏情况下会用到什么」（`filesystem` / `process` / `network` / `plugin-config` / `plugin-internals`），而真正能不能用由 `settings.grants` 决定——默认全 `false`，一项都不给。
+这个版本**默认一项能力都不用**：`module.json` 的 `capabilities` 只声明「最坏情况下会用到什么」（`filesystem` / `process` / `network` / `plugin-config` / `plugin-internals`）——那是**声明**，不是开关；真正能不能用由 `settings.grants` 决定，默认全 `false`，一项都不给。
 
 ### 逐项授权（默认全关）
 
@@ -244,7 +244,9 @@ rm -rf _tmp
 
 1. **授权闸**：没 `grants.vm` 就当作没有这个动作，连探活都不做。
 2. **形状闸**（`checkVmExec`）：送进 `ssh` 的 argv 必须带 `BatchMode=yes`、`NumberOfPasswordPrompts=0`、`PreferredAuthentications=publickey`，且远端命令必须是 `printf %s <base64> | base64 -d | bash` 这一种形态——不接受的拼法直接拒。
-3. **内容闸**（`dangerReason`）：破坏性删除、格式化、写裸设备、关机、提权、改账户、下载即执行、管道进 shell、反弹 shell、改防火墙/内核、清计划任务、从这台机器再连出去——命中即拒。另外 `looksBroken` 会把半截命令（引号不配对、结尾停在 `|` `&&`、heredoc 没闭合、通篇中文描述）退回让她重写。
+3. **内容闸**（`dangerReason`）：破坏性删除（含长选项 `--recursive`、`find -delete`）、格式化、写裸设备、关机、杀 init、提权、改账户、把内容写成脚本再执行、管道进 shell、碰 ssh 私钥、反弹 shell、改防火墙/内核、清计划任务、拿它当跳板——命中即拒。另外 `looksBroken` 会把半截命令（引号不配对、结尾停在 `|` `&&`、heredoc 没闭合、通篇中文描述）退回让她重写。
+
+> **别把内容闸当边界**：它是**尽力而为的黑名单**，挡得住明显的破坏性写法，挡不住 `python3 -c '...'` 这类图灵完备的间接表达——那不可能穷举。**真正的边界是「主人有没有打开 `grants.vm`」**：没授权时连 TCP 探活都不会发。黑名单只是授权之后多加的一层保险，减少她手滑把机器弄坏的概率，不是用来防蓄意攻击的。
 
 命令统一 base64 编码后单行传送：这样引号、换行、中文都不会被远端 shell 拆坏。
 

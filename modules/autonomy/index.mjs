@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { assertNoModelText, checkExec } from './lib/exec-guard.mjs';
-import { VM_MAX_CMD, buildSshArgs, checkVmExec, dangerReason, looksBroken, resolveKeyFile, tcpProbe, wrapRemote } from './lib/vm.mjs';
+import { execSteps, resolveKeyFile, runVmCommand, tcpProbe } from './lib/vm.mjs';
 import { scanModuleCode } from './lib/mod-scan.mjs';
 import { grantRows, isGranted, requireGrant } from './lib/grants.mjs';
 
@@ -650,68 +650,24 @@ export default {
     }
 
     /**
-     * 在虚拟机里跑一条命令（SSH 免密）。危险命令直接拒绝。
+     * 在虚拟机里跑一条命令（SSH 免密）。
+     * 具体的三道闸（半截命令 / 危险命令 / argv 形状）全在 lib/vm.mjs 里，
+     * 这里只把宿主的东西（配置、私钥路径、api.log）喂进去。
      *
-     * opts.trusted —— 我自己拼出来的完整命令，不套 looksBroken
-     *   （那些命令里带 base64 是故意的，会被「不用自己套 base64」误杀）。
-     * opts.silent  —— 探活之类的调用不刷日志。
+     * 注意：**没有** trusted 之类的「跳过检查」参数。曾经留过一个，
+     * 而它是从模型决策里读的（d.trusted）——现在虽然 parseDecision 只透传白名单字段、
+     * 这个值恒为 undefined，但哪天做一次「字段透传」重构就会被接通。
+     * 现在任何命令一律过闸，不设例外。
      */
     function runVM(command, opts = {}) {
-      const cmd = String(command || '').trim();
-      if (!cmd) return Promise.resolve({ ok: false, message: '没想好要跑什么' });
-      if (cmd.length > VM_MAX_CMD) return Promise.resolve({ ok: false, message: `太长了，控制在 ${VM_MAX_CMD} 字符内` });
-      const broken = opts.trusted ? '' : looksBroken(cmd);
-      if (broken) return Promise.resolve({ ok: false, message: `${broken}——重写一条能直接跑的完整命令` });
-      const danger = dangerReason(cmd);
-      if (danger) return Promise.resolve({ ok: false, message: `这条太危险（${danger}），不跑` });
-
-      const c = cfg();
-      const argv = buildSshArgs(
-        { host: c.vmHost, port: c.vmPort, user: c.vmUser, keyFile: vmKeyFile() },
-        wrapRemote(cmd),
-      );
-      // 走到 execFile 之前必须过形状校验：不接受没包装、没 BatchMode 的调用
-      try {
-        checkVmExec(argv);
-      } catch (error) {
-        return Promise.resolve({ ok: false, message: error.message });
-      }
-
-      const once = () =>
-        new Promise((resolve) => {
-          execFile(
-            'ssh',
-            argv,
-            // stdin 设成 ignore：这台机器的 ssh.exe 在 stdin 是未关闭的管道时会一直等输入，
-            // 以前就是这样把每一轮都拖到超时、还吞掉了真正的报错。
-            { timeout: 120_000, windowsHide: true, maxBuffer: 4 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] },
-            (error, stdout, stderr) => {
-              const out = String(stdout || '').trim();
-              const err = String(stderr || '').trim();
-              if (error) return resolve({ ok: false, message: (err || error.message).slice(0, 300) });
-              resolve({ ok: true, out: out.slice(0, 1500) });
-            },
-          );
-        });
-
-      // 多步连发时 sshd 偶尔直接重置连接（kex_exchange_identification / Connection reset）：
-      // 这不是命令写错了，等两秒重来一次就好——否则一整轮动作半途而废，等于白干。
-      return (async () => {
-        let r = await once();
-        if (r.ok || !/kex_exchange|Connection reset|Connection refused|Broken pipe|Connection closed|timed out/i.test(r.message)) {
-          if (!r.ok && !opts.silent) {
-            api.log.warn(`虚拟机命令失败（${cmd.replace(/\s+/g, ' ').slice(0, 60)}）：${r.message.slice(0, 200)}`);
-          }
-          return r;
-        }
-        if (!opts.silent) api.log.warn('虚拟机 SSH 掉了一下，2.5 秒后重试：' + r.message.slice(0, 160));
-        await new Promise((z) => setTimeout(z, 2500));
-        const r2 = await once();
-        if (!r2.ok && !opts.silent) {
-          api.log.warn(`虚拟机命令重试后仍失败（${cmd.replace(/\s+/g, ' ').slice(0, 60)}）：${r2.message.slice(0, 200)}`);
-        }
-        return r2;
-      })();
+      return runVmCommand({
+        cmd: command,
+        cfg: cfg(),
+        settings: api.settings(),
+        exec: execFile,
+        log: api.log,
+        silent: !!opts.silent,
+      });
     }
 
     /**
@@ -1008,25 +964,15 @@ export default {
           }
         }
 
-        const outs = [];
-        let ok = true;
-        let failAt = 0;
-        for (let i = 0; i < cmds.length; i += 1) {
-          const r = await runVM(cmds[i], { trusted: !!d.trusted });
-          outs.push(r.ok ? r.out : '✗ ' + r.message);
-          if (!r.ok) {
-            ok = false;
-            failAt = i + 1;
-            break;
-          }
-          if (i < cmds.length - 1) await new Promise((z) => setTimeout(z, 1500));
-        }
-        const label = cmds.length > 1 ? `${cmds.length} 步` : String(cmds[0] || '').slice(0, 80);
-        // 失败时把「第几步、为什么」写进 note：下一轮提示词里会带出来，
-        // 她才能知道自己上次断在哪，而不是一路「接着上次」把同一个错误重演十几遍。
-        const failWhy = ok
-          ? ''
-          : `第 ${failAt}/${cmds.length} 步：${String(outs[outs.length - 1] || '').replace(/^✗\s*/, '').replace(/\s+/g, ' ').slice(0, 140)}`;
+        // 编排逻辑在 vm.mjs 里（可注入，行为测试能直接驱动）：
+        // 一条一条跑，第一条失败就停，record 第几步断的
+        const step = await execSteps({
+          cmds,
+          run: (c) => runVM(c),
+        });
+        const ok = step.ok;
+        const outs = step.outs;
+        const failWhy = step.failWhy;
         return {
           note: `vm${ok ? '' : '（中途失败）'}：${ok ? label : failWhy}`,
           extra: { ok, failAt, output: outs.join('\n───\n').slice(0, 1500) },
@@ -1307,8 +1253,10 @@ export default {
       }
       // 手机上做的活动也写进记忆库，这样 QQ 上聊起来能接上
       // 节流 20 分钟：她一天醒上百次，不节流会把记忆库灌爆
+      // 这些动作的产出要写进记忆库，QQ 上聊起来才能接上。vm 曾经漏在这里，
+      // 于是「在虚拟机里做了一下午的事」第二天她自己想不起来。
       const isVmAction =
-        d.action === 'draw' || d.action === 'phone';
+        d.action === 'draw' || d.action === 'phone' || d.action === 'vm';
       if (isVmAction && !(result.extra && result.extra.ok === false) && Date.now() - (s.lastMemoAt || 0) > 20 * 60_000) {
         try {
           const mem = api.use('memory');
@@ -1530,8 +1478,16 @@ export default {
       },
     })
 
-    api.route('/state', async () => ({ ok: true, ...snapshot() }));
-    api.route('/activity', async (req) => ({ ok: true, items: readLog(200) }));
+    // access:'panel' —— 宿主对 /ext/* 不做面板校验，不加这一条就等于公网可读。
+    // /state 还要脱敏：snapshot 里有明文 phoneLock，不能原样吐出去。
+    api.route('/state', async () => {
+      const snap = snapshot();
+      const safeConfig = { ...(snap.config || {}) };
+      if (safeConfig.phoneLock !== undefined) safeConfig.phoneLock = safeConfig.phoneLock ? '••••••' : '';
+      return { ok: true, ...snap, config: safeConfig };
+    }, { access: 'panel' });
+    api.route('/activity', async (req) => ({ ok: true, items: readLog(200) }), { access: 'panel' });
+    // 这条能直接触发一次「醒来」，而醒来可能进虚拟机跑命令——必须只让面板点。
     api.route('/wake', async () => {
       if (waking) return { ok: false, message: '正在醒着呢，等这一轮跑完', state: snapshot() };
       waking = true;
@@ -1542,7 +1498,7 @@ export default {
         fs.writeFileSync(logFile(), '', 'utf8');
       } catch (error) {}
       return { ok: true };
-    });
+    }, { access: 'panel' });
 
     return { wake, state: snapshot, activity: () => readLog(200) };
   },

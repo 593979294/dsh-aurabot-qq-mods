@@ -28,12 +28,16 @@ const SOURCE = readFileSync(join(HERE, '..', 'index.mjs'), 'utf8')
 const CODE = SOURCE.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
 
 test('每一处外部命令执行都要过守卫', () => {
-  // 本机命令走 exec-guard 白名单；虚拟机命令走 vm.mjs 的形状校验。
-  // 两者加起来必须覆盖所有 execFile。
-  const guards = (CODE.match(/checkExec\(/g) || []).length + (CODE.match(/checkVmExec\(/g) || []).length
+  // 本机命令走 exec-guard 白名单（index.mjs 里直接 execFile 的都算本机）。
+  // 虚拟机那条不再由 index.mjs 自己拼 argv：它只把 execFile 交给 vm.mjs 的
+  // runVmCommand，三道闸（半截命令 / 危险命令 / 形状闸）全在那边，
+  // 行为由 test/vm-exec.test.mjs 真的驱动验证（exec 调用次数、argv 形状、
+  // 危险命令在调用前被拒），这里只钉住「接线还在」。
+  const guards = (CODE.match(/checkExec\(/g) || []).length
   const execCalls = (CODE.match(/execFile\(/g) || []).length
   assert.ok(execCalls > 0, '应当还有受控的 execFile 调用')
-  assert.ok(guards >= execCalls, `每个 execFile 都要先过守卫（execFile ${execCalls} 处，守卫 ${guards} 处）`)
+  // vm 的执行器是作为参数传出去的（exec: execFile），不计入 execFile( 调用
+  assert.ok(guards >= execCalls, `本机每个 execFile 都要先过 checkExec（execFile ${execCalls} 处，checkExec ${guards} 处）`)
 
   // 模型给的字段绝不能直接出现在 execFile 的参数里
   assert.equal(/execFile\([^)]*\b(detail|steps|action|why)\b/.test(CODE), false, '模型给的字段不该直接进 execFile')
@@ -44,7 +48,8 @@ test('每一处外部命令执行都要过守卫', () => {
   assert.ok(/assertNoModelText/.test(CODE), '应当引入 assertNoModelText')
   // 虚拟机那条必须走 lib/vm.mjs，不许在 index.mjs 里自己拼 ssh 参数
   assert.ok(/from '\.\/lib\/vm\.mjs'/.test(CODE), '应当从 lib/vm.mjs 引入虚拟机执行口')
-  assert.ok(/checkVmExec\(/.test(CODE), 'ssh 调用前应当过 checkVmExec')
+  // 虚拟机那条必须走 runVmCommand（内部依次过 looksBroken / dangerReason / checkVmExec）
+  assert.ok(/runVmCommand\(/.test(CODE), '虚拟机执行应当交给 lib/vm.mjs 的 runVmCommand')
 })
 
 test('虚拟机动作必须先过授权，默认不给', () => {
