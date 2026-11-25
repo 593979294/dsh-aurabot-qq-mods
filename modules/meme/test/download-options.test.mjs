@@ -28,6 +28,10 @@ test('下载超时默认 60 分钟，代理默认关闭', () => {
   assert.equal(env.MEME_DOWNLOAD_PROXY_ENABLED, '1');
   assert.equal(env.MEME_DOWNLOAD_PROXY, 'socks5://127.0.0.1:7891');
   assert.deepEqual(downloadOptionsFromEnv({}), { timeoutSec: 3600, proxy: '' });
+  const resumed = curlDownloadArgs({ url: 'https://example.test/a.tar.gz', output: 'a.tmp', timeoutSec: 60, resume: true, retry: 3, retryDelay: 2 });
+  assert.equal(resumed[resumed.indexOf('--max-time') + 1], '60');
+  assert.deepEqual(resumed.slice(resumed.indexOf('-C'), resumed.indexOf('-C') + 2), ['-C', '-']);
+  assert.equal(resumed.at(-1), 'https://example.test/a.tar.gz');
   const proxied = curlDownloadArgs({ url: 'https://example.test/a', output: 'a.part', timeoutSec: 120, proxy: 'http://127.0.0.1:7890' });
   assert.equal(proxied[proxied.indexOf('--proxy') + 1], 'http://127.0.0.1:7890');
   assert.equal(proxied.includes('--noproxy'), false);

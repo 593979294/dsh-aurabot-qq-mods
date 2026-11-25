@@ -123,7 +123,7 @@ return function MemePanel({ settings, save, toast }) {
         h('span',null,data.installation.error),data.installation.help && h('a',{href:data.installation.help,target:'_blank',rel:'noopener noreferrer'},'安装说明'),h(ui.Btn,{disabled:changing,onClick:retryInstallation},'重试准备')),
       h('div', { style: { display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 } },
         h('label', { style: { display: 'flex', gap: 6, alignItems: 'center' } }, '素材下载超时',
-          h('input', { className: 'ab-input', type: 'number', min: 1, max: 360, inputMode: 'numeric', 'aria-label': '素材下载超时（分钟）', title: '这一次下载最多等多少分钟，默认 60。', style: { width: 64 }, value: Number(settings.downloadTimeoutMinutes) || 60, onChange: e => { const value = Number(e.target.value); if (Number.isInteger(value) && value >= 1 && value <= 360) saveSetting({ downloadTimeoutMinutes: value }); } }),
+          h('input', { className: 'ab-input', type: 'number', min: 1, max: 360, inputMode: 'numeric', 'aria-label': '素材下载超时（分钟）', title: '单次网络请求最多等多少分钟，默认 60。到点只停下这一次请求，已下载的部分保留，下次从断点继续。', style: { width: 64 }, value: Number(settings.downloadTimeoutMinutes) || 60, onChange: e => { const value = Number(e.target.value); if (Number.isInteger(value) && value >= 1 && value <= 360) saveSetting({ downloadTimeoutMinutes: value }); } }),
           '分钟'),
         h('label', { style: { display: 'flex', gap: 6, alignItems: 'center' } }, '安装时走代理',
           h(ui.Switch, { on: settings.downloadProxyEnabled === true, onChange: () => saveSetting({ downloadProxyEnabled: settings.downloadProxyEnabled !== true }) })),

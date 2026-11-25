@@ -38,13 +38,18 @@ export function downloadEnv(settings = {}) {
     MEME_DOWNLOAD_PROXY: options.proxy,
   };
 }
-export function curlDownloadArgs({ url, output, timeoutSec = 3600, proxy = '', connectTimeout = 20, retry = 0, headers = [] }) {
+export function curlDownloadArgs({ url, output, timeoutSec = 3600, proxy = '', connectTimeout = 20, retry = 0, retryDelay = 0, headers = [], resume = false, speedTime = 0, speedLimit = 0 }) {
   const args = ['-fLsS', '--connect-timeout', String(connectTimeout), '--max-time', String(timeoutSec)];
   if (retry > 0) args.push('--retry', String(retry));
+  if (retryDelay > 0) args.push('--retry-delay', String(retryDelay));
+  if (speedTime > 0) args.push('--speed-time', String(speedTime));
+  if (speedLimit > 0) args.push('--speed-limit', String(speedLimit));
   if (proxy) args.push('--proxy', proxy);
   else args.push('--noproxy', '*');
   for (const header of headers) args.push('-H', header);
   if (output) args.push('-o', output);
+  // 只在已有临时文件时续传。--max-time 仍是这一次请求的上限，不是整包总时长。
+  if (resume) args.push('-C', '-');
   args.push(url);
   return args;
 }

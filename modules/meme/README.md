@@ -115,7 +115,7 @@ Windows x64 已实测；Linux x64 容器及 ARM64 仿真容器已验证；macOS 
 
 模板资源、字体、合成均在本机；不会上传输入到第三方表情 API。QQ 消息投递、首次获取 QQ 头像/远程图片仍需 QQ 网络，头像短期缓存于内存。已经提供图片字节或纯文字时，引擎不需要联网。首次自动准备访问 github.com、api.github.com、codeload.github.com、release-assets.githubusercontent.com、registry.npmjs.org；安装可选扩展还需访问 pypi.org、files.pythonhosted.org。QQ 头像来自 q1.qlogo.cn，消息图片按 OneBot 返回的地址获取。普通生成请求不下载代码、素材或字体。
 
-素材下载超时默认 60 分钟，可在表情库面板里改成 1–360 分钟。这是单次下载的上限。下载代理默认关闭。开启后地址支持 `http://`、`https://`、`socks5://`、`socks5h://`、`socks4://` 和 `socks4a://`，只用于上面的安装下载，不影响 QQ 图片。关闭代理时，即使填了地址也不会使用，也不会沿用系统里的 HTTP 代理环境变量。
+素材下载的单次请求超时默认 60 分钟，可在表情库面板里改成 1–360 分钟。到点只结束这一次请求，临时文件里已下到的部分会保留，下次从断点继续，不另设整包总时长。下载代理默认关闭。开启后地址支持 `http://`、`https://`、`socks5://`、`socks5h://`、`socks4://` 和 `socks4a://`，只用于上面的安装下载，不影响 QQ 图片。关闭代理时，即使填了地址也不会使用，也不会沿用系统里的 HTTP 代理环境变量。
 
 ### 性能与维护
 
