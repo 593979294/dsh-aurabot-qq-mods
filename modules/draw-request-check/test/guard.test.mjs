@@ -40,3 +40,11 @@ test('a newer admitted message or a stopped session cannot release an old approv
 test('bystander suggesting a drawing cannot supply the direct requester’s excerpt',async()=>{
  const h=await harness('DRAW 画只猫');h.session.deriveMessages=()=>[user('g','【群聊 测试】刚才新说的（2 条）\n[1] 甲(12345)@了你：找个人物\n[2] 乙(45678)：画只猫\n\n每行开头是说话人。')];assert.equal((await h.run()).kind,'deny');assert.equal(h.passed,0);h.dispose()
 })
+
+test('a mismatched reference is recoverable; extra explanation cannot turn a denial into an approval',async()=>{
+ const h=await harness(body=>body.拟执行的绘图.image ? 'REVISE\n用户要新画，没有说参考这张群聊图片。' : 'DRAW 画一只猫')
+ h.session.deriveMessages=()=>[action]
+ const first=await h.run(undefined,{image:'msg:42:1',prompt:'修改群友发的飞机'})
+ assert.equal(first.kind,'deny');assert.match(first.reason,/调整绘图参数/);assert.equal(h.passed,0)
+ assert.equal((await h.run(undefined,{prompt:'橘猫立绘'})).kind,'allow');assert.equal(h.passed,1)
+})
