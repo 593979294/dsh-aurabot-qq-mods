@@ -176,7 +176,10 @@ export function parseDrawAnswer(text) {
   const raw = String(text || '').trim().replace(/^[「『"\'“”]+|[」』"\'“”]+$/g, '')
   if (!raw) return { hasSelf: false, ref: null, prompt: '' }
   const lineSelf = /这张画\s*[:：]\s*(有|没有)\s*我自己/.exec(raw)
-  const refMatch = /参考图\s*[:：]\s*(self(?::\d{1,2})?|三视图(?::\d{1,2})?|我|我自己|自己)/i.exec(raw)
+  // 【修 2026-11-25 · 测试抓到的】原来写成 (…|我|我自己|自己)，
+  // 正则是「先匹配到就停」，所以「参考图：我自己」会被截成「我」。
+  // 虽然下游 resolveDrawImage 也认「我」，但返回值不该跟原文对不上 —— 长选项必须排前面。
+  const refMatch = /参考图\s*[:：]\s*(self(?::\d{1,2})?|三视图(?::\d{1,2})?|我自己|自己|我)/i.exec(raw)
   const linePrompt = /画面\s*[:：]\s*([\s\S]+)/.exec(raw)
   const hasSelf = lineSelf ? lineSelf[1] === '有' : /参考图\s*[:：]/.test(raw)
   const ref = hasSelf && refMatch ? refMatch[1] : null
